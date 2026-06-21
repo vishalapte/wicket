@@ -1,0 +1,163 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wicket"
+version = "0.1.0"
+description = "Portable, read-only mail tooling over IMAP: catalog a mailbox into a year-sharded manifest, fetch matching .eml by counterparty domain, and report over the manifest. Gmail today, Fastmail planned."
+requires-python = ">=3.12"
+authors = [{ name = "Vishal Apte", email = "vishal@enine.com" }]
+license = "MIT"
+# Talks to mail providers over IMAP via stdlib `imaplib` + app passwords — no
+# OAuth, no provider cloud project, no runtime dependencies.
+dependencies = []
+
+[project.scripts]
+wicket-catalog = "wicket.catalog.__main__:main"
+wicket-fetch = "wicket.fetch.__main__:main"
+wicket-report = "wicket.report.__main__:main"
+
+# Canonical dev tool set per racecar's arch-coherence/PACKAGING.md, the
+# "Dev tooling" rules (PEP 735 dependency group).
+# Identical across racecar projects; modifying this list is a standards-change
+# conversation, not a project-by-project decision.
+[dependency-groups]
+dev = [
+    "black",
+    "isort",
+    "pylint",
+    "pylint-pytest",
+    "mypy",
+    "pytest",
+    "pytest-cov",
+    "pip-audit",
+    "import-linter",
+    "pip-tools",
+    "pre-commit",
+    "pyyaml",
+    "validate-pyproject",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["wicket*"]
+
+# Ship the PEP 561 marker so consumers (meridian, factotum) type-check against
+# wicket under mypy --strict instead of treating it as untyped.
+[tool.setuptools.package-data]
+wicket = ["py.typed"]
+
+[tool.black]
+target-version = ["py312"]
+
+[tool.isort]
+profile = "black"
+
+[tool.pylint."MESSAGES CONTROL"]
+# Canonical disable set — identical across racecar projects, enforced by
+# scripts/check_packaging.py (see arch-coherence/PACKAGING.md, "pylint canon").
+disable = [
+    # meta / pre-commit plumbing — never a real finding
+    "raw-checker-failed",
+    "bad-inline-option",
+    "locally-disabled",
+    "file-ignored",
+    "suppressed-message",
+    "useless-suppression",
+    "deprecated-pragma",
+    "use-symbolic-message-instead",
+    # idiomatic-code false positives
+    "duplicate-code",  # R0801: argparse / pydantic / dataclass boilerplate
+    "use-implicit-booleaness-not-comparison-to-string",
+    "use-implicit-booleaness-not-comparison-to-zero",
+    # module docstrings — covered by the subsystem's README / DESIGN / SYSTEM / CLAUDE doc
+    "missing-module-docstring",
+]
+
+[tool.pylint.BASIC]
+# Names exempt from the docstring requirement: private (_x), pytest functions
+# (test_*), and Test* classes. Everything else public requires a docstring.
+no-docstring-rgx = "^_|^test_|^Test"
+# Functions / classes with fewer lines than this are exempt (trivial one-liners).
+docstring-min-length = 6
+
+[tool.pylint.DESIGN]
+# Raised caps, not disables — keep the backstop, allow cohesive data/CLI builders.
+max-args = 6
+max-attributes = 10
+max-locals = 25
+max-branches = 17
+max-bool-expr = 8
+
+[tool.pylint.SIMILARITIES]
+# Default 4 flags idiomatic per-verb CLI scaffolding; 12 clears those.
+min-similarity-lines = 12
+ignore-docstrings = true
+
+[tool.pylint.MAIN]
+py-version = "3.12"
+load-plugins = ["pylint_pytest"]
+
+[tool.pylint.MASTER]
+# Repo-relative regexes to skip. The doc-coherence pre-pass (scripts/check_docs.py)
+# also reads this list: the check scripts vendored under scripts/ are copied
+# verbatim from racecar and carry §N citations to racecar's own canon, which do
+# not resolve in this repo. Excluding scripts/ keeps the pre-pass policing this
+# project's own docs and config, not vendored racecar internals.
+ignore-paths = ["^scripts/"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests", "."]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+
+[tool.coverage.run]
+# Measure coverage of the library package only.
+source = ["wicket"]
+branch = true
+
+[tool.coverage.report]
+# Skip uninteresting lines from the report.
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@(abc\\.)?abstractmethod",
+]
+
+# racecar arch-coherence §4: the dependency graph is source-of-truth.
+# Verify with `lint-imports` -> "Contracts: 1 kept, 0 broken."
+#
+# Layout: shared modules at the package root (`auth` / `domains` / `message` /
+# `manifest`, over `config`); three parallel verbs (`catalog`, `fetch`,
+# `report`) under sub-packages. Each verb co-locates three layers: a thin
+# __main__ face over its api over its worker, faces > api > worker > reconcile >
+# shared > config, downward only; the verbs are independent siblings (no
+# cross-imports). The face -> api -> lib routing is convention; this contract
+# gates direction and acyclicity (defects), it does not wall the shape.
+[tool.importlinter]
+root_package = "wicket"
+
+[[tool.importlinter.contracts]]
+name = "wicket layering (three verbs over the shared store)"
+type = "layers"
+layers = [
+  "wicket.catalog.__main__ | wicket.fetch.__main__ | wicket.report.__main__",
+  "wicket.catalog.api | wicket.fetch.api | wicket.report.api",
+  "wicket.catalog.lib | wicket.fetch.lib | wicket.report.lib",
+  "wicket.reconcile",
+  "wicket.auth | wicket.domains | wicket.message | wicket.manifest",
+  "wicket.config",
+]
+
+# Declared divergences from racecar base (racecar-upgrade). The record of intent
+# so re-porting is deterministic; the project README/CLAUDE point here, not a
+# second copy.
+[[tool.racecar.overrides]]
+target = ".pre-commit-config.yaml"
+what = "omits the djhtml pre-commit hook from templates/classic"
+why = "non-Django, stdlib-only; no HTML templates to reindent"
