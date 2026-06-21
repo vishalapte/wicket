@@ -1,0 +1,81 @@
+# Canonical racecar pre-commit hooks. Run `pre-commit autoupdate` periodically
+# to bump pinned revs.
+
+repos:
+  - repo: local
+    hooks:
+      # isort first (orders imports), then black (formats the result, including the
+      # reordered imports). Reverse order would force black to run twice.
+      # Both use --settings-file/--config to match `make fmt` exactly.
+      - id: isort
+        name: isort
+        entry: bash -c 'CONF=$(grep -E "^LIB_PYPROJECT[[:space:]]*[?:!]?=" Makefile | head -1 | sed "s/.*=[[:space:]]*//;s/[[:space:]]*//"); python -m isort --settings-file "$CONF" "$@"' --
+        language: python
+        additional_dependencies: [isort==5.13.2]
+        types: [python]
+        exclude: '^scripts/'
+
+      - id: black
+        name: black
+        entry: bash -c 'CONF=$(grep -E "^LIB_PYPROJECT[[:space:]]*[?:!]?=" Makefile | head -1 | sed "s/.*=[[:space:]]*//;s/[[:space:]]*//"); python -m black --config "$CONF" "$@"' --
+        language: python
+        additional_dependencies: [black==24.10.0]
+        types: [python]
+        exclude: '^scripts/'
+
+      - id: import-linter
+        name: import-linter
+        entry: bash -c 'VENV=; for d in .venv venv ../venv; do [ -d "$d" ] && VENV=$d && break; done; export PATH="${VENV:+$VENV/bin:}$PATH"; CONF=$(grep -E "^LIB_PYPROJECT[[:space:]]*[?:!]?=" Makefile | head -1 | sed "s/.*=[[:space:]]*//;s/[[:space:]]*//"); DJAPP=$(grep -E "^DJAPP[[:space:]]*[?:!]?=" Makefile | head -1 | sed "s/.*=[[:space:]]*//;s/[[:space:]]*//"); export PYTHONPATH="${DJAPP:+$DJAPP:}$PYTHONPATH"; lint-imports --config "$CONF"'
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: validate-pyproject
+        name: validate library pyproject.toml
+        entry: bash -c 'TOML=$(grep -E "^LIB_PYPROJECT[[:space:]]*[?:!]?=" Makefile | head -1 | sed "s/.*=[[:space:]]*//;s/[[:space:]]*//"); validate-pyproject "$TOML"'
+        language: python
+        additional_dependencies: [validate-pyproject]
+        pass_filenames: false
+        always_run: true
+
+      - id: no-upward-imports-in-business-modules
+        name: arch-coherence/PYTHON.md §1 — business modules must not import from root package directly
+        entry: python scripts/check_upward_imports.py
+        language: python
+        types: [python]
+        exclude: '(__main__|__init__)\.py$'
+
+      - id: doc-coherence-mechanical-pre-pass
+        name: doc-coherence/README.md — mechanical pre-pass (link / §N / vocabulary drift)
+        entry: python scripts/check_docs.py
+        language: python
+        pass_filenames: false
+        always_run: true
+
+      - id: todo-format
+        name: shared/TODO_FORMAT.md — TODO item schema (id / Prio / Depends / Updated)
+        entry: python scripts/check_todo_format.py
+        language: python
+        pass_filenames: false
+        always_run: true
+
+      - id: claude-md-shape
+        name: doc-coherence/README.md — root CLAUDE.md carries the four canonical sections
+        entry: python scripts/check_claude_shape.py
+        language: python
+        pass_filenames: false
+        always_run: true
+
+      - id: file-placement
+        name: doc-coherence/README.md — markdown docs placement (top-level whitelist / subdir README+CLAUDE)
+        entry: python scripts/check_file_placement.py
+        language: python
+        pass_filenames: false
+        always_run: true
+
+      - id: no-cross-module-string-relations
+        name: arch-coherence/DJANGO.md §2 — no cross-module string ORM relations (skipped if no manage.py)
+        entry: bash -c 'VENV=; for d in .venv venv ../venv; do [ -d "$d" ] && VENV=$d && break; done; export PATH="${VENV:+$VENV/bin:}$PATH"; if find . -maxdepth 3 -name "manage.py" -not -path "*/.venv/*" -not -path "*/venv/*" | grep -q .; then python scripts/check_dj_model_ref_as_string.py; fi'
+        language: system
+        pass_filenames: false
+        always_run: true
