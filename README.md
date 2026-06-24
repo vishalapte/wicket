@@ -112,7 +112,8 @@ consumers depend on it rather than copy it.
 
 This repo follows the racecar standards. Set up with `make install-dev` (adds the
 dev tools and pre-commit hooks), then run `make check` before opening a change;
-`make help` lists every target. Agent-facing rules live in
+`make help` lists every target. Notable changes are recorded in
+[`CHANGELOG.md`](CHANGELOG.md). Agent-facing rules live in
 [`CLAUDE.md`](CLAUDE.md) (repo-level) and
 [`src/wicket/CLAUDE.md`](src/wicket/CLAUDE.md) (package-level). Full usage and the
 security model are in the package README:
