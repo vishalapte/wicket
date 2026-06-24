@@ -11,7 +11,7 @@ Checks performed:
 
   1. Frontmatter YAML parses and matches the declared schema:
      - ``generator.name``, ``generator.version`` (semver "X.Y.Z").
-     - ``target.repo``, ``target.sha``, ``target.date`` (ISO YYYY-MM-DD).
+     - ``target.repo``, ``target.date`` (ISO YYYY-MM-DD).
      - ``bundle`` (non-empty list of filenames).
      - ``entities`` (required list). Each entry requires ``name``, ``case``
        (``db_backed`` / ``on_disk_managed`` / ``content_tree`` / ``none``),
@@ -37,10 +37,6 @@ Checks performed:
      - §2.4 frontmatter surface keys: any key with >5 entries must be a
        first-class recognized kind (``http_routes``, ``cli_verbs``,
        ``mcp_tools``, ``library_exports``, ``webhooks``, ``signals``).
-     - Spine/body agreement: any snapshot SHA restated in the brief's
-       preamble (body text before the first ``## §1`` heading) must match
-       ``target.sha``. Commit SHAs cited in §2.9 design history are out of
-       scope — they are different commits, not the snapshot point.
 
 Discovery:
   - If a path argument is given, it is used directly as the main-brief path.
@@ -122,17 +118,21 @@ class Findings:
         self.entries: list[tuple[str, str]] = []
 
     def error(self, msg: str) -> None:
+        """Record an error-severity finding."""
         self.entries.append(("error", msg))
 
     def warning(self, msg: str) -> None:
+        """Record a warning-severity finding."""
         self.entries.append(("warning", msg))
 
     @property
     def error_count(self) -> int:
+        """Number of error-severity findings recorded."""
         return sum(1 for sev, _ in self.entries if sev == "error")
 
     @property
     def warning_count(self) -> int:
+        """Number of warning-severity findings recorded."""
         return sum(1 for sev, _ in self.entries if sev == "warning")
 
 
@@ -159,7 +159,6 @@ def split_frontmatter(text: str) -> tuple[str | None, str]:
 
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
 LOWERCASE_REPO_RE = re.compile(r"^[a-z0-9_-]+$")
 
 CARDINALITY_VALUES = {"1:1", "1:N", "M:N"}
@@ -179,6 +178,7 @@ SURFACE_KINDS = {
 
 
 def require_mapping(value: object, where: str, f: Findings) -> bool:
+    """Assert `value` is a dict; record an error at `where` and return False if not."""
     if not isinstance(value, dict):
         f.error(f"frontmatter: {where} must be a mapping; got {type(value).__name__}")
         return False
@@ -186,6 +186,7 @@ def require_mapping(value: object, where: str, f: Findings) -> bool:
 
 
 def require_list(value: object, where: str, f: Findings) -> bool:
+    """Assert `value` is a list; record an error at `where` and return False if not."""
     if not isinstance(value, list):
         f.error(f"frontmatter: {where} must be a list; got {type(value).__name__}")
         return False
@@ -193,6 +194,7 @@ def require_list(value: object, where: str, f: Findings) -> bool:
 
 
 def validate_generator(generator: object, f: Findings) -> None:
+    """Validate the frontmatter `generator` block."""
     if not require_mapping(generator, "generator", f):
         return
     assert isinstance(generator, dict)
@@ -209,6 +211,7 @@ def validate_generator(generator: object, f: Findings) -> None:
 
 
 def validate_target(target: object, f: Findings) -> None:
+    """Validate the frontmatter `target` block."""
     if not require_mapping(target, "target", f):
         return
     assert isinstance(target, dict)
@@ -216,18 +219,11 @@ def validate_target(target: object, f: Findings) -> None:
     if not isinstance(repo, str) or not repo:
         f.error(f"frontmatter: target.repo must be a non-empty string; got {repo!r}")
     elif not LOWERCASE_REPO_RE.match(repo):
-        f.error(
-            f"frontmatter: target.repo must be lowercase [a-z0-9_-]; got {repo!r}"
-        )
-    sha = target.get("sha")
-    if not isinstance(sha, str) or not sha or not HEX_RE.match(sha):
-        f.error(f"frontmatter: target.sha must be a hex string; got {sha!r}")
+        f.error(f"frontmatter: target.repo must be lowercase [a-z0-9_-]; got {repo!r}")
     date = target.get("date")
     if isinstance(date, str):
         if not ISO_DATE_RE.match(date):
-            f.error(
-                f"frontmatter: target.date must be ISO YYYY-MM-DD; got {date!r}"
-            )
+            f.error(f"frontmatter: target.date must be ISO YYYY-MM-DD; got {date!r}")
     else:
         # PyYAML may parse YYYY-MM-DD as datetime.date — accept that.
         if not isinstance(date, date_cls):
@@ -235,6 +231,7 @@ def validate_target(target: object, f: Findings) -> None:
 
 
 def validate_bundle(bundle: object, f: Findings) -> list[str]:
+    """Validate the `bundle` list and return the declared member file names."""
     if not require_list(bundle, "bundle", f):
         return []
     assert isinstance(bundle, list)
@@ -244,13 +241,16 @@ def validate_bundle(bundle: object, f: Findings) -> list[str]:
     result: list[str] = []
     for i, item in enumerate(bundle):
         if not isinstance(item, str) or not item:
-            f.error(f"frontmatter: bundle[{i}] must be a non-empty string; got {item!r}")
+            f.error(
+                f"frontmatter: bundle[{i}] must be a non-empty string; got {item!r}"
+            )
             continue
         result.append(item)
     return result
 
 
 def validate_entity(entity: object, idx: int, f: Findings) -> None:
+    """Validate one `entities[idx]` frontmatter entry."""
     where = f"entities[{idx}]"
     if not require_mapping(entity, where, f):
         return
@@ -265,23 +265,30 @@ def validate_entity(entity: object, idx: int, f: Findings) -> None:
         f.error(f"frontmatter: {where}.name must be a non-empty string; got {name!r}")
     purpose = entity.get("purpose")
     if not isinstance(purpose, str) or not purpose:
-        f.error(f"frontmatter: {where}.purpose must be a non-empty string (one-sentence description)")
+        f.error(
+            f"frontmatter: {where}.purpose must be a non-empty string "
+            "(one-sentence description)"
+        )
     lifecycle = entity.get("lifecycle", "realized")
     if lifecycle not in LIFECYCLE_VALUES:
         f.error(
-            f"frontmatter: {where}.lifecycle must be one of {sorted(LIFECYCLE_VALUES)}; got {lifecycle!r}"
+            f"frontmatter: {where}.lifecycle must be one of "
+            f"{sorted(LIFECYCLE_VALUES)}; got {lifecycle!r}"
         )
-    # Class-level only: no field tables, no per-case required keys beyond name/case/purpose.
-    # `path_pattern`, `count`, `validator` are optional for content_tree entries (description, not requirement).
+    # Class-level only: no field tables, no per-case required keys beyond
+    # name/case/purpose. `path_pattern`, `count`, `validator` are optional for
+    # content_tree entries (description, not requirement).
     if case == "content_tree":
         if "mutability" in entity and entity.get("mutability") not in MUTABILITY_VALUES:
             f.error(
-                f"frontmatter: {where}.mutability must be one of {sorted(MUTABILITY_VALUES)} when present; "
+                f"frontmatter: {where}.mutability must be one of "
+                f"{sorted(MUTABILITY_VALUES)} when present; "
                 f"got {entity.get('mutability')!r}"
             )
 
 
 def validate_entities(entities: object, f: Findings) -> None:
+    """Validate the `entities` list and each entry within it."""
     if not require_list(entities, "entities", f):
         return
     assert isinstance(entities, list)
@@ -290,6 +297,7 @@ def validate_entities(entities: object, f: Findings) -> None:
 
 
 def validate_relationships(relationships: object, f: Findings) -> None:
+    """Validate the `relationships` DAG list and each edge within it."""
     if not require_list(relationships, "relationships", f):
         return
     assert isinstance(relationships, list)
@@ -312,7 +320,8 @@ def validate_relationships(relationships: object, f: Findings) -> None:
         # on_delete is meaningful for DB FKs only; M:N and non-DB edges may omit it.
         if "on_delete" in rel and rel.get("on_delete") not in ON_DELETE_VALUES:
             f.error(
-                f"frontmatter: {where}.on_delete must be one of {sorted(ON_DELETE_VALUES)} when present; "
+                f"frontmatter: {where}.on_delete must be one of "
+                f"{sorted(ON_DELETE_VALUES)} when present; "
                 f"got {rel.get('on_delete')!r}"
             )
         if "owner_side" in rel and (
@@ -324,6 +333,7 @@ def validate_relationships(relationships: object, f: Findings) -> None:
 
 
 def validate_external_surface(surface: object, f: Findings) -> None:
+    """Validate the `external_surface` block grouping endpoints by surface kind."""
     if not require_mapping(surface, "external_surface", f):
         return
     assert isinstance(surface, dict)
@@ -419,6 +429,7 @@ def validate_external_surface(surface: object, f: Findings) -> None:
 
 
 def validate_frontmatter(frontmatter_text: str, f: Findings) -> dict | None:
+    """Parse and validate the YAML frontmatter; return it as a dict, or None."""
     try:
         data = yaml.safe_load(frontmatter_text)
     except yaml.YAMLError as exc:
@@ -489,7 +500,6 @@ REQUIRED_HEADINGS: tuple[tuple[str, int], ...] = (
 
 HEADING_RE = re.compile(r"^(#+)\s+(.+?)\s*$")
 STUB_RE = re.compile(r"^N/A\s+—\s+", re.MULTILINE)
-SHA_IN_TEXT_RE = re.compile(r"`([0-9a-fA-F]{7,40})`")
 
 
 def find_headings(body: str) -> list[tuple[int, int, str, int]]:
@@ -523,6 +533,7 @@ def normalize_heading(text: str) -> str:
 
 
 def check_required_headings(body: str, f: Findings) -> None:
+    """Verify the markdown body carries every required narrative heading."""
     headings = find_headings(body)
     headings_by_text: dict[str, list[tuple[int, int, int]]] = {}
     for lineno, depth, text, offset in headings:
@@ -580,42 +591,6 @@ def check_confidence(body: str, f: Findings) -> None:
             )
 
 
-def check_spine_body_consistency(body: str, data: dict | None, f: Findings) -> None:
-    """Snapshot SHA restated in the brief's preamble must match target.sha.
-
-    The "preamble" is body text before the first H2 (``## ``) heading — by
-    convention the only place a brief restates its snapshot point. Commit SHAs
-    cited deep in §2.9 design history are *other* commits and stay out of
-    scope. Mechanizes the spine/body-agreement rule in
-    ``llm-summary/README.md`` (``## Structural budget``).
-    """
-    if not isinstance(data, dict):
-        return
-    target = data.get("target")
-    sha = target.get("sha") if isinstance(target, dict) else None
-    if not isinstance(sha, str) or not sha:
-        return
-    m = re.search(r"^##\s", body, re.MULTILINE)
-    preamble = body[: m.start()] if m else body
-    target_sha = sha.lower()
-    seen: set[str] = set()
-    for match in SHA_IN_TEXT_RE.finditer(preamble):
-        token = match.group(1).lower()
-        if token in seen:
-            continue
-        seen.add(token)
-        if (
-            token == target_sha
-            or token.startswith(target_sha)
-            or target_sha.startswith(token)
-        ):
-            continue
-        f.error(
-            f"body: preamble restates snapshot SHA `{match.group(1)}` which "
-            f"disagrees with frontmatter target.sha '{sha}'"
-        )
-
-
 def count_bullets(text: str) -> int:
     """Count top-level markdown bullets (`- ` or `* ` at column 0) until next H2/EOF."""
     count = 0
@@ -662,6 +637,7 @@ def check_bundle_membership(
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
+    """Parse command-line arguments for the brief check."""
     parser = argparse.ArgumentParser(
         description="Mechanical validator for a racecar-llm-summary brief."
     )
@@ -675,6 +651,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Validate the brief bundle at docs/summary/<REPO>.md; return an exit code."""
     args = parse_args(argv if argv is not None else sys.argv[1:])
     f = Findings()
 
@@ -709,7 +686,6 @@ def main(argv: list[str] | None = None) -> int:
     data = validate_frontmatter(frontmatter_text, f)
     check_required_headings(body, f)
     check_confidence(body, f)
-    check_spine_body_consistency(body, data, f)
     if data is not None and isinstance(data.get("bundle"), list):
         bundle = validate_bundle(data["bundle"], f)
         check_bundle_membership(brief_path, bundle, f)
@@ -718,6 +694,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def emit(f: Findings) -> int:
+    """Print all findings and return 1 if any error was recorded, else 0."""
     for severity, msg in f.entries:
         print(f"check_brief: {severity}: {msg}")
     if f.error_count == 0 and f.warning_count == 0:

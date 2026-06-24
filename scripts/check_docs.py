@@ -117,7 +117,9 @@ def ignore_patterns(repo_root: Path | None = None) -> tuple[re.Pattern[str], ...
     data = load_project_pyproject(repo_root)
     if not data:
         return ()
-    raw = data.get("tool", {}).get("pylint", {}).get("MASTER", {}).get("ignore-paths", [])
+    raw = (
+        data.get("tool", {}).get("pylint", {}).get("MASTER", {}).get("ignore-paths", [])
+    )
     return tuple(re.compile(p) for p in raw if isinstance(p, str))
 
 
@@ -175,7 +177,11 @@ def _heading_slugs(text: str) -> set[str]:
 
 def _section_numbers(text: str) -> set[str]:
     """Return the top-level section numbers (e.g. {'1','2'} from '## 1. Foo')."""
-    return {m.group(1) for line in text.splitlines() if (m := re.match(r"^##\s+(\d+)\.", line))}
+    return {
+        m.group(1)
+        for line in text.splitlines()
+        if (m := re.match(r"^##\s+(\d+)\.", line))
+    }
 
 
 def _check_links(md_path: Path) -> list[str]:
@@ -196,7 +202,9 @@ def _check_links(md_path: Path) -> list[str]:
             if line[: m.start()].count("`") % 2 == 1:
                 continue
             path_part, _, anchor = target.partition("#")
-            target_file = (md_path.parent / path_part).resolve() if path_part else md_path
+            target_file = (
+                (md_path.parent / path_part).resolve() if path_part else md_path
+            )
             if path_part and not target_file.exists():
                 errors.append(f"{md_path}:{lineno}: broken link — {target}")
                 continue
@@ -227,12 +235,16 @@ def _check_section_citations(path: Path) -> list[str]:
             if prefix:
                 target: Path | None = REPO_ROOT / prefix / fname
                 if not target.is_file():
-                    errors.append(f"{path}:{lineno}: cites missing file — {prefix}/{fname} §{num}")
+                    errors.append(
+                        f"{path}:{lineno}: cites missing file — {prefix}/{fname} §{num}"
+                    )
                     continue
             else:
                 target = _find_doc(fname)
                 if target is None:
-                    errors.append(f"{path}:{lineno}: cites missing file — {fname} §{num}")
+                    errors.append(
+                        f"{path}:{lineno}: cites missing file — {fname} §{num}"
+                    )
                     continue
             nums = _section_numbers(target.read_text(encoding="utf-8"))
             if num not in nums:
@@ -284,6 +296,7 @@ def _check_vocabulary_identity(md_paths: list[Path]) -> list[str]:
 
 
 def main() -> int:
+    """Run the mechanical doc pre-pass over the repo's markdown; return an exit code."""
     errors: list[str] = []
     md_paths: list[Path] = []
     for md_path in REPO_ROOT.rglob("*.md"):

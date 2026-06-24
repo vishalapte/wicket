@@ -84,6 +84,11 @@ dicts for multiple) to stdout.
 Exits 0 if clean, 1 if any violation is found.
 """
 
+# This checker is deliberately one module. A package split was tried and reverted
+# as over-reach: the length is the honest cost of a single file aggregating the
+# whole CLI-surface audit, accepted rather than dissolved into ceremony.
+# pylint: disable=too-many-lines
+
 from __future__ import annotations
 
 import argparse
@@ -162,7 +167,9 @@ def _import_main(pkg: str) -> tuple[ModuleType | None, str | None]:
         )
     except ModuleNotFoundError:
         result = (None, None)
-    except Exception as exc:
+    # Importing an adopter's __main__ runs their code; any failure is data, not
+    # a reason to crash the audit.
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         # Anything else — ValueError, ImportError-from-sub-import, KeyError
         # in module-scope dict lookups, FileNotFoundError from reading config
         # at import, etc. Record and continue; the violation lands on this
@@ -178,15 +185,19 @@ def _read_commands(mod: ModuleType) -> tuple[list[tuple[str, str]] | None, list[
         return None, ["missing `commands()` function in __main__.py"]
     try:
         result = fn()
-    except Exception as exc:
+    # Adopter-supplied callable; record any failure rather than abort the audit.
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         return None, [f"`commands()` raised {type(exc).__name__}: {exc}"]
     if not isinstance(result, list) or not all(
-        isinstance(p, tuple) and len(p) == 2 and all(isinstance(s, str) for s in p) for p in result
+        isinstance(p, tuple) and len(p) == 2 and all(isinstance(s, str) for s in p)
+        for p in result
     ):
         return None, [f"`commands()` must return list[tuple[str, str]]; got {result!r}"]
     bad_names = [n for n, _ in result if "." in n or not n]
     if bad_names:
-        return result, [f"`commands()` entries must be direct child names, not dotted: {bad_names}"]
+        return result, [
+            f"`commands()` entries must be direct child names, not dotted: {bad_names}"
+        ]
     return result, []
 
 
@@ -208,6 +219,9 @@ def _stringify_type(t: Any) -> str:
     return getattr(t, "__name__", None) or repr(t)
 
 
+# Auditing a parser means reading argparse's private action classes; there is no
+# public surface for it.
+# pylint: disable=protected-access
 def _describe_action(action: argparse.Action) -> dict[str, Any]:
     """Render one argparse Action as a structured arg entry.
 
@@ -267,8 +281,7 @@ def _args_from_parser(parser_obj: argparse.ArgumentParser) -> list[dict[str, Any
 
     def _filter_member(a: argparse.Action) -> bool:
         return (
-            not isinstance(a, argparse._HelpAction)
-            and a.help is not argparse.SUPPRESS
+            not isinstance(a, argparse._HelpAction) and a.help is not argparse.SUPPRESS
         )
 
     out: list[dict[str, Any]] = []
@@ -288,7 +301,9 @@ def _args_from_parser(parser_obj: argparse.ArgumentParser) -> list[dict[str, Any
         if id(group) in seen_groups:
             continue
         seen_groups.add(id(group))
-        members = [_describe_action(a) for a in group._group_actions if _filter_member(a)]
+        members = [
+            _describe_action(a) for a in group._group_actions if _filter_member(a)
+        ]
         if not members:
             continue
         if len(members) == 1:
@@ -319,12 +334,15 @@ def _introspect_parser(mod: ModuleType) -> tuple[
         return None, None, []
     try:
         p = fn()
-    except Exception as exc:
+    # Adopter-supplied factory; record any failure rather than abort the audit.
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         return None, None, [f"`parser()` raised {type(exc).__name__}: {exc}"]
     if not isinstance(p, argparse.ArgumentParser):
-        return None, None, [
-            f"`parser()` must return argparse.ArgumentParser; got {type(p).__name__}"
-        ]
+        return (
+            None,
+            None,
+            [f"`parser()` must return argparse.ArgumentParser; got {type(p).__name__}"],
+        )
     top_args = _args_from_parser(p)
     sub_args: dict[str, list[dict[str, Any]]] = {}
     for action in p._actions:
@@ -334,7 +352,12 @@ def _introspect_parser(mod: ModuleType) -> tuple[
     return top_args, sub_args, []
 
 
-def _read_subcommands(mod: ModuleType) -> tuple[list[tuple[str, str]] | None, list[str]]:
+# pylint: enable=protected-access
+
+
+def _read_subcommands(
+    mod: ModuleType,
+) -> tuple[list[tuple[str, str]] | None, list[str]]:
     """Read the optional `subcommands()` function (Pattern 2 + 3 only).
 
     Returns (entries, violations). `entries` is None when the function is
@@ -348,16 +371,23 @@ def _read_subcommands(mod: ModuleType) -> tuple[list[tuple[str, str]] | None, li
         return None, [f"`subcommands` is not callable; got {type(fn).__name__}"]
     try:
         result = fn()
-    except Exception as exc:
+    # Adopter-supplied callable; record any failure rather than abort the audit.
+    except Exception as exc:  # pylint: disable=broad-exception-caught
         return None, [f"`subcommands()` raised {type(exc).__name__}: {exc}"]
     if not isinstance(result, list) or not all(
-        isinstance(p, tuple) and len(p) == 2 and all(isinstance(s, str) for s in p) for p in result
+        isinstance(p, tuple) and len(p) == 2 and all(isinstance(s, str) for s in p)
+        for p in result
     ):
-        return None, [f"`subcommands()` must return list[tuple[str, str]]; got {result!r}"]
-    bad_names = [n for n, _ in result if not n or any(c in n for c in (".", " ", "\t", "/"))]
+        return None, [
+            f"`subcommands()` must return list[tuple[str, str]]; got {result!r}"
+        ]
+    bad_names = [
+        n for n, _ in result if not n or any(c in n for c in (".", " ", "\t", "/"))
+    ]
     if bad_names:
         return result, [
-            f"`subcommands()` entries must be plain argparse names (no dots, spaces, slashes): {bad_names}"
+            "`subcommands()` entries must be plain argparse names "
+            f"(no dots, spaces, slashes): {bad_names}"
         ]
     return result, []
 
@@ -372,7 +402,11 @@ def _run(pkg: str, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 def _parse_listing(stdout: str) -> list[tuple[str, str]]:
-    return [(m["path"], m["desc"]) for line in stdout.splitlines() if (m := _LINE_RE.match(line))]
+    return [
+        (m["path"], m["desc"])
+        for line in stdout.splitlines()
+        if (m := _LINE_RE.match(line))
+    ]
 
 
 # ---------- subprocess probes (parallelised) ----------------------------- #
@@ -429,7 +463,9 @@ class _Probe:
         raise AssertionError(f"unknown probe kind {self.kind!r}")
 
 
-def _violations_from_help(pkg: str, result: subprocess.CompletedProcess[str]) -> list[str]:
+def _violations_from_help(
+    pkg: str, result: subprocess.CompletedProcess[str]
+) -> list[str]:
     if result.returncode != 0:
         return [
             f"`python -m {pkg} --help` exited {result.returncode}; "
@@ -465,7 +501,9 @@ def _violations_from_noargs(
     if not noargs.stdout.strip():
         out.append(f"`python -m {pkg}` (no args) exited 0 but produced no stdout")
         if noargs.stderr.strip():
-            out.append("  (stderr was non-empty — listing may be going to the wrong stream)")
+            out.append(
+                "  (stderr was non-empty — listing may be going to the wrong stream)"
+            )
         return out
     printed = _parse_listing(noargs.stdout)
     expected = [(f"{pkg}.{name}", desc) for name, desc in commands]
@@ -473,15 +511,20 @@ def _violations_from_noargs(
     expected_set = {p for p, _ in expected}
     for path, _desc in expected:
         if path not in printed_set:
-            out.append(f"`commands()` claims `{path}` but no-args output does not list it")
+            out.append(
+                f"`commands()` claims `{path}` but no-args output does not list it"
+            )
     for path, _desc in printed:
         if path not in expected_set:
-            out.append(f"no-args output lists `{path}` but `commands()` does not claim it")
+            out.append(
+                f"no-args output lists `{path}` but `commands()` does not claim it"
+            )
     printed_desc = dict(printed)
     for path, desc in expected:
         if path in printed_desc and printed_desc[path] != desc:
             out.append(
-                f"description mismatch for `{path}`: commands()={desc!r}, printed={printed_desc[path]!r}"
+                f"description mismatch for `{path}`: "
+                f"commands()={desc!r}, printed={printed_desc[path]!r}"
             )
     return out
 
@@ -522,7 +565,9 @@ def _resolve_probes(node: Node) -> None:
         _resolve_probes(child)
 
 
-def _classify(mod: ModuleType, commands: list[tuple[str, str]]) -> tuple[str, list[str]]:
+def _classify(
+    mod: ModuleType, commands: list[tuple[str, str]]
+) -> tuple[str, list[str]]:
     has_main = callable(getattr(mod, "main", None))
     has_print = callable(getattr(mod, "_print_commands", None))
     violations: list[str] = []
@@ -530,17 +575,22 @@ def _classify(mod: ModuleType, commands: list[tuple[str, str]]) -> tuple[str, li
         pattern = "pattern-2" if has_main else "pattern-1"
         if not has_print:
             violations.append(
-                f"{_PATTERN_LABEL[pattern]}: missing `_print_commands()` (every intermediate node owns its print layer)"
+                f"{_PATTERN_LABEL[pattern]}: missing `_print_commands()` "
+                "(every intermediate node owns its print layer)"
             )
     else:
         pattern = "pattern-3"
         if not has_main:
-            violations.append("Pattern 3 (leaf): missing `main()` — argparse entry point required")
+            violations.append(
+                "Pattern 3 (leaf): missing `main()` — argparse entry point required"
+            )
     return pattern, violations
 
 
 def _has_main_guard(source: str) -> bool:
-    return 'if __name__ == "__main__"' in source or "if __name__ == '__main__'" in source
+    return (
+        'if __name__ == "__main__"' in source or "if __name__ == '__main__'" in source
+    )
 
 
 class _ArgparseScan(NamedTuple):
@@ -610,9 +660,8 @@ def _scan_argparse_source(module_file: str) -> _ArgparseScan:
             continue
         # Match `<something>.add_parser("name", ...)`.
         is_add_parser = (
-            (isinstance(func, ast.Attribute) and func.attr == "add_parser")
-            or (isinstance(func, ast.Name) and func.id == "add_parser")
-        )
+            isinstance(func, ast.Attribute) and func.attr == "add_parser"
+        ) or (isinstance(func, ast.Name) and func.id == "add_parser")
         if not is_add_parser or not node.args:
             continue
         first = node.args[0]
@@ -621,7 +670,8 @@ def _scan_argparse_source(module_file: str) -> _ArgparseScan:
         else:
             try:
                 dynamic_markers.add(ast.unparse(first))
-            except Exception:
+            # Parsing arbitrary adopter source; unparse failure must not abort.
+            except Exception:  # pylint: disable=broad-exception-caught
                 dynamic_markers.add("<dynamic>")
 
     return _ArgparseScan(
@@ -651,7 +701,11 @@ def _list_direct_subpackages(pkg: str) -> list[str]:
         for entry in sorted(base_path.iterdir()):
             if entry.name.startswith((".", "_")):
                 continue
-            if entry.is_dir() and (entry / "__init__.py").is_file() and entry.name not in seen_names:
+            if (
+                entry.is_dir()
+                and (entry / "__init__.py").is_file()
+                and entry.name not in seen_names
+            ):
                 seen_names.add(entry.name)
                 names.append(entry.name)
     return names
@@ -683,7 +737,11 @@ def _scan_disk_children(pkg: str) -> tuple[list[str], list[str]]:
                 seen_names.add(name)
                 if (entry / "__main__.py").is_file():
                     sub_packages.append(name)
-            elif entry.is_file() and entry.suffix == ".py" and entry.name != "__main__.py":
+            elif (
+                entry.is_file()
+                and entry.suffix == ".py"
+                and entry.name != "__main__.py"
+            ):
                 name = entry.stem
                 if name in seen_names:
                     continue
@@ -725,12 +783,14 @@ def _descend_broken(node: Node, pkg: str, seen: set[str]) -> None:
         orphan_node["kind"] = "module"
         orphan_node["pattern"] = "pattern-3"
         node["violations"].append(
-            f'§3 orphan runnable module: `{child_pkg}` has main guard but '
+            f"§3 orphan runnable module: `{child_pkg}` has main guard but "
             f"parent `{pkg}` cannot register it (no valid commands())"
         )
         node["children"].append(orphan_node)
 
 
+# A single deterministic per-node audit; its linear shape is clearest unfactored.
+# pylint: disable=too-many-locals,too-many-statements
 def _audit_package(pkg: str, *, orphan: bool, seen: set[str]) -> Node:
     """Audit one package node and recurse into its children. Returns a Node dict."""
     node = _make_node(pkg, orphan=orphan)
@@ -743,7 +803,9 @@ def _audit_package(pkg: str, *, orphan: bool, seen: set[str]) -> Node:
     mod, import_err = _import_main(pkg)
     if mod is None:
         if import_err is None:
-            node["violations"].append("no __main__.py (not importable as `python -m ...`)")
+            node["violations"].append(
+                "no __main__.py (not importable as `python -m ...`)"
+            )
         else:
             node["violations"].append(
                 f"__main__.py exists but raised on import: {import_err} "
@@ -901,14 +963,17 @@ def _audit_package(pkg: str, *, orphan: bool, seen: set[str]) -> Node:
         try:
             source = Path(source_file).read_text(encoding="utf-8")
         except OSError as exc:
-            child_node["violations"].append(f"cannot read `{child_pkg}` source ({source_file}): {exc}")
+            child_node["violations"].append(
+                f"cannot read `{child_pkg}` source ({source_file}): {exc}"
+            )
             node["children"].append(child_node)
             continue
         if not _has_main_guard(source):
             child_node["kind"] = "module"
             child_node["pattern"] = "pattern-3"
             child_node["violations"].append(
-                f'`commands()` lists `{name}` but `{child_pkg}` has no `if __name__ == "__main__":` guard'
+                f"`commands()` lists `{name}` but `{child_pkg}` has no "
+                '`if __name__ == "__main__":` guard'
             )
             node["children"].append(child_node)
             continue
@@ -923,7 +988,8 @@ def _audit_package(pkg: str, *, orphan: bool, seen: set[str]) -> Node:
             continue
         child_pkg = f"{pkg}.{name}"
         node["violations"].append(
-            f"§3 orphan sub-package CLI: `{child_pkg}` has __main__.py but is not in parent's commands()"
+            f"§3 orphan sub-package CLI: `{child_pkg}` has __main__.py "
+            "but is not in parent's commands()"
         )
         node["children"].append(_audit_package(child_pkg, orphan=True, seen=seen))
     for name in disk_modules:
@@ -1033,7 +1099,7 @@ def _enrich(node: Node, parent_descriptions: dict[str, str] | None) -> None:
         # Drop the enrichment-internal field if it was set without raw_subs
         # (shouldn't happen in practice, but keep _enrich idempotent).
         node.pop("_subparser_args", None)
-    own_descriptions = {name: desc for name, desc in (node.get("commands") or [])}
+    own_descriptions = dict(node.get("commands") or [])
     for child in node.get("children") or []:
         _enrich(child, own_descriptions)
 
@@ -1088,15 +1154,21 @@ def _resolve_root(arg: str) -> str:
 
 
 def main(argv: list[str]) -> int:
+    """Parse argv, audit each root package, and return the process exit code."""
     parser = argparse.ArgumentParser(
         description="Audit the CLI tree rooted at one or more Python packages.",
     )
     parser.add_argument(
         "roots",
         nargs="+",
-        help="Dotted package names (e.g. `gfem`) or filesystem paths to the package directory (e.g. `src/gfem`).",
+        help=(
+            "Dotted package names (e.g. `gfem`) or filesystem paths "
+            "to the package directory (e.g. `src/gfem`)."
+        ),
     )
-    parser.add_argument("--json", action="store_true", help="Emit the audit tree as JSON.")
+    parser.add_argument(
+        "--json", action="store_true", help="Emit the audit tree as JSON."
+    )
     parser.add_argument(
         "--workers",
         type=int,

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Enforce arch-coherence/PYTHON.md §1: business modules must not import directly from a root package.
+"""Enforce arch-coherence/PYTHON.md §1: business modules must not import directly
+from a root package.
 
 Only `__init__.py` files may import from a root package (the environment-layer
-channel defined in arch-coherence/README.md "Environment layer exception"). Business modules that need inherited state read
-it via their own package's `__init__.py`. The forbidden pattern is a module
+channel defined in arch-coherence/README.md "Environment layer exception").
+Business modules that need inherited state read it via their own package's
+`__init__.py`. The forbidden pattern is a module
 reaching UP into the top-level of ITS OWN root package: a file whose tree is
 rooted at package R must not do `from R import ...` (unless it is `__init__.py`
 or `__main__.py`).
@@ -85,13 +87,16 @@ def _owning_root(path: Path, roots: set[str]) -> str | None:
 
 def _check(path: Path, pattern: re.Pattern[str]) -> list[tuple[int, str]]:
     violations: list[tuple[int, str]] = []
-    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for lineno, line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
         if pattern.match(line):
             violations.append((lineno, line.rstrip()))
     return violations
 
 
 def main(argv: list[str]) -> int:
+    """Scan the given files for forbidden upward imports; return an exit code."""
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--root", type=Path, default=Path.cwd())
     args, files = parser.parse_known_args(argv)

@@ -61,6 +61,7 @@ H2_RE = re.compile(r"^##\s+\S", re.MULTILINE)
 
 
 def find_repo_root(start: Path | None = None) -> Path:
+    """Return the nearest ancestor of `start` containing a `.git` directory."""
     start = start or Path.cwd()
     for p in [start, *start.parents]:
         if (p / ".git").exists():
@@ -158,6 +159,7 @@ def count_direct_loc(directory: Path) -> int:
 
 
 def has_nonexcluded_subdirs(directory: Path, exclude: frozenset[str]) -> bool:
+    """True if `directory` has at least one non-excluded, non-hidden subdirectory."""
     try:
         entries = list(directory.iterdir())
     except OSError:
@@ -172,6 +174,7 @@ def has_nonexcluded_subdirs(directory: Path, exclude: frozenset[str]) -> bool:
 
 
 def is_major(directory: Path, loc_threshold: int, exclude: frozenset[str]) -> bool:
+    """True if `directory` is a major subsystem: has subdirs or meets the LOC bar."""
     if has_nonexcluded_subdirs(directory, exclude):
         return True
     return count_direct_loc(directory) >= loc_threshold
@@ -239,17 +242,22 @@ def validate_doc(path: Path) -> str | None:
 
 
 class Findings:
+    """Accumulator for severity-tagged findings (errors and info notes)."""
+
     def __init__(self) -> None:
         self.entries: list[tuple[str, str]] = []
 
     def error(self, msg: str) -> None:
+        """Record an error-severity finding."""
         self.entries.append(("error", msg))
 
     def info(self, msg: str) -> None:
+        """Record an info-severity note."""
         self.entries.append(("info", msg))
 
     @property
     def error_count(self) -> int:
+        """Number of error-severity findings recorded."""
         return sum(1 for sev, _ in self.entries if sev == "error")
 
 
@@ -259,6 +267,7 @@ class Findings:
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
+    """Parse command-line arguments for the subsystem-docs check."""
     parser = argparse.ArgumentParser(
         description="Check every major subsystem in an import-linter layer owns README + CLAUDE."
     )
@@ -272,11 +281,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def load_config(pyproject: dict) -> tuple[int, frozenset[str]]:
-    cfg = (
-        pyproject.get("tool", {})
-        .get("racecar", {})
-        .get("subsystem-docs", {})
-    )
+    """Read the LOC threshold and exclude set from the subsystem-docs config."""
+    cfg = pyproject.get("tool", {}).get("racecar", {}).get("subsystem-docs", {})
     threshold = cfg.get("loc_threshold", DEFAULT_LOC_THRESHOLD)
     if not isinstance(threshold, int) or threshold <= 0:
         threshold = DEFAULT_LOC_THRESHOLD
@@ -290,6 +296,7 @@ def load_config(pyproject: dict) -> tuple[int, frozenset[str]]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Verify every major subsystem owns README + CLAUDE; return an exit code."""
     args = parse_args(argv if argv is not None else sys.argv[1:])
     f = Findings()
 
@@ -326,6 +333,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def emit(f: Findings) -> int:
+    """Print all findings and return 1 if any error was recorded, else 0."""
     for severity, msg in f.entries:
         print(f"check_subsystem_docs: {severity}: {msg}")
     if f.error_count == 0:

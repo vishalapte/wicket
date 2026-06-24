@@ -29,9 +29,10 @@ This script is the surface, not the gate. It is ADVISORY: exit 0 by default,
 
 Every output is a Finding ("should this live in api?"), never a Blocker.
 
-Pure stdlib (tomllib + ast). Mirrors check_upward_imports.py / check_packaging.py
-discovery: the library pyproject is found by shape detection. No-ops (exit 0) on a
-project with no verticals.
+Pure stdlib (tomllib + ast). Shape comes from check_packaging.detect_shape; the
+source-root resolution and package walk (`_src_roots` / `_top_packages` / `_dotted`)
+are local helpers below. The library pyproject is found by shape detection. No-ops
+(exit 0) on a project with no verticals.
 
 Usage (invoked by `make arch`):
     python scripts/check_face_orchestration.py [--root <dir>] [--threshold N] [--strict]
@@ -55,11 +56,12 @@ from check_packaging import detect_shape
 # more api calls in the same order across faces is the restatement signal.
 DEFAULT_THRESHOLD = 2
 
-# Canonical per-vertical role file names (FACES.md §2).
+# Canonical per-vertical role file names (FACES.md §2). A vertical is the lib+api
+# worker pair; __main__ and mcp are faces (a __main__ may stand alone as a CLI node).
 CANON_LIB = "lib"
 CANON_API = "api"
-CANON_MCP = "mcp"
 CANON_MAIN = "__main__"
+CANON_MCP = "mcp"
 FACE_NAMES = {CANON_MAIN, CANON_MCP}
 # Directories that are never verticals.
 NON_VERTICAL_DIRS = {"shared", "tests", "test", "migrations", "__pycache__"}
@@ -72,22 +74,25 @@ class Vertical:
     """One feature submodule and the roles racecar identified within it."""
 
     name: str
-    prefix: str                       # dotted package prefix, e.g. "athena.prices"
-    modules: dict[str, Path]          # short module name -> file path (in-vertical)
-    lib: str | None = None            # short module name of the lib role
-    api: str | None = None            # short module name of the api role
+    prefix: str  # dotted package prefix, e.g. "athena.prices"
+    modules: dict[str, Path]  # short module name -> file path (in-vertical)
+    lib: str | None = None  # short module name of the lib role
+    api: str | None = None  # short module name of the api role
     faces: list[str] = field(default_factory=list)  # short names of face modules
-    tier: str = "structural"          # how roles were identified: name|manifest|structural
+    tier: str = "structural"  # how roles were identified: name|manifest|structural
 
 
 @dataclass
 class Finding:
+    """A single face-orchestration violation: which vertical, which rule, why."""
+
     vertical: str
     rule: str
     message: str
 
 
-# --- pyproject + shape discovery (mirror check_packaging) --------------------
+# --- pyproject + shape discovery (shape via check_packaging.detect_shape;
+# --- source roots + package walk are the local helpers below) ----------------
 
 
 def _library_pyproject(root: Path) -> Path | None:
@@ -98,7 +103,16 @@ def _library_pyproject(root: Path) -> Path | None:
     return pyproject
 
 
+def _manifest(pyproject: Path) -> list[dict]:
+    """Return the `[[tool.racecar.faces.vertical]]` entries (may be empty)."""
+    data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    faces = data.get("tool", {}).get("racecar", {}).get("faces", {})
+    verticals = faces.get("vertical", [])
+    return [v for v in verticals if isinstance(v, dict)]
+
+
 def _src_roots(root: Path, shape_name: str) -> list[Path]:
+    """Directories under which top-level importable packages live, per shape."""
     roots: list[Path] = []
     if shape_name == "src":
         roots.append(root / "src")
@@ -112,31 +126,27 @@ def _src_roots(root: Path, shape_name: str) -> list[Path]:
     return [r for r in roots if r.is_dir()]
 
 
-def _manifest(pyproject: Path) -> list[dict]:
-    """Return the `[[tool.racecar.faces.vertical]]` entries (may be empty)."""
-    data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-    faces = data.get("tool", {}).get("racecar", {}).get("faces", {})
-    verticals = faces.get("vertical", [])
-    return [v for v in verticals if isinstance(v, dict)]
-
-
-# --- vertical discovery ------------------------------------------------------
-
-
 def _top_packages(src_roots: list[Path]) -> list[Path]:
     """Directories that are importable top-level packages (have __init__.py)."""
     pkgs: list[Path] = []
+    seen: set[Path] = set()
     for src_root in src_roots:
         for child in sorted(src_root.iterdir()):
+            if child in seen:
+                continue
             if child.is_dir() and (child / "__init__.py").is_file():
+                seen.add(child)
                 pkgs.append(child)
     return pkgs
 
 
 def _dotted(pkg_root: Path, directory: Path) -> str:
-    """Dotted module prefix of `directory` relative to its top package's parent."""
+    """Dotted module name of `directory` relative to its top package's parent."""
     rel = directory.relative_to(pkg_root.parent)
     return ".".join(rel.parts)
+
+
+# --- vertical discovery ------------------------------------------------------
 
 
 def _discover_verticals(src_roots: list[Path]) -> list[Vertical]:
@@ -156,13 +166,25 @@ def _discover_verticals(src_roots: list[Path]) -> list[Vertical]:
                 continue
             if not (directory / "__init__.py").is_file() and directory != pkg:
                 continue
-            py = {p.stem: p for p in sorted(directory.glob("*.py")) if p.stem != "__init__"}
-            has_role = any(name in py for name in (CANON_LIB, CANON_API, CANON_MCP, CANON_MAIN))
-            if not has_role:
+            py = {
+                p.stem: p
+                for p in sorted(directory.glob("*.py"))
+                if p.stem != "__init__"
+            }
+            has_worker = any(name in py for name in (CANON_LIB, CANON_API, CANON_MCP))
+            # A package whose ONLY role file is __main__.py (no co-located worker) is a
+            # CLI node, not a faces vertical: a CLI.md Pattern 1 discovery root that
+            # composes children, or a single-file tool. There is no lib->api structure to
+            # classify, so it is out of the faces detector's scope. A worker named other
+            # than lib/api/mcp still counts via the 2+-sibling-modules signal (FACES.md §3).
+            non_main_modules = [name for name in py if name != CANON_MAIN]
+            if not (has_worker or len(non_main_modules) >= 2):
                 continue
             seen.add(directory)
             verticals.append(
-                Vertical(name=directory.name, prefix=_dotted(pkg, directory), modules=py)
+                Vertical(
+                    name=directory.name, prefix=_dotted(pkg, directory), modules=py
+                )
             )
     return verticals
 
@@ -210,10 +232,15 @@ def _intra_imports(path: Path, prefix: str, members: set[str]) -> set[str]:
 
 def _graph(v: Vertical) -> dict[str, set[str]]:
     members = set(v.modules)
-    return {name: _intra_imports(path, v.prefix, members) for name, path in v.modules.items()}
+    return {
+        name: _intra_imports(path, v.prefix, members)
+        for name, path in v.modules.items()
+    }
 
 
-def _reachable(graph: dict[str, set[str]], src: str, dst: str, blocked: str | None) -> bool:
+def _reachable(
+    graph: dict[str, set[str]], src: str, dst: str, blocked: str | None
+) -> bool:
     """Can `dst` be reached from `src` following import edges, skipping `blocked`?"""
     if src == dst:
         return True
@@ -259,7 +286,7 @@ def _is_face(name: str, path: Path) -> bool:
 
 def _sink(graph: dict[str, set[str]], candidates: set[str]) -> str | None:
     """The in-vertical sink among `candidates`: imports no other member."""
-    sinks = [n for n in candidates if not (graph.get(n, set()) & set(graph))]
+    sinks = [n for n in candidates if not graph.get(n, set()) & set(graph)]
     return sinks[0] if len(sinks) == 1 else None
 
 
@@ -274,7 +301,9 @@ def _identify(v: Vertical, manifest_by_prefix: dict[str, dict]) -> list[Finding]
         v.tier = "manifest"
         v.lib = _short(entry.get("lib"), v.prefix)
         v.api = _short(entry.get("api"), v.prefix)
-        v.faces = [s for s in (_short(f, v.prefix) for f in entry.get("faces", [])) if s]
+        v.faces = [
+            s for s in (_short(f, v.prefix) for f in entry.get("faces", [])) if s
+        ]
     else:
         # Tier 1: canonical names.
         v.faces = sorted(n for n, p in v.modules.items() if _is_face(n, p))
@@ -296,10 +325,21 @@ def _identify(v: Vertical, manifest_by_prefix: dict[str, dict]) -> list[Finding]
         return findings  # no face: a plain library vertical, nothing to route.
 
     if v.lib is None:
+        # FD1: a top-level Pattern-1 pure-discovery root, whose sole face is a __main__
+        # that composes child verticals by name and reaches no in-vertical sibling,
+        # co-residing with a shared layer (auth/config/domains/...), is out of faces
+        # scope, not a defective vertical. The siblings are a shared layer the root does
+        # not route through, so there is no lib->api->face structure to classify.
+        # Suppress the finding for it (FACES.md §7 / FD1; advisory-only, never gating).
+        if v.faces == [CANON_MAIN] and not graph.get(CANON_MAIN):
+            return findings
         findings.append(
-            Finding(v.name, "non-classifiable",
-                    "no in-vertical lib sink found; declare [tool.racecar.faces] for "
-                    f"'{v.name}' or co-locate a lib.py")
+            Finding(
+                v.name,
+                "non-classifiable",
+                "no in-vertical lib sink found; declare [tool.racecar.faces] for "
+                f"'{v.name}' or co-locate a lib.py",
+            )
         )
         return findings
 
@@ -308,9 +348,12 @@ def _identify(v: Vertical, manifest_by_prefix: dict[str, dict]) -> list[Finding]
         bypassers = [f for f in v.faces if _reachable(graph, f, v.lib, blocked=v.api)]
         if bypassers and v.api != v.lib:
             findings.append(
-                Finding(v.name, "api-not-cut-vertex",
-                        f"declared api '{v.api}' is not the articulation point: face(s) "
-                        f"{bypassers} reach the lib '{v.lib}' without passing through it")
+                Finding(
+                    v.name,
+                    "api-not-cut-vertex",
+                    f"declared api '{v.api}' is not the articulation point: face(s) "
+                    f"{bypassers} reach the lib '{v.lib}' without passing through it",
+                )
             )
     else:
         findings.extend(_infer_api(v, graph))
@@ -331,14 +374,22 @@ def _infer_api(v: Vertical, graph: dict[str, set[str]]) -> list[Finding]:
         v.api = cut[0]
         return []
     if not cut:
-        return [Finding(
-            v.name, "non-classifiable",
-            f"faces {v.faces} reach the lib '{v.lib}' with no single mediating api "
-            "module; introduce an api.py or declare [tool.racecar.faces]")]
-    return [Finding(
-        v.name, "ambiguous-api",
-        f"multiple candidate api modules {cut} mediate faces->lib; declare the "
-        "intended one in [tool.racecar.faces]")]
+        return [
+            Finding(
+                v.name,
+                "non-classifiable",
+                f"faces {v.faces} reach the lib '{v.lib}' with no single mediating api "
+                "module; introduce an api.py or declare [tool.racecar.faces]",
+            )
+        ]
+    return [
+        Finding(
+            v.name,
+            "ambiguous-api",
+            f"multiple candidate api modules {cut} mediate faces->lib; declare the "
+            "intended one in [tool.racecar.faces]",
+        )
+    ]
 
 
 def _cut_vertices(v: Vertical, graph: dict[str, set[str]]) -> list[str]:
@@ -431,10 +482,14 @@ def _restated(verticals: list[Vertical], threshold: int) -> list[Finding]:
                 shared.setdefault(window, []).append(face)
         for window, faces in sorted(shared.items(), key=lambda x: (-len(x[0]), x[0])):
             if len(faces) >= 2:
-                findings.append(Finding(
-                    v.name, "restated-orchestration",
-                    f"api-call sequence [{' -> '.join(window)}] appears in faces "
-                    f"{faces}: one policy with two homes -- move it into api"))
+                findings.append(
+                    Finding(
+                        v.name,
+                        "restated-orchestration",
+                        f"api-call sequence [{' -> '.join(window)}] appears in faces "
+                        f"{faces}: one policy with two homes -- move it into api",
+                    )
+                )
     return findings
 
 
@@ -442,6 +497,7 @@ def _restated(verticals: list[Vertical], threshold: int) -> list[Finding]:
 
 
 def main(argv: list[str]) -> int:
+    """Validate each declared vertical's face orchestration; return an exit code."""
     parser = argparse.ArgumentParser(add_help=True)
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--threshold", type=int, default=DEFAULT_THRESHOLD)
@@ -480,7 +536,9 @@ def main(argv: list[str]) -> int:
         print("check_face_orchestration: OK (advisory)")
         return 0
 
-    print("check_face_orchestration: Findings (advisory; ask 'should this live in api?'):")
+    print(
+        "check_face_orchestration: Findings (advisory; ask 'should this live in api?'):"
+    )
     for f in findings:
         print(f"  - [{f.vertical}] {f.rule}: {f.message}")
     return 1 if args.strict else 0

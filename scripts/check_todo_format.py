@@ -58,12 +58,15 @@ FENCE_RE = re.compile(r"^\s*```")
 
 
 class Finding:
+    """A single TODO-format violation at a file path and line."""
+
     def __init__(self, rel: str, line: int, message: str) -> None:
         self.rel = rel
         self.line = line
         self.message = message
 
     def render(self) -> str:
+        """Render the finding as a `  path:line  message` report line."""
         return f"  {self.rel}:{self.line}  {self.message}"
 
 
@@ -119,6 +122,7 @@ def _todo_section_ranges(lines: list[str], mask: list[bool]) -> list[tuple[int, 
 
 
 def check_file(path: Path) -> list[Finding]:
+    """Validate every TODO item in `path` against the format schema."""
     rel = path.relative_to(REPO_ROOT).as_posix()
     lines = path.read_text(encoding="utf-8").splitlines()
     mask = _code_mask(lines)
@@ -140,28 +144,62 @@ def check_file(path: Path) -> list[Finding]:
             lineno = head + 1
             if item_id in seen_ids:
                 findings.append(
-                    Finding(rel, lineno, f"duplicate TODO id {item_id!r} (also at line {seen_ids[item_id]})")
+                    Finding(
+                        rel,
+                        lineno,
+                        f"duplicate TODO id {item_id!r} "
+                        f"(also at line {seen_ids[item_id]})",
+                    )
                 )
             else:
                 seen_ids[item_id] = lineno
             body_end = item_heads[idx + 1] if idx + 1 < len(item_heads) else end
             body = [lines[j].strip() for j in range(head + 1, body_end) if not mask[j]]
             if not any(PRIO_RE.match(b) for b in body):
-                findings.append(Finding(rel, lineno, f"{item_id}: missing `Prio:` field (P0..P3)"))
+                findings.append(
+                    Finding(rel, lineno, f"{item_id}: missing `Prio:` field (P0..P3)")
+                )
             if not any(DEPENDS_RE.match(b) for b in body):
-                findings.append(Finding(rel, lineno, f"{item_id}: missing `Depends:` field (ids / none / LAST)"))
-            updated = next((UPDATED_RE.match(b) for b in body if UPDATED_RE.match(b)), None)
+                findings.append(
+                    Finding(
+                        rel,
+                        lineno,
+                        f"{item_id}: missing `Depends:` field (ids / none / LAST)",
+                    )
+                )
+            updated = next(
+                (UPDATED_RE.match(b) for b in body if UPDATED_RE.match(b)), None
+            )
             if updated is None:
                 if any(UPDATED_KEY_RE.match(b) for b in body):
-                    findings.append(Finding(rel, lineno, f"{item_id}: `Updated:` is not an ISO date (YYYY-MM-DD)"))
+                    findings.append(
+                        Finding(
+                            rel,
+                            lineno,
+                            f"{item_id}: `Updated:` is not an ISO date (YYYY-MM-DD)",
+                        )
+                    )
                 else:
-                    findings.append(Finding(rel, lineno, f"{item_id}: missing `Updated:` field (YYYY-MM-DD)"))
+                    findings.append(
+                        Finding(
+                            rel,
+                            lineno,
+                            f"{item_id}: missing `Updated:` field (YYYY-MM-DD)",
+                        )
+                    )
             elif not _iso_date_ok(updated.group(1)):
-                findings.append(Finding(rel, lineno, f"{item_id}: `Updated:` {updated.group(1)} is not a valid date"))
+                findings.append(
+                    Finding(
+                        rel,
+                        lineno,
+                        f"{item_id}: `Updated:` {updated.group(1)} is not a valid date",
+                    )
+                )
     return findings
 
 
 def main() -> int:
+    """Validate the root TODO index and every markdown TODO; return an exit code."""
     todo = REPO_ROOT / "TODO.md"
     if not todo.is_file():
         print("todo-format: no root TODO.md — nothing to validate")
@@ -173,11 +211,19 @@ def main() -> int:
     root_lines = todo.read_text(encoding="utf-8").splitlines()
     root_mask = _code_mask(root_lines)
     has_index = any(
-        not root_mask[i] and H2_RE.match(ln) and H2_RE.match(ln).group(1).strip().lower() == "todo"
+        not root_mask[i]
+        and H2_RE.match(ln)
+        and H2_RE.match(ln).group(1).strip().lower() == "todo"
         for i, ln in enumerate(root_lines)
     )
     if not has_index:
-        findings.append(Finding("TODO.md", 1, "missing `## TODO` index heading (TODO_FORMAT.md source schema)"))
+        findings.append(
+            Finding(
+                "TODO.md",
+                1,
+                "missing `## TODO` index heading (TODO_FORMAT.md source schema)",
+            )
+        )
 
     for path in _markdown_files():
         findings.extend(check_file(path))
