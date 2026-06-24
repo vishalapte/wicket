@@ -230,9 +230,9 @@ def test_sweep_years_incremental_full_and_explicit(tmp_path: Path) -> None:
     now = datetime.now(timezone.utc).year
 
     # incremental default: latest shard year through the current UTC year
-    assert catalog_api._sweep_years(
-        store, catalog_api.CatalogOptions()
-    ) == list(range(2025, now + 1))
+    assert catalog_api._sweep_years(store, catalog_api.CatalogOptions()) == list(
+        range(2025, now + 1)
+    )
     # --full forces a complete sweep (None lets the worker derive the range)
     assert (
         catalog_api._sweep_years(store, catalog_api.CatalogOptions(full=True)) is None
