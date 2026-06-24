@@ -9,7 +9,7 @@ repos:
       # Both use --settings-file/--config to match `make fmt` exactly.
       - id: isort
         name: isort
-        entry: bash -c 'CONF=$(grep -E "^LIB_PYPROJECT[[:space:]]*[?:!]?=" Makefile | head -1 | sed "s/.*=[[:space:]]*//;s/[[:space:]]*//"); python -m isort --settings-file "$CONF" "$@"' --
+        entry: bash -c 'CONF=$(make -s print-LIB_PYPROJECT); python -m isort --settings-file "$CONF" "$@"' --
         language: python
         additional_dependencies: [isort==5.13.2]
         types: [python]
@@ -17,22 +17,32 @@ repos:
 
       - id: black
         name: black
-        entry: bash -c 'CONF=$(grep -E "^LIB_PYPROJECT[[:space:]]*[?:!]?=" Makefile | head -1 | sed "s/.*=[[:space:]]*//;s/[[:space:]]*//"); python -m black --config "$CONF" "$@"' --
+        entry: bash -c 'CONF=$(make -s print-LIB_PYPROJECT); python -m black --config "$CONF" "$@"' --
         language: python
         additional_dependencies: [black==24.10.0]
         types: [python]
         exclude: '^scripts/'
 
+      # djhtml reindents Django/Jinja template tags. types: [html] scopes it so it
+      # only fires when HTML is staged — a no-op in repos without templates. Mirrors
+      # `make fmt`'s djhtml step. Pin via `pre-commit autoupdate` once adopted.
+      - id: djhtml
+        name: djhtml
+        entry: djhtml
+        language: python
+        additional_dependencies: [djhtml]
+        types: [html]
+
       - id: import-linter
         name: import-linter
-        entry: bash -c 'VENV=; for d in .venv venv ../venv; do [ -d "$d" ] && VENV=$d && break; done; export PATH="${VENV:+$VENV/bin:}$PATH"; CONF=$(grep -E "^LIB_PYPROJECT[[:space:]]*[?:!]?=" Makefile | head -1 | sed "s/.*=[[:space:]]*//;s/[[:space:]]*//"); DJAPP=$(grep -E "^DJAPP[[:space:]]*[?:!]?=" Makefile | head -1 | sed "s/.*=[[:space:]]*//;s/[[:space:]]*//"); export PYTHONPATH="${DJAPP:+$DJAPP:}$PYTHONPATH"; lint-imports --config "$CONF"'
+        entry: bash -c 'VENV=; for d in .venv venv ../venv; do [ -d "$d" ] && VENV=$d && break; done; export PATH="${VENV:+$VENV/bin:}$PATH"; CONF=$(make -s print-LIB_PYPROJECT); DJAPP=$(make -s print-DJAPP); export PYTHONPATH="${DJAPP:+$DJAPP:}$PYTHONPATH"; lint-imports --config "$CONF"'
         language: system
         pass_filenames: false
         always_run: true
 
       - id: validate-pyproject
         name: validate library pyproject.toml
-        entry: bash -c 'TOML=$(grep -E "^LIB_PYPROJECT[[:space:]]*[?:!]?=" Makefile | head -1 | sed "s/.*=[[:space:]]*//;s/[[:space:]]*//"); validate-pyproject "$TOML"'
+        entry: bash -c 'TOML=$(make -s print-LIB_PYPROJECT); validate-pyproject "$TOML"'
         language: python
         additional_dependencies: [validate-pyproject]
         pass_filenames: false
@@ -55,13 +65,6 @@ repos:
       - id: todo-format
         name: shared/TODO_FORMAT.md — TODO item schema (id / Prio / Depends / Updated)
         entry: python scripts/check_todo_format.py
-        language: python
-        pass_filenames: false
-        always_run: true
-
-      - id: claude-md-shape
-        name: doc-coherence/README.md — root CLAUDE.md carries the four canonical sections
-        entry: python scripts/check_claude_shape.py
         language: python
         pass_filenames: false
         always_run: true

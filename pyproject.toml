@@ -33,7 +33,6 @@ dev = [
     "pytest-cov",
     "pip-audit",
     "import-linter",
-    "pip-tools",
     "pre-commit",
     "pyyaml",
     "validate-pyproject",
@@ -153,11 +152,3 @@ layers = [
   "wicket.auth | wicket.domains | wicket.message | wicket.manifest",
   "wicket.config",
 ]
-
-# Declared divergences from racecar base (racecar-upgrade). The record of intent
-# so re-porting is deterministic; the project README/CLAUDE point here, not a
-# second copy.
-[[tool.racecar.overrides]]
-target = ".pre-commit-config.yaml"
-what = "omits the djhtml pre-commit hook from templates/classic"
-why = "non-Django, stdlib-only; no HTML templates to reindent"
