@@ -35,7 +35,7 @@ repos:
 
       - id: import-linter
         name: import-linter
-        entry: bash -c 'VENV=; for d in .venv venv ../venv; do [ -d "$d" ] && VENV=$d && break; done; export PATH="${VENV:+$VENV/bin:}$PATH"; CONF=$(make -s print-LIB_PYPROJECT); DJAPP=$(make -s print-DJAPP); export PYTHONPATH="${DJAPP:+$DJAPP:}$PYTHONPATH"; lint-imports --config "$CONF"'
+        entry: bash -c 'VENV=; for d in .venv venv ../venv; do [ -d "$d" ] && VENV=$d && break; done; export PATH="${VENV:+$VENV/bin:}$PATH"; CONF=$(make -s print-LIB_PYPROJECT); SERVER=$(make -s print-SERVER); export PYTHONPATH="${SERVER:+$SERVER:}$PYTHONPATH"; lint-imports --config "$CONF"'
         language: system
         pass_filenames: false
         always_run: true
@@ -82,3 +82,29 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+
+      - id: prose-punctuation
+        name: shared/VOICE.md — no em-dashes / en-dashes / `--` in prose (Markdown, Python docstrings)
+        entry: python scripts/check_prose_punctuation.py
+        language: python
+        types_or: [markdown, python]
+        # scripts/ is vendored racecar; its own docstrings carry em-dashes, so this
+        # hook must skip it, exactly as isort/black do and as the pylint MASTER
+        # ignore-paths already does. Divergence from templates/classic kept on
+        # purpose; escalated so racecar adds the same exclude (see the finding).
+        exclude: '^scripts/'
+
+      # The commit-msg-stage hooks below need `pre-commit install --hook-type commit-msg`
+      # (racecar.mk's `install-dev` installs both hook types). They read the commit
+      # message, which only exists at commit-msg time.
+      - id: version-bump-gate
+        name: shared/COMMITS.md — a bumpable commit type must bump the version home
+        entry: python scripts/check_version_bump.py
+        language: python
+        stages: [commit-msg]
+
+      - id: prose-punctuation-commit-msg
+        name: shared/VOICE.md — no em-dashes / en-dashes / `--` in the commit message
+        entry: python scripts/check_prose_punctuation.py --commit-msg
+        language: python
+        stages: [commit-msg]

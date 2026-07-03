@@ -22,7 +22,7 @@ CANON_DEV_TOOLS = [
 # Django shapes carry a second PEP 735 group, [dependency-groups].django. Two
 # tools are racecar-canonical there (PACKAGING.md §6): djhtml (template formatter)
 # and pylint-django (the pylint plugin that teaches the linter the ORM, loaded by
-# racecar.mk's `lint` target on the djapp). The rest of that group is project-
+# racecar.mk's `lint` target on the server). The rest of that group is project-
 # choice. Asserted only when the repo is Django.
 CANON_DJANGO_TOOLS = ["djhtml", "pylint-django"]
 
@@ -44,6 +44,7 @@ CANON_PYLINT_REQUIRED_DISABLE = {
     "deprecated-pragma",
     "use-symbolic-message-instead",
     "duplicate-code",
+    "too-few-public-methods",
     "use-implicit-booleaness-not-comparison-to-string",
     "use-implicit-booleaness-not-comparison-to-zero",
     "missing-module-docstring",
@@ -55,7 +56,7 @@ CANON_PYLINT_FORBIDDEN_DISABLE = {
 }
 # Standalone pylint config files — forbidden; config lives in the library
 # pyproject [tool.pylint] (PACKAGING.md, "pylint canon" + §7).
-FORBIDDEN_PYLINTRC = [".pylintrc", "pylintrc", "pypkg/src/.pylintrc", "djapp/.pylintrc"]
+FORBIDDEN_PYLINTRC = [".pylintrc", "pylintrc", "src/.pylintrc", "server/.pylintrc"]
 
 # Forbidden top-level [tool.<key>] blocks (per §1 §2).
 FORBIDDEN_TOOL_KEYS = {"uv", "ruff", "poetry", "pdm"}
@@ -74,6 +75,13 @@ REQUIRED_PRECOMMIT_HOOKS = {
     "todo-format",
     "file-placement",
 }
+
+# Make variables retired by a canon rename. A repo-owned scaffold file is not content-synced,
+# so a stale reference survives a racecar upgrade: the import-linter hook body calls
+# `make -s print-<VAR>`, and a retired <VAR> resolves to empty, silently dropping the server
+# root from PYTHONPATH (this is exactly how gfem's djapp->server migration left a broken hook).
+# Map each retired name to its current replacement; the precommit check flags any occurrence.
+RETIRED_MAKE_VARS = {"DJAPP": "SERVER"}
 
 REQUIRED_MAKEFILE_TARGETS = {
     "help",

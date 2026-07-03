@@ -23,7 +23,7 @@ The root package name(s) are read from the library pyproject's
 `[tool.importlinter]` table — `root_packages` (a list) if present, else the
 singular `root_package` (a string). The library pyproject is discovered by the
 same shape detection as check_packaging.py: the root `pyproject.toml` for the
-`src`/`djapp` shapes, or `pypkg/src/pyproject.toml` for the `pypkg`/`pypkg+djapp`
+`src`/`server` shapes, or `src/pyproject.toml` for the `src+server`
 shapes.
 
 Usage (invoked by pre-commit):
@@ -73,8 +73,8 @@ def _owning_root(path: Path, roots: set[str]) -> str | None:
     """Return the configured root package whose tree contains `path`.
 
     The owning root is the configured root name that appears as a path segment
-    identifying the file's package tree (e.g. `pypkg/src/xenocrates/ib/x.py` is
-    owned by `xenocrates`; `djapp/apps/accounts/forms.py` by `apps`). Returns
+    identifying the file's package tree (e.g. `src/xenocrates/ib/x.py` is
+    owned by `xenocrates`; `server/apps/accounts/forms.py` by `apps`). Returns
     None if no configured root is on the path. If more than one configured root
     is on the path (nested), the OUTERMOST is the owner — that is the top-level
     package whose top-level `from <root> import ...` would be the upward reach.

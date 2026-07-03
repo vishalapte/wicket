@@ -11,7 +11,7 @@ Discovery:
   - `pyproject.toml` `[tool.importlinter].contracts` is parsed to collect every
     dotted package referenced as a container, layer, importer, imported, module,
     or source/forbidden module. Each dotted package is resolved to a directory
-    by checking `<root>/<pkg>`, `<root>/src/<pkg>`, `<root>/pypkg/src/<pkg>`.
+    by checking `<root>/<pkg>`, `<root>/src/<pkg>`, `<root>/src/<pkg>`.
   - From each resolved root, walk recursively. A directory is "major" iff it
     contains at least one non-excluded subdirectory OR its direct-child source
     files sum to `loc_threshold` non-blank lines (default 1000).
@@ -73,11 +73,9 @@ def read_pyproject(repo_root: Path) -> dict:
     """Locate and parse the project's pyproject via the shared two-home probe.
 
     Delegates to :func:`check_docs.load_project_pyproject`, which reads the root
-    ``pyproject.toml`` (shapes ``src`` / ``djapp``) or, failing that, the library
-    pyproject at ``pypkg/src/pyproject.toml`` (shapes ``pypkg`` /
-    ``pypkg+djapp``). This makes the ``[tool.importlinter]`` contracts and
-    ``[tool.racecar.subsystem-docs]`` config discoverable for all shapes, not
-    just the single-root ones.
+    ``pyproject.toml`` (the library pyproject in every shape). This makes the
+    ``[tool.importlinter]`` contracts and ``[tool.racecar.subsystem-docs]`` config
+    discoverable for all shapes.
     """
     return load_project_pyproject(repo_root)
 
@@ -126,7 +124,7 @@ def resolve_package_dirs(repo_root: Path, package: str) -> list[Path]:
     listed twice in different shapes returns both (rare, harmless).
     """
     parts = package.split(".")
-    rels = [Path(*parts), Path("src", *parts), Path("pypkg", "src", *parts)]
+    rels = [Path(*parts), Path("src", *parts), Path("server", *parts)]
     return [repo_root / rel for rel in rels if (repo_root / rel).is_dir()]
 
 

@@ -19,15 +19,16 @@ from pathlib import Path
 
 from ._changelog import check_changelog
 from ._common import _rel_for_audit
-from ._djapp import (
-    check_djapp_importlinter_coverage,
-    check_djapp_isort_coverage,
-    check_djapp_pyproject,
+from ._server import (
+    check_server_importlinter_coverage,
+    check_server_isort_coverage,
+    check_server_pyproject,
 )
 from ._findings import Finding
 from ._forbidden import check_forbidden_lockfiles, check_forbidden_pylintrc
 from ._gitignore import check_gitignore
 from ._makefile import check_makefile
+from ._optin import check_optin
 from ._precommit import check_precommit
 from ._pyproject import check_library_pyproject
 from ._requirements import check_requirements
@@ -38,15 +39,16 @@ __all__ = [
     "Finding",
     "Shape",
     "check_changelog",
-    "check_djapp_importlinter_coverage",
-    "check_djapp_isort_coverage",
-    "check_djapp_pyproject",
+    "check_server_importlinter_coverage",
+    "check_server_isort_coverage",
+    "check_server_pyproject",
     "check_forbidden_lockfiles",
     "check_forbidden_pylintrc",
     "check_gitignore",
     "check_legacy_version_file",
     "check_library_pyproject",
     "check_makefile",
+    "check_optin",
     "check_precommit",
     "check_requirements",
     "detect_shape",
@@ -59,7 +61,7 @@ def run_all(root: Path) -> list[Finding]:
 
     The audits are independent except for one shared fact: the library pyproject
     is parsed once (by `check_library_pyproject`), and its parsed data and its
-    `[project].version` flag feed two later audits (the djapp coverage checks and
+    `[project].version` flag feed two later audits (the server coverage checks and
     the legacy-VERSION-file gate). That fact is a pair of local variables, not a
     framework. The call order is fixed because audit output is presented in it.
     """
@@ -69,7 +71,7 @@ def run_all(root: Path) -> list[Finding]:
         return findings
 
     # The library pyproject, parsed once; its data and version flag feed the
-    # djapp-coverage and legacy-VERSION audits below. A pure djapp shape has none.
+    # server-coverage and legacy-VERSION audits below. A pure server shape has none.
     lib_data: dict | None = None
     has_canonical_version = False
     if shape.library_pyproject is not None:
@@ -80,23 +82,23 @@ def run_all(root: Path) -> list[Finding]:
             project.get("version")
         )
 
-    # pypkg+djapp: isort and import-linter must also cover the djapp tree.
-    if shape.name == "pypkg+djapp" and shape.library_pyproject is not None:
+    # src+server: isort and import-linter must also cover the server tree.
+    if shape.name == "src+server" and shape.library_pyproject is not None:
         lib_label = _rel_for_audit(root, shape.library_pyproject)
-        findings += check_djapp_isort_coverage(root, lib_data, lib_label)
-        findings += check_djapp_importlinter_coverage(root, lib_data, lib_label)
+        findings += check_server_isort_coverage(root, lib_data, lib_label)
+        findings += check_server_importlinter_coverage(root, lib_data, lib_label)
 
-    # The djapp pyproject: validate it when present, or flag its absence for
-    # pypkg+djapp (where the djapp runtime deps would otherwise have no home).
-    if shape.djapp_pyproject is not None:
-        findings += check_djapp_pyproject(root, shape.djapp_pyproject)
-    elif shape.name == "pypkg+djapp":
+    # The server pyproject: validate it when present, or flag its absence for
+    # src+server (where the server runtime deps would otherwise have no home).
+    if shape.server_pyproject is not None:
+        findings += check_server_pyproject(root, shape.server_pyproject)
+    elif shape.name == "src+server":
         findings.append(
             Finding(
                 "Blocker",
-                "djapp/pyproject.toml",
+                "server/pyproject.toml",
                 "missing-file",
-                "required for shape pypkg+djapp: PEP 735 "
+                "required for shape src+server: PEP 735 "
                 "[dependency-groups].runtime, no [project]",
             )
         )
@@ -112,4 +114,5 @@ def run_all(root: Path) -> list[Finding]:
     findings += check_makefile(root)
     findings += check_precommit(root)
     findings += check_changelog(root)
+    findings += check_optin(root)
     return findings

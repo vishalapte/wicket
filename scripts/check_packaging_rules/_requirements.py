@@ -39,20 +39,16 @@ def check_requirements(root: Path, shape: Shape) -> list[Finding]:
     real pip-compile or pip-freeze output -- not an empty placeholder.
 
     Checks the standard lockfile locations for each shape:
-      src/djapp:    requirements.txt at root
-      pypkg:        requirements.txt at pypkg/src/
-      pypkg+djapp:  requirements.txt at pypkg/src/ AND djapp/
+      src:         requirements.txt at root
+      src+server:  requirements.txt at root AND server/
+      server:      requirements.txt at root
 
     Each path: if present, validated; if absent, no finding.
     """
     findings: list[Finding] = []
-    candidates: list[Path] = []
-    if shape.name in ("src", "djapp"):
-        candidates.append(root / "requirements.txt")
-    if shape.name in ("pypkg", "pypkg+djapp"):
-        candidates.append(root / "pypkg" / "src" / "requirements.txt")
-    if shape.name == "pypkg+djapp":
-        candidates.append(root / "djapp" / "requirements.txt")
+    candidates: list[Path] = [root / "requirements.txt"]  # the library lockfile, all shapes
+    if shape.name == "src+server":
+        candidates.append(root / "server" / "requirements.txt")
     for path in candidates:
         if not path.exists():
             continue  # optional; absence is fine

@@ -57,26 +57,18 @@ def _find_repo_root() -> Path:
 REPO_ROOT = _find_repo_root()
 
 
-# Where the project's pyproject.toml lives, in lookup order. Shapes `src` and
-# `djapp` keep it at the repo root; shapes `pypkg` and `pypkg+djapp` have no
-# root pyproject and put the library pyproject at `pypkg/src/pyproject.toml`.
-# First existing file wins. This is a minimal, self-contained probe of the two
-# known homes — not full shape detection (that lives in arch-coherence's
-# check_packaging.py, which check_docs deliberately does not import: the two
-# scripts sit in different lens directories in racecar's own tree, so the
-# cross-lens import would not resolve when check_docs runs there).
-PYPROJECT_CANDIDATES = ("pyproject.toml", "pypkg/src/pyproject.toml")
+# The library pyproject.toml lives at the repo root in every shape (src,
+# src+server, server) — see arch-coherence/PACKAGING.md §"Scope". check_docs does
+# not import check_packaging's detect_shape: the two sit in different lens
+# directories in racecar's own tree, so the cross-lens import would not resolve.
+PYPROJECT_CANDIDATES = ("pyproject.toml",)
 
 
 def project_pyproject_path(repo_root: Path | None = None) -> Path | None:
-    """Return the project's pyproject.toml path, or None if neither home exists.
+    """Return the project's root pyproject.toml path, or None if it does not exist.
 
-    Probes the two known homes in :data:`PYPROJECT_CANDIDATES` order: the repo
-    root (shapes ``src`` / ``djapp``), else ``pypkg/src/pyproject.toml`` (shapes
-    ``pypkg`` / ``pypkg+djapp``). First existing file wins.
-
-    Shared, reusable across the doc-coherence checkers (and importable by
-    sibling scripts) so the two-home probe lives in exactly one place.
+    The library pyproject is at the repo root in every shape. Shared, reusable
+    across the doc-coherence checkers (and importable by sibling scripts).
     """
     root = repo_root if repo_root is not None else REPO_ROOT
     for candidate in PYPROJECT_CANDIDATES:
@@ -107,9 +99,8 @@ def ignore_patterns(repo_root: Path | None = None) -> tuple[re.Pattern[str], ...
     Honors ``[tool.pylint.MASTER].ignore-paths`` in the project's
     ``pyproject.toml`` so the script doesn't drown the report in vendored
     third-party drift the project has already declared out-of-scope. Reads the
-    root ``pyproject.toml`` if present, else falls back to the library pyproject
-    at ``pypkg/src/pyproject.toml`` (shapes ``pypkg`` / ``pypkg+djapp``) via the
-    shared two-home probe. No pyproject / no key -> empty tuple.
+    root ``pyproject.toml`` (the library pyproject in every shape). No
+    pyproject / no key -> empty tuple.
 
     Shared, reusable across the doc-coherence checkers so the ignore-paths
     reader lives in exactly one place.

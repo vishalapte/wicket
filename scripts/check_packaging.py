@@ -4,14 +4,13 @@ See arch-coherence/PACKAGING.md for the canon this script enforces.
 
 Shape detection (per PACKAGING.md §"Scope"):
 
-    src           root pyproject.toml + src/<pkg>/
-    pypkg         pypkg/src/pyproject.toml (no djapp/)
-    pypkg+djapp   pypkg/src/pyproject.toml + djapp/pyproject.toml
-    djapp         root pyproject.toml (no pypkg/), djapp/manage.py present
+    src           root pyproject.toml + src/<pkg>/ (no server/)
+    src+server   root pyproject.toml + src/<pkg>/ + server/manage.py
+    server         root pyproject.toml + server/manage.py (standalone Django, no src/)
 
 Each shape has a "library pyproject" (the one with [project], canonical
-[tool.*] configs, [dependency-groups].dev) and -- for pypkg+djapp -- a
-"djapp pyproject" (PEP 735 [dependency-groups].runtime only, no [project]).
+[tool.*] configs, [dependency-groups].dev) and -- for src+server -- a
+"server pyproject" (PEP 735 [dependency-groups].runtime only, no [project]).
 
 Findings have two severities:
 
@@ -38,7 +37,7 @@ from pathlib import Path
 # The audits live in the sibling check_packaging_rules package; this file is the
 # thin runnable entry. The public names are re-exported here (see __all__) so
 # importers that do `from check_packaging import detect_shape`
-# (check_upward_imports.py, check_face_orchestration.py, and the tests) keep working.
+# (check_upward_imports.py, check_surface_orchestration.py, and the tests) keep working.
 from check_packaging_rules import Finding, Shape, detect_shape, run_all
 
 # detect_shape / Shape / Finding are imported solely to re-export them; run_all is

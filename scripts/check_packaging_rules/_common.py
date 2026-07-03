@@ -41,3 +41,16 @@ def _dist_name(requirement: str) -> str:
     without tripping over version specifiers, extras, or markers.
     """
     return re.split(r"[<>=!~;\[ ]", requirement, maxsplit=1)[0].strip().lower()
+
+
+def _is_type_stub(name: str) -> bool:
+    """Whether a distribution name is a type-stub package, which a project may append to
+    the dev group without a standards change (PACKAGING.md §6).
+
+    Type stubs are library-specific (you only want them if you use the library they
+    describe), so they cannot live in a single frozen tool list. Two naming conventions,
+    both matched on the bare name from ``_dist_name`` (lowercased): ``<pkg>-stubs`` (PEP
+    561 stub-only distributions, e.g. ``pandas-stubs``) and ``types-<pkg>`` (typeshed
+    third-party stubs, e.g. ``types-requests``).
+    """
+    return name.endswith("-stubs") or name.startswith("types-")
