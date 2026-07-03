@@ -71,6 +71,7 @@ disable = [
     "duplicate-code",  # R0801: argparse / pydantic / dataclass boilerplate
     "use-implicit-booleaness-not-comparison-to-string",
     "use-implicit-booleaness-not-comparison-to-zero",
+    "too-few-public-methods",  # R0903: pydantic models, config / exception classes, middleware
     # module docstrings — covered by the subsystem's README / DESIGN / SYSTEM / CLAUDE doc
     "missing-module-docstring",
 ]
