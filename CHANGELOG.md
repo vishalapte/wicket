@@ -6,7 +6,20 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+## 0.2.0 - 2026-07-02
+
 ### Added
+- **`wicket ingest`** (`wicket-ingest` / `python -m wicket.ingest`): a fourth
+  verb that files a flat local folder of `.eml` (a desktop-client drag-export)
+  into the same year-sharded manifest + archive, for a mailbox wicket cannot
+  reach over IMAP (e.g. Microsoft 365 with basic-auth IMAP disabled). Offline —
+  no IMAP, no credentials. **Additive and non-destructive:** a message already
+  archived (by its portable `Message-ID`) is left untouched, only new keys are
+  filed, and nothing is ever deleted, so pruning the source folder cannot prune
+  the archive. Idempotent. Threads are reconstructed from headers (augmented by
+  the Outlook `Thread-Index`) and each message files under its counterparty
+  domain via `reconcile.compute_domain`. Registered in the root `commands()` and
+  the `[tool.importlinter]` layers contract (now four verbs).
 - Per-verb api functions: `catalog`, `fetch`, and `report` (plus `senders` /
   `addresses`) drive the verbs as a library, not only over the CLI. Each verb
   co-locates a thin CLI face over an `api` orchestration module over its worker;
@@ -37,6 +50,10 @@ All notable changes to this project are documented here, following
   optional `domain-aliases.json`); data under `~/mail/<account>/`
   (`manifest/YYYY.jsonl`, `archive/<domain>/YYYY-MM/`). The security model stays
   in `src/wicket/README.md`; the root points to it rather than restating it.
+- Root `README.md` now documents all four verbs: `wicket-ingest` added to the
+  command table, the CLI reference (every flag, verified against `--help`), the
+  getting-started flow, the library example, and the Providers section (the
+  offline path when a mailbox can't be reached over IMAP).
 
 ## [0.1.0]
 

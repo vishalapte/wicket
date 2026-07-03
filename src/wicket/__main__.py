@@ -11,6 +11,7 @@ def commands() -> list[tuple[str, str]]:
         ("catalog", "Observe the mailbox into the year-sharded manifest"),
         ("fetch", "Download .eml for matching threads, filed by sender domain"),
         ("report", "Read-only reports over the manifest (senders, addresses)"),
+        ("ingest", "Additively file a local .eml folder into the manifest + archive"),
     ]
 
 

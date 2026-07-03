@@ -36,13 +36,24 @@ wicket-fetch --account you@gmail.com --domains chase.com,amazon.com
 wicket-report --account you@gmail.com --senders
 ```
 
-Add `--dry-run` to `catalog` or `fetch` to preview without writing. Once a single
-account exists under `~/mail`, `--account` is optional (or set `$WICKET_ACCOUNT`).
+Add `--dry-run` to `catalog`, `fetch`, or `ingest` to preview without writing.
+Once a single account exists under `~/mail`, `--account` is optional (or set
+`$WICKET_ACCOUNT`).
+
+For a mailbox wicket **can't** reach over IMAP (e.g. Microsoft 365 with
+basic-auth IMAP disabled), drag-export the messages to `.eml` from your desktop
+client and file them into the same manifest + archive offline:
+
+```bash
+# 4. Ingest a local folder of .eml into ~/mail/<account>/, additively (no IMAP).
+wicket-ingest --src ~/Downloads/Outlook --account you@work.com
+```
 
 ## Commands
 
-Three verbs over one year-sharded manifest. Each ships as a console script
-(`wicket-<verb>`) and an equivalent module (`python -m wicket.<verb>`);
+Four verbs over one year-sharded manifest: three that speak to the mailbox over
+IMAP, and `ingest` that files a local export offline. Each ships as a console
+script (`wicket-<verb>`) and an equivalent module (`python -m wicket.<verb>`);
 `python -m wicket` lists them.
 
 | Verb | What it does |
@@ -50,6 +61,7 @@ Three verbs over one year-sharded manifest. Each ships as a console script
 | `wicket-catalog` | Observe the mailbox (headers only) into the manifest, recording **what exists**. |
 | `wicket-fetch` | Download full `.eml` for matching threads, filed by sender domain, recording **what is held**. |
 | `wicket-report` | Read-only summaries over the manifest (top senders, every address). No IMAP. |
+| `wicket-ingest` | File a local folder of `.eml` (a desktop-client drag-export) into the manifest + archive, **additively**. Offline, for mailboxes wicket can't reach over IMAP. Never deletes. |
 
 Each message's state is two booleans on its manifest row, `deleted` and
 `downloaded`. The design is recorded in
@@ -101,6 +113,22 @@ With no flag, prints a one-screen summary.
 | `--addresses` | Every distinct address seen in From or To, sorted. |
 | `--account ACCOUNT` | Scopes the manifest store. Required if `$WICKET_ACCOUNT` is unset. |
 
+**`wicket-ingest`** files a flat folder of `.eml` into
+`~/mail/<account>/{manifest,archive}/`, for a mailbox wicket can't reach over
+IMAP. No IMAP, no credentials, no prompt. **Additive and non-destructive:** a
+message already archived (by its portable `Message-ID`) is left untouched, only
+new ones are filed, and nothing is ever deleted — so removing a file from the
+source folder can never remove it from the archive. Re-running is idempotent.
+Threads are reconstructed from headers and each message files under its
+counterparty domain, exactly as `fetch` does.
+
+| Flag | Meaning |
+|---|---|
+| `--src DIR` | Folder of `.eml` to ingest (a flat drag-export). Read-only; never modified. **Required.** |
+| `--account ACCOUNT` | Scopes the manifest store and archive. Required if `$WICKET_ACCOUNT` is unset. |
+| `--source {local}` | Export profile. Only `local` today (RFC822 `.eml` on disk); reserves the flag for future kinds. |
+| `--dry-run` | Parse and report what would be added; write nothing. |
+
 ## Where config lives
 
 Secrets and per-account settings live **outside the data tree**, under
@@ -142,9 +170,12 @@ an API surface. Every entry point takes `account=`; a single account under `~/ma
 is the default.
 
 ```python
+from pathlib import Path
+
 from wicket.catalog.api import catalog
 from wicket.fetch.api import fetch, FetchOptions, held_messages
 from wicket.report.api import report, manifest
+from wicket.ingest.api import ingest, IngestOptions
 from wicket.config import resolve_archive_dir
 
 # drive the verbs (each returns a stats dict; non-interactive by default)
@@ -154,6 +185,10 @@ fetch(                                              # download matching .eml
     options=FetchOptions(domains=["chase.com", "amazon.com"]),  # or query="..."
 )
 counts = report(account="you@gmail.com")            # one-screen summary
+ingest(                                             # file a local .eml export (no IMAP)
+    account="you@work.com",
+    options=IngestOptions(src=Path("~/Downloads/Outlook").expanduser()),
+)
 
 # read the held mail and manifest (no IMAP, no credentials)
 for row, eml in held_messages(domains={"delta.com", "united.com"}):
@@ -171,13 +206,19 @@ dependencies = ["wicket @ git+https://github.com/vishalapte/wicket.git@main"]
 
 ## Providers
 
-Today every verb speaks **Gmail** over IMAP (Gmail's `X-GM-*` extensions).
-**Fastmail** support is planned behind a provider interface, selected per run with
-`--source {gmail|fastmail}`. The two providers do not share a search dialect; the
-portable query grammar that reconciles them is specified in
+Today the IMAP verbs (`catalog`, `fetch`) speak **Gmail** (Gmail's `X-GM-*`
+extensions). **Fastmail** support is planned behind a provider interface,
+selected per run with `--source {gmail|fastmail}`. The two providers do not share
+a search dialect; the portable query grammar that reconciles them is specified in
 [`docs/adr/0001-portable-query-grammar.md`](docs/adr/0001-portable-query-grammar.md),
 with the living key-by-key divergence table in
 [`docs/QUERY-FIDELITY.md`](docs/QUERY-FIDELITY.md).
+
+When a mailbox can't be reached over IMAP at all — Microsoft 365 tenants with
+basic-auth IMAP disabled and OAuth app-registration off the table — there is no
+provider to select. `wicket-ingest` is the offline path instead: drag-export the
+messages to `.eml` from a desktop client and ingest them into the same manifest +
+archive, no server round-trip.
 
 ## Why it exists
 
