@@ -29,6 +29,15 @@ All notable changes to this project are documented here, following
   `<state-dir>/imap.json`). This is a breaking path change; move an existing
   credential file under its account directory, or re-seed it on first run.
 
+### Documentation
+- Root `README.md` refreshed: added a full **CLI reference** (every
+  `wicket-catalog` / `wicket-fetch` / `wicket-report` flag, verified against
+  `--help`) and explicit **"Where config lives"** and **"Where data lives"**
+  sections. Config and secrets under `~/.config/gmail/<account>/` (`imap.json`,
+  optional `domain-aliases.json`); data under `~/mail/<account>/`
+  (`manifest/YYYY.jsonl`, `archive/<domain>/YYYY-MM/`). The security model stays
+  in `src/wicket/README.md`; the root points to it rather than restating it.
+
 ## [0.1.0]
 
 ### Added

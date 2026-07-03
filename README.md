@@ -2,9 +2,10 @@
 
 Archive a Gmail mailbox to local `.eml` files, filed by sender domain and
 queryable offline. **Read-only on the mailbox** by design: wicket can never send,
-delete, flag, or modify a message. Pure Python standard library, an app password
-instead of OAuth, no cloud project. What you keep lands in plain files under
-`~/mail/`, and a small library lets other tools read it.
+delete, flag, or modify a message. Pure Python standard library (no dependencies),
+an app password instead of OAuth, no cloud project. Secrets live under
+`~/.config/gmail/`; what you keep lands in plain files under `~/mail/`; and a small
+library lets other tools read it.
 
 ## What it does for you
 
@@ -15,7 +16,7 @@ instead of OAuth, no cloud project. What you keep lands in plain files under
 - **A safe way to touch your mailbox.** Every operation is read-only; the worst it
   can do is download.
 
-## Getting Started
+## Getting started
 
 ```bash
 # install (Python 3.12+)
@@ -35,14 +36,14 @@ wicket-fetch --account you@gmail.com --domains chase.com,amazon.com
 wicket-report --account you@gmail.com --senders
 ```
 
-Everything lives under `~/mail/you@gmail.com/`: the manifest in
-`manifest/YYYY.jsonl`, the downloaded `.eml` in `archive/<domain>/YYYY-MM/`. Add
-`--dry-run` to a verb to preview without writing. Once a single account exists
-under `~/mail`, `--account` is optional (or set `$WICKET_ACCOUNT`).
+Add `--dry-run` to `catalog` or `fetch` to preview without writing. Once a single
+account exists under `~/mail`, `--account` is optional (or set `$WICKET_ACCOUNT`).
 
-## Using wicket
+## Commands
 
-**Commands.** Three verbs over one year-sharded manifest:
+Three verbs over one year-sharded manifest. Each ships as a console script
+(`wicket-<verb>`) and an equivalent module (`python -m wicket.<verb>`);
+`python -m wicket` lists them.
 
 | Verb | What it does |
 |---|---|
@@ -54,16 +55,91 @@ Each message's state is two booleans on its manifest row, `deleted` and
 `downloaded`. The design is recorded in
 [`docs/adr/0002-unified-message-manifest.md`](docs/adr/0002-unified-message-manifest.md).
 
-**How it's structured.** Each verb is a self-contained vertical: the library
-(`lib`) does the work over IMAP and the manifest, `api` owns orchestration
-(resolve the account, its paths, and credentials, then dispatch), and each face
-is a thin wrapper on `api`, the CLI today and an MCP server later. Import a verb
-from its vertical (`wicket.<verb>.api`); the package root is a namespace, not an
-API surface. Every entry point takes `account=` (multi-user, n accounts); a single
-account under `~/mail` is the default.
+## CLI reference
 
-**Example.** wicket is meant to be depended on, not copied. Drive the verbs or
-read the held mail and manifest directly:
+Every flag below is what the code accepts today; `wicket-<verb> --help` is the
+authoritative, live source. Read-only verbs never prompt when `--non-interactive`
+is set (for cron/launchd), and fail loudly instead.
+
+**`wicket-catalog`** sweeps mailbox headers into `~/mail/<account>/manifest/YYYY.jsonl`.
+Idempotent, incremental by default.
+
+| Flag | Meaning |
+|---|---|
+| `--account ACCOUNT` | Account address; scopes the manifest store. Gmail `+tag` aliases normalized. Required if `$WICKET_ACCOUNT` is unset. |
+| `--store-dir DIR` | Override the manifest store dir. Default `~/mail/<account>/manifest/`. |
+| `--state-dir DIR` | Where `imap.json` lives. Default `~/.config/gmail/`. |
+| `--mailbox NAME` | IMAP mailbox to sweep. Default `"[Gmail]/All Mail"`. |
+| `--years Y,Y` | Comma-separated years to replace, e.g. `2025,2026`. Omit for incremental. |
+| `--full` | Re-sweep every year from the oldest message through now (rebuild). |
+| `--threads N` | Concurrent year workers, one IMAP connection each. Default 4. |
+| `--dry-run` | Sweep and report per-year counts; write nothing. |
+| `--non-interactive` | Never prompt; fail loudly if `imap.json` is missing or rejected. |
+
+**`wicket-fetch`** downloads `.eml` for matching threads into
+`~/mail/<account>/archive/<domain>/YYYY-MM/`. Pass exactly one of `--domains` / `--query`.
+
+| Flag | Meaning |
+|---|---|
+| `--domains A,B` | Comma-separated domains; builds the Gmail from/to search. (mutually exclusive with `--query`) |
+| `--query EXPR` | Raw Gmail search expression (escape hatch). |
+| `--dest DIR` | Destination root for `.eml`. Default `~/mail/<account>/archive/`. |
+| `--alias-file PATH` | Domain-alias JSON `{"primary.com": ["alias.com", "*.primary.com"]}`. Default `~/.config/gmail/<account>/domain-aliases.json` (skipped if absent). |
+| `--max N` | Stop after N new messages this run (after store dedup). |
+| `--account ACCOUNT` | Scopes `--dest` and the manifest store. Required if `$WICKET_ACCOUNT` is unset. |
+| `--state-dir DIR` | Where `imap.json` lives. Default `~/.config/gmail/`. |
+| `--threads N` | Concurrent per-thread workers, one IMAP connection each. Default 4. |
+| `--dry-run` | Print the plan; download nothing; do not update the manifest. |
+| `--non-interactive` | Never prompt; fail loudly if `imap.json` is missing or rejected. |
+
+**`wicket-report`** gives read-only summaries over the manifest (no IMAP, no credentials).
+With no flag, prints a one-screen summary.
+
+| Flag | Meaning |
+|---|---|
+| `--senders` | Every From address with its message count, descending (`count<TAB>address`). |
+| `--addresses` | Every distinct address seen in From or To, sorted. |
+| `--account ACCOUNT` | Scopes the manifest store. Required if `$WICKET_ACCOUNT` is unset. |
+
+## Where config lives
+
+Secrets and per-account settings live **outside the data tree**, under
+`~/.config/gmail/<account>/` (dir `0700`), and are never committed:
+
+| Path | What | Notes |
+|---|---|---|
+| `~/.config/gmail/<account>/imap.json` | Gmail address + app password | mode `0600`; seeded on first run; never on the command line. Override the base dir with `--state-dir`. |
+| `~/.config/gmail/<account>/domain-aliases.json` | Optional sender-domain aliases | `{"primary.com": ["alias.com", "*.primary.com"]}`; folds aliases/subdomains onto a primary when filing. Override with `--alias-file`. |
+| `$WICKET_ACCOUNT` (env) | Default account | Used when `--account` is omitted; else the sole directory under `~/mail`. |
+
+An app password is account-scoped and revocable at
+[myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords),
+that is the kill switch. Full security model:
+[`src/wicket/README.md`](src/wicket/README.md).
+
+## Where data lives
+
+Everything wicket writes lives under one per-account root, `~/mail/<account>/`:
+
+| Path | What |
+|---|---|
+| `~/mail/<account>/manifest/YYYY.jsonl` | The year-sharded manifest, one JSON row per message (identity, observation, and settlement fields). Override with `--store-dir`. |
+| `~/mail/<account>/archive/<domain>/YYYY-MM/<msg-id>.eml` | Downloaded messages, filed by sender/counterparty domain and month. Override with `--dest`. |
+
+The manifest is a rebuildable cache: `downloaded` is ground-truthed against the
+`.eml` on disk and the filing domain is derived from observation, so the whole
+store can be reconstructed from mailbox + disk by re-running the verbs (ADR
+[`0002`](docs/adr/0002-unified-message-manifest.md)).
+
+## Using wicket as a library
+
+wicket is meant to be depended on, not copied. Each verb is a self-contained
+vertical: the library (`lib`) does the work over IMAP and the manifest, `api` owns
+orchestration (resolve the account, its paths, and credentials, then dispatch), and
+each face is a thin wrapper on `api` (the CLI today, an MCP server later). Import a
+verb from its vertical (`wicket.<verb>.api`); the package root is a namespace, not
+an API surface. Every entry point takes `account=`; a single account under `~/mail`
+is the default.
 
 ```python
 from wicket.catalog.api import catalog
@@ -93,20 +169,22 @@ To depend on wicket from another project, pin a git tag:
 dependencies = ["wicket @ git+https://github.com/vishalapte/wicket.git@main"]
 ```
 
-## When, where, and why
+## Providers
 
-**Providers.** Today every verb speaks **Gmail** over IMAP (Gmail's `X-GM-*`
-extensions). **Fastmail** support is planned behind a provider interface, selected
-per run with `--source {gmail|fastmail}`. The two providers do not share a search
-dialect; the portable query grammar that reconciles them is specified in
+Today every verb speaks **Gmail** over IMAP (Gmail's `X-GM-*` extensions).
+**Fastmail** support is planned behind a provider interface, selected per run with
+`--source {gmail|fastmail}`. The two providers do not share a search dialect; the
+portable query grammar that reconciles them is specified in
 [`docs/adr/0001-portable-query-grammar.md`](docs/adr/0001-portable-query-grammar.md),
 with the living key-by-key divergence table in
 [`docs/QUERY-FIDELITY.md`](docs/QUERY-FIDELITY.md).
 
-**Why it exists.** The mail layer started inside `factotum` (a personal
-kitchen-sink repo) but is general-purpose: more than one project wants to fetch
-and archive mail. wicket is that layer extracted into a standalone library so its
-consumers depend on it rather than copy it.
+## Why it exists
+
+The mail layer started inside `factotum` (a personal kitchen-sink repo) but is
+general-purpose: more than one project wants to fetch and archive mail. wicket is
+that layer extracted into a standalone library so its consumers depend on it rather
+than copy it.
 
 ## Contributing
 
@@ -122,3 +200,5 @@ security model are in the package README:
 ## License
 
 MIT. See the [`LICENSE`](LICENSE) file.
+</content>
+</invoke>
