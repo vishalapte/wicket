@@ -115,7 +115,7 @@ what the seam is for.
 .venv/bin/python -m wicket             # → subcommand help (no args prints and exits 0)
 .venv/bin/python -m wicket catalog --help
 .venv/bin/python -m wicket fetch --help
-.venv/bin/python -m wicket report --senders --account you@gmail.com | head
+.venv/bin/python -m wicket report --senders --mail-account you@gmail.com | head
 .venv/bin/python -m wicket config account aliases list
 wicket ingest --src ~/Downloads/export   # installed console script, same dispatch
 ```

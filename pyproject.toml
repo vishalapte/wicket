@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wicket"
-version = "0.3.0"
+version = "0.4.0"
 description = "Portable, read-only mail tooling over IMAP: catalog a mailbox into a year-sharded manifest, fetch matching .eml by counterparty domain, and report over the manifest. Gmail today, Fastmail planned."
 requires-python = ">=3.12"
 authors = [{ name = "Vishal Apte", email = "vishal@enine.com" }]

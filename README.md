@@ -43,22 +43,22 @@ pip install -e .
 #    First run prompts for your Gmail address + app password (generate one at
 #    myaccount.google.com/apppasswords) and saves it 0600 to
 #    ~/.config/gmail/you@gmail.com/imap.json.
-wicket catalog --account you@gmail.com
+wicket catalog --mail-account you@gmail.com
 
 # 2. Download full .eml for one or more sender domains, filed under <domain>/YYYY-MM/.
-wicket fetch --account you@gmail.com --domains chase.com,amazon.com
+wicket fetch --mail-account you@gmail.com --domains chase.com,amazon.com
 
 # 3. Read the manifest, no IMAP: who emails you most, every address ever seen.
-wicket report --account you@gmail.com --senders
+wicket report --mail-account you@gmail.com --senders
 ```
 
 Add `--dry-run` to `catalog`, `fetch`, or `ingest` to preview without writing.
-Once a single account exists under the mail root, `--account` is optional for the
-IMAP verbs (or set `$WICKET_ACCOUNT`).
+Once a single account exists under the mail root, `--mail-account` is optional for
+the IMAP verbs (or set `$WICKET_ACCOUNT`).
 
 For a mailbox wicket **can't** reach over IMAP (e.g. Microsoft 365 with
 basic-auth IMAP disabled), drag-export the messages to `.eml` from your desktop
-client and file them into the same manifest + archive offline. Omit `--account`
+client and file them into the same manifest + archive offline. Omit `--mail-account`
 and each thread is **routed** to the account it belongs to, so one mixed folder
 lands in the right stores:
 
@@ -138,7 +138,7 @@ Idempotent, incremental by default.
 
 | Flag | Meaning |
 |---|---|
-| `--account ACCOUNT` | Account address; scopes the manifest store. Gmail `+tag` aliases normalized. Required if `$WICKET_ACCOUNT` is unset. |
+| `--mail-account ACCOUNT` | Account address; scopes the manifest store. Gmail `+tag` aliases normalized. Required if `$WICKET_ACCOUNT` is unset. |
 | `--store-dir DIR` | Override the manifest store dir. Default `<mail-root>/<account>/manifest/`. |
 | `--state-dir DIR` | Where `imap.json` lives. Default `~/.config/gmail/`. |
 | `--mailbox NAME` | IMAP mailbox to sweep. Default `"[Gmail]/All Mail"`. |
@@ -155,10 +155,10 @@ Idempotent, incremental by default.
 |---|---|
 | `--domains A,B` | Comma-separated domains; builds the Gmail from/to search. (mutually exclusive with `--query`) |
 | `--query EXPR` | Raw Gmail search expression (escape hatch). |
-| `--dest DIR` | Destination root for `.eml`. Default `<mail-root>/<account>/archive/`. |
+| `--target DIR` | Destination root for `.eml`. Default `<mail-root>/<account>/archive/`. |
 | `--alias-file PATH` | Subdomain-fold JSON `{"primary.com": ["alias.com", "*.primary.com"]}`. Default `<mail-root>/domain-aliases.json` (skipped if absent) — one home, shared with `ingest`. |
 | `--max N` | Stop after N new messages this run (after store dedup). |
-| `--account ACCOUNT` | Scopes `--dest` and the manifest store. Required if `$WICKET_ACCOUNT` is unset. |
+| `--mail-account ACCOUNT` | Scopes `--target` and the manifest store. Required if `$WICKET_ACCOUNT` is unset. |
 | `--state-dir DIR` | Where `imap.json` lives. Default `~/.config/gmail/`. |
 | `--threads N` | Concurrent per-thread workers, one IMAP connection each. Default 4. |
 | `--dry-run` | Print the plan; download nothing; do not update the manifest. |
@@ -171,8 +171,8 @@ With no flag, prints a one-screen summary.
 |---|---|
 | `--senders` | Every From address with its message count, descending (`count<TAB>address`). |
 | `--addresses` | Every distinct address seen in From or To, sorted. |
-| `--bucket NAME` | Every message **any** store holds that this bucket claims (`travel`, `shopping`), grouped by store. A view, not a location; ignores `--account`. |
-| `--account ACCOUNT` | Scopes the manifest store. Required if `$WICKET_ACCOUNT` is unset. |
+| `--bucket NAME` | Every message **any** store holds that this bucket claims (`travel`, `shopping`), grouped by store. A view, not a location; ignores `--mail-account`. |
+| `--mail-account ACCOUNT` | Scopes the manifest store. Required if `$WICKET_ACCOUNT` is unset. |
 
 **`wicket ingest`** files local `.eml` — a flat folder, or a single message — into
 the manifest + archive, for a mailbox wicket can't reach over IMAP. No IMAP, no credentials, no prompt.
@@ -191,11 +191,11 @@ file. `--dry-run` moves nothing.
 | Flag | Meaning |
 |---|---|
 | `--src PATH` | What to ingest: a folder of `.eml` (a flat drag-export; not recursive), or a single `.eml` file. **Required.** |
-| `--account ACCOUNT` | Send **every** thread to this one store instead of routing each. A *destination, not a filter*: it does not select which messages are ingested, so naming the wrong one files the whole folder into the wrong store. Refused when the folder is plainly addressed elsewhere (see `--force`). Omit it to route. |
+| `--mail-account ACCOUNT` | Send **every** thread to this one store instead of routing each. A *destination, not a filter*: it does not select which messages are ingested, so naming the wrong one files the whole folder into the wrong store. Refused when the folder is plainly addressed elsewhere (see `--force`). Omit it to route. |
 | `--source {local}` | Export profile. Only `local` today (RFC822 `.eml` on disk); reserves the flag for future kinds. |
 | `--domain DOMAIN` | File every newly-added message under this one domain folder (`<domain>/YYYY-MM/`), overriding the computed counterparty domain. A *destination, not a filter*: it does not select which messages are ingested. A bare domain like `acme.com`. A reply that joins an already-archived thread still files with its thread, so this only redirects mail with no archived home yet. |
-| `--tags a,b,c` | Comma-separated tags recorded as the manifest `labels` for every newly-added message (a flat export carries no provider labels). Applied only to mail filed this run; archived rows are untouched. |
-| `--force` | Ingest anyway when `--account` disagrees with the folder's recipients. |
+| `--tag TAG` | A tag recorded in the manifest `labels` for every newly-added message (a flat export carries no provider labels); repeatable (`--tag a --tag b`). Applied only to mail filed this run; archived rows are untouched. |
+| `--force` | Ingest anyway when `--mail-account` disagrees with the folder's recipients. |
 | `--no-delete` | Leave the source folder untouched (do not move archived `.eml` to `~/.Trash`). |
 | `--dry-run` | Parse and report what would be added; write nothing, trash nothing. |
 
@@ -210,7 +210,7 @@ The run summary lists each filed `.eml` grouped by its archive directory
 | Path | What | Notes |
 |---|---|---|
 | `~/.config/gmail/<account>/imap.json` | Gmail address + app password | mode `0600`; seeded on first run; never on the command line. Override the base dir with `--state-dir`. |
-| `$WICKET_ACCOUNT` (env) | Default account | Used when `--account` is omitted; else the sole directory under the mail root. |
+| `$WICKET_ACCOUNT` (env) | Default account | Used when `--mail-account` is omitted; else the sole directory under the mail root. |
 | `$WICKET_MAIL_ROOT` (env) | Where the mail tree lives | Default `~/.delphi/mail`. Set it when the tree lives elsewhere (e.g. an encrypted vault that mounts at another path). |
 | `$WICKET_ACCOUNT_ALIASES_FILE` (env) | Override `account-aliases.json`'s location | Any name, any path. Default `<mail-root>/account-aliases.json`. |
 | `$WICKET_DOMAIN_ALIASES_FILE` (env) | Override `domain-aliases.json`'s location | Same shape as above. |
@@ -269,7 +269,7 @@ default, or `$WICKET_MAIL_ROOT` — one directory per store:
 | Path | What |
 |---|---|
 | `<mail-root>/<store>/manifest/YYYY.jsonl` | The year-sharded manifest, one JSON row per message (identity, observation, and settlement fields). Override with `--store-dir`. |
-| `<mail-root>/<store>/archive/<domain>/YYYY-MM/<msg-id>.eml` | Downloaded messages, filed by sender/counterparty domain and month. Override with `--dest`. |
+| `<mail-root>/<store>/archive/<domain>/YYYY-MM/<msg-id>.eml` | Downloaded messages, filed by sender/counterparty domain and month. Override with `--target`. |
 
 A **store** is either an **account** (a real mailbox, named by its address:
 `you@gmail.com`) or a **bucket** (a topical destination that is not a mailbox:
@@ -277,7 +277,7 @@ A **store** is either an **account** (a real mailbox, named by its address:
 holds only mail no mailbox owns (see [Where a message goes](#where-a-message-goes)).
 
 **wicket never creates a store.** Creating a destination is always an explicit
-owner `mkdir` — so a mistyped `--account` is a hard error instead of a new
+owner `mkdir` — so a mistyped `--mail-account` is a hard error instead of a new
 directory, and an unclaimed thread is left alone instead of minting a store.
 
 **The mail root must exist, and wicket fails closed if it does not.** The tree is

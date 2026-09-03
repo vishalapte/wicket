@@ -82,7 +82,7 @@ ALIASES_FILENAME = "domain-aliases.json"
 
 # The owner's Gmail address is intentionally not baked in. Tools that need
 # an account (the filing-domain rule, census's inventory scoping) read this
-# env var or take --account; missing-and-not-passed is a hard error.
+# env var or take --mail-account; missing-and-not-passed is a hard error.
 ACCOUNT_ENV_VAR = "WICKET_ACCOUNT"
 
 # One per-account mail root holding both the year-sharded manifest store and the
@@ -340,7 +340,7 @@ def resolve_account(account: str | None) -> str:
     account that owns it instead of minting a store of its own.
 
     The account set is closed once it exists: an unknown account is a hard error
-    rather than a new directory, because a mistyped ``--account`` is otherwise
+    rather than a new directory, because a mistyped ``--mail-account`` is otherwise
     indistinguishable from a real one and silently files mail into a store that
     should not exist. An empty mail root still bootstraps freely. Raises
     ``ValueError`` with a face-neutral message; the caller turns it into an exit.
@@ -408,7 +408,7 @@ def discover_account(mail_root: Path | None = None) -> str | None:
 
     Returns None when the root is absent, empty, or holds more than one account
     (ambiguous, so the caller must be told to be explicit). Lets a single-account
-    setup skip `--account` / `$WICKET_ACCOUNT`.
+    setup skip `--mail-account` / `$WICKET_ACCOUNT`.
     """
     root = mail_root or MAIL_ROOT
     if not root.exists():

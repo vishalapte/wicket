@@ -5,13 +5,8 @@ generator:
   version: "0.99.3"
 target:
   repo: wicket
-  date: 2026-08-24
-  version: "0.3.0"
-  note: >-
-    Describes the working tree at 0.3.0, which is UNCOMMITTED. HEAD (45dd5f0)
-    carries neither the routing, bucket, trash and vault-guard work nor the
-    racecar upgrade described here. No commit SHA is stamped, because none
-    would be honest.
+  date: 2026-09-03
+  version: "0.4.0"
 bundle:
   - WICKET.md
   - WICKET-DOSSIER.md

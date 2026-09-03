@@ -6,7 +6,7 @@ generator:
 target:
   repo: wicket
   date: 2026-09-03
-  version: "0.3.0"
+  version: "0.4.0"
 bundle:
   - WICKET.md
   - WICKET-DOSSIER.md
@@ -155,23 +155,23 @@ external_surface:
       exit: "0"
     - verb: wicket catalog
       module: wicket.catalog.cli
-      args: "--account --store-dir --state-dir --mailbox --years --full --threads --dry-run --non-interactive"
+      args: "--mail-account --store-dir --state-dir --mailbox --years --full --threads --dry-run --non-interactive"
       behavior: Sweep mailbox headers (never bodies) into the year-sharded manifest, recording what EXISTS. Read-only IMAP. Incremental by default; idempotent.
       exit: "0 ok, 2 on auth/config error"
     - verb: wicket fetch
       module: wicket.fetch.cli
-      args: "--domains | --query (exactly one); --dest --alias-file --max --account --state-dir --threads --dry-run --non-interactive"
+      args: "--domains | --query (exactly one); --target --alias-file --max --mail-account --state-dir --threads --dry-run --non-interactive"
       behavior: Download full .eml for matching threads into <domain>/YYYY-MM/, recording what is HELD. Read-only IMAP.
       exit: "0 ok, 2 on auth/config error"
     - verb: wicket report
       module: wicket.report.cli
-      args: "--senders | --addresses | --bucket NAME (mutually exclusive); --account"
+      args: "--senders | --addresses | --bucket NAME (mutually exclusive); --mail-account"
       behavior: Read-only summaries over the manifest. No IMAP, no credentials. --bucket reads across EVERY store and reports what a bucket claims and where it physically lives.
       exit: "0 ok, 2 on config error"
     - verb: wicket ingest
       module: wicket.ingest.cli
-      args: "--src (required) --account --source {local} --force --no-delete --dry-run"
-      behavior: File local .eml (a folder, or one file) into the manifest + archive. No IMAP. Omit --account to route each thread to the store it belongs to. Additive. Archived sources move to ~/.Trash unless --no-delete.
+      args: "--src (required) --mail-account --source {local} --force --no-delete --dry-run"
+      behavior: File local .eml (a folder, or one file) into the manifest + archive. No IMAP. Omit --mail-account to route each thread to the store it belongs to. Additive. Archived sources move to ~/.Trash unless --no-delete.
       exit: "0 ok, 2 on mismatch / absent root / no .eml"
     - verb: wicket config
       module: wicket.config.cli
@@ -520,11 +520,11 @@ See frontmatter `external_surface`. Two kinds: `cli_verbs` (5) and `library_expo
 
 The load-bearing detail:
 
-**`wicket ingest --account` is a destination, not a filter.** It names the store to write *into*; it does **not** select which messages are ingested. Naming the wrong one silently files an entire folder into the wrong store. This cost real data (§2.9), so a run whose folder is plainly addressed to a *different* known account is now refused, with a message naming the account that actually owns the mail. `--force` overrides.
+**`wicket ingest --mail-account` is a destination, not a filter.** It names the store to write *into*; it does **not** select which messages are ingested. Naming the wrong one silently files an entire folder into the wrong store. This cost real data (§2.9), so a run whose folder is plainly addressed to a *different* known account is now refused, with a message naming the account that actually owns the mail. `--force` overrides.
 
 **`wicket ingest` moves your source files.** Once a message is durably archived (filed by this run, or already in the store), its `.eml` is **moved to `~/.Trash`**. `--no-delete` opts out. A message whose thread could not be routed always keeps its file. Nothing is ever unlinked, and `--dry-run` moves nothing.
 
-**`wicket report --bucket NAME` ignores `--account` on purpose:** a bucket is a question about *every* store.
+**`wicket report --bucket NAME` ignores `--mail-account` on purpose:** a bucket is a question about *every* store.
 
 ### §2.5 Internal contracts
 
@@ -539,7 +539,7 @@ The load-bearing detail:
 | Name | Effect |
 |---|---|
 | `$WICKET_MAIL_ROOT` | Where the mail tree lives. Default `~/.delphi/mail`. Exists so the tree can follow an encrypted vault to whatever path it mounts at. |
-| `$WICKET_ACCOUNT` | Default account when `--account` is omitted (IMAP verbs). Falls back to the sole store under the mail root. |
+| `$WICKET_ACCOUNT` | Default account when `--mail-account` is omitted (IMAP verbs). Falls back to the sole store under the mail root. |
 | `<mail-root>/account-aliases.json` | Addresses that **are you** → the store that owns them. Exceptions only: an address that already names a store resolves to itself. A primary may be an account address or a bucket name; an alias may be a literal address or a `*@domain` catch-all. |
 | `<mail-root>/domain-routes.json` | Counterparties that are **not you** → where their mail goes. Used only when no mailbox claims the thread. |
 | `<mail-root>/domain-aliases.json` | Subdomain **folding** (`*.delta.com` → `delta.com`). Shared by `fetch` and `ingest`; `--alias-file` overrides. |
@@ -554,7 +554,7 @@ All three maps are optional, and **nothing in them is inferred** — an entry ex
 
 2. **fetch.** Resolve account, store, dest, and the fold map → build the search (from `--domains`, expanded through the fold map, or a raw `--query`) → reconcile offline first, ground-truthing `downloaded` against disk → per thread, download the bodies not already held, file them under `<counterparty-domain>/<YYYY-MM>/`, and settle the rows. **Idempotent**: an already-held message is skipped by the store dedup, not re-downloaded.
 
-3. **ingest.** Parse every `.eml` in `--src` — a folder (non-recursive) or a single file — and dedup by `message_key` → reconstruct threads from headers → **route each thread**: the mailbox that took part wins; failing that, a counterparty route; failing that, the thread is *unrouted* and left entirely alone → per destination, compute the folded filing domain, skip messages already archived, write the new bodies, and union the new rows into the year shards → move the source `.eml` of every durably-archived message to `~/.Trash`. **Idempotent**: a second run adds 0. The run summary counts the already-archived share separately (`; N already archived`), because a run that trashes every source file while adding fewer rows than it read is otherwise indistinguishable from one that lost mail. **Failures**: an absent mail root fails closed (§2.11); an `--account` that disagrees with the source is refused; a source with no `.eml` errors.
+3. **ingest.** Parse every `.eml` in `--src` — a folder (non-recursive) or a single file — and dedup by `message_key` → reconstruct threads from headers → **route each thread**: the mailbox that took part wins; failing that, a counterparty route; failing that, the thread is *unrouted* and left entirely alone → per destination, compute the folded filing domain, skip messages already archived, write the new bodies, and union the new rows into the year shards → move the source `.eml` of every durably-archived message to `~/.Trash`. **Idempotent**: a second run adds 0. The run summary counts the already-archived share separately (`; N already archived`), because a run that trashes every source file while adding fewer rows than it read is otherwise indistinguishable from one that lost mail. **Failures**: an absent mail root fails closed (§2.11); a `--mail-account` that disagrees with the source is refused; a source with no `.eml` errors.
 
 4. **report --bucket.** Load the two domain maps → walk every store → fold each sender's domain → keep the rows whose folded domain routes to the named bucket → group by store. Read-only, no IMAP.
 
@@ -573,7 +573,7 @@ All three maps are optional, and **nothing in them is inferred** — an entry ex
 - **Routing is per thread, never per message** (2026-07-13). A conversation you were addressed on in some replies and cc'd on in others would otherwise split across two stores, and a thread has one `thread_id` and one folder by construction.
 - **The sender counts as a participant** (2026-07-13). Routing on recipients alone stranded every outbound thread, because mail *you sent* is addressed entirely to counterparties. Found in real data: 16 unrouted messages became 8.
 - **Three maps, not one** (2026-07-13). "This address is me" and "this counterparty's mail goes here" have the same file shape and opposite meanings. Listing IKEA in the identity map makes every message *from* IKEA look outbound, so it files under the recipient's domain instead of `ikea.com`. Separate files, separate loaders.
-- **`--account` is a destination, not a filter, and the guard exists because that cost data** (2026-07-13). Ingesting one folder twice under two accounts filed 124 messages into two stores. Nothing was lost (ingest is additive), but the recovery was a hand-written script. A folder plainly addressed to another known account is now refused.
+- **`--mail-account` is a destination, not a filter, and the guard exists because that cost data** (2026-07-13). Ingesting one folder twice under two accounts filed 124 messages into two stores. Nothing was lost (ingest is additive), but the recovery was a hand-written script. A folder plainly addressed to another known account is now refused.
 - **Never create a store; fail closed on an absent mail root** (2026-07-13). The tree is designed to live in an encrypted (Cryptomator) vault, and a *locked* vault leaves its mount point as an ordinary empty directory. wicket read that as "a fresh, empty store" and would `mkdir` an account and write mail **in plaintext underneath the vault**. Every verb now refuses and creates nothing; creating a destination is always an explicit owner `mkdir`.
 - **Trash, never unlink** (2026-07-13). The archive is the record and the source folder is a volatile inbox, so an ingested `.eml` is *moved* to `~/.Trash` once durably archived. The destructive default still has an undo.
 - **App password, not OAuth** (initial). No consent screen, no cloud project, no refresh dance. The cost is a standing credential; the mitigations are that it is account-scoped and revocable in one click, and that `SELECT` is read-only, so it can only ever read.
@@ -591,9 +591,9 @@ All three maps are optional, and **nothing in them is inferred** — an entry ex
 
 **An empty mail root is an error, not an empty store.** Every other tool treats "directory missing" as "nothing here yet, let me create it". wicket refuses and exits 2. The tree is designed to live in an encrypted vault, and a *locked* vault is indistinguishable from an empty directory — writing there would leave your mail in plaintext underneath the mount point, invisible to the vault forever. Fail closed.
 
-**`--account` means the opposite of what you expect on `ingest`.** Everywhere else in wicket it selects *which mailbox's data* you are working with. On `ingest` it selects *where the output goes* and says nothing about the input. Omitting it is the safe, routing behavior; passing it is the sharp edge. It cost 124 misfiled messages before the guard existed.
+**`--mail-account` means the opposite of what you expect on `ingest`.** Everywhere else in wicket it selects *which mailbox's data* you are working with. On `ingest` it selects *where the output goes* and says nothing about the input. Omitting it is the safe, routing behavior; passing it is the sharp edge. It cost 124 misfiled messages before the guard existed.
 
-**`report --bucket` ignores `--account`.** Not a bug: a bucket is a question about every store at once, so scoping it to one account would answer a question nobody asked.
+**`report --bucket` ignores `--mail-account`.** Not a bug: a bucket is a question about every store at once, so scoping it to one account would answer a question nobody asked.
 
 **A dotted directory is not an account.** `known_accounts` skips anything beginning with `.`, because the mail tree is often a git repo and `.git` was briefly a candidate destination for your mail.
 
@@ -645,7 +645,7 @@ Google does not publish a documented IMAP request limit, but **caps simultaneous
 | `AuthError` | App password missing, rejected, or revoked | Re-seed `imap.json`, or regenerate the app password. Under `--non-interactive` this exits non-zero and loudly — intentional, for cron. | upstream |
 | exit 2, `mail root ... does not exist` | The mail root is absent — most likely a locked encrypted vault | Unlock the vault, or set `$WICKET_MAIL_ROOT`. **Do not** create the directory to make the error go away. | library |
 | exit 2, `unknown account` | The account has no store and is not in the alias map (probably a typo) | Fix the typo, add an alias, or `mkdir` the store deliberately. | library |
-| exit 2, `account mismatch` | `--account` disagrees with who the folder is addressed to | Re-run with the account it names, or pass `--force` if you meant it. | library |
+| exit 2, `account mismatch` | `--mail-account` disagrees with who the folder is addressed to | Re-run with the account it names, or pass `--force` if you meant it. | library |
 | `[ALERT] Too many simultaneous connections` | Above Gmail's ~15-connection cap | Lower `--threads`. | upstream |
 
 ### §3.6 SDKs

@@ -22,7 +22,7 @@ def parser() -> argparse.ArgumentParser:
         add_help=False,
         description=(
             "Download full .eml for every message in matching Gmail threads, "
-            "filed under <dest>/<domain>/YYYY-MM/<msg-id>.eml. The domain is "
+            "filed under <target>/<domain>/YYYY-MM/<msg-id>.eml. The domain is "
             "computed from the first message of each thread (inbound: the "
             "sender's domain; outbound: the single recipient's); threads it "
             "cannot resolve are skipped. Settlement is recorded in the "
@@ -42,7 +42,7 @@ def parser() -> argparse.ArgumentParser:
         "anything --domains can't express.",
     )
     build.add_argument(
-        "--dest",
+        "--target",
         type=Path,
         default=None,
         help="Destination root for .eml files; files go into "
@@ -56,9 +56,9 @@ def parser() -> argparse.ArgumentParser:
         "(default: ~/.config/gmail; shared with wicket.catalog).",
     )
     build.add_argument(
-        "--account",
+        "--mail-account",
         default=None,
-        help="Account that scopes --dest and the manifest store "
+        help="Account that scopes --target and the manifest store "
         "(<mail-root>/<account>/). Gmail `+tag` aliases are normalized "
         "automatically. Required if $WICKET_ACCOUNT is unset.",
     )
@@ -107,14 +107,14 @@ def dispatch(args: argparse.Namespace) -> int:
         options = FetchOptions(
             domains=args.domains,
             query=args.query,
-            dest=args.dest.expanduser() if args.dest else None,
+            dest=args.target.expanduser() if args.target else None,
             state_dir=args.state_dir,
             alias_file=args.alias_file.expanduser() if args.alias_file else None,
             limit=args.limit,
             threads=args.threads,
             dry_run=args.dry_run,
         )
-        stats = fetch(args.account, options=options, interactive=interactive)
+        stats = fetch(args.mail_account, options=options, interactive=interactive)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2

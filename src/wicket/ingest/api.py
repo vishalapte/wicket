@@ -11,7 +11,7 @@ Two modes, and the default is the safe one:
   actually exist. Mail nobody claims is left alone. This is the mode that makes a
   mixed folder safe, because no single wrong destination exists to choose.
 - **Single-target** (an explicit account): everything lands in that one store.
-  ``--account`` is a destination, not a filter, so the worker refuses when the
+  ``--mail-account`` is a destination, not a filter, so the worker refuses when the
   folder is plainly addressed to a different account (``force`` overrides).
 """
 
@@ -57,7 +57,7 @@ class IngestOptions:
 
     ``domain`` (the ``--domain`` flag) forces the filing domain for every
     newly-added message, standing in for the computed counterparty; a bare domain
-    like ``acme.com``, validated in `ingest`. ``tags`` (the ``--tags`` flag) are
+    like ``acme.com``, validated in `ingest`. ``tags`` (the ``--tag`` flag) are
     recorded as each new row's ``labels``. Both touch only mail filed this run.
     """
 

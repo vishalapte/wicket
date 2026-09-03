@@ -41,10 +41,10 @@ def parser() -> argparse.ArgumentParser:
         metavar="NAME",
         help="Every message ANY store holds that this bucket claims (travel, "
         "shopping), grouped by store. A view, not a location: mail owned by a "
-        "mailbox stays in that mailbox's store. Ignores --account.",
+        "mailbox stays in that mailbox's store. Ignores --mail-account.",
     )
     build.add_argument(
-        "--account",
+        "--mail-account",
         default=None,
         help="Account address; scopes the manifest store. Gmail `+tag` aliases "
         f"are normalized. Required if ${ACCOUNT_ENV_VAR} is unset.",
@@ -58,14 +58,14 @@ def dispatch(args: argparse.Namespace) -> int:
         if args.bucket:
             _print_bucket(args.bucket)
         elif args.senders:
-            for sender, count in senders(args.account):
+            for sender, count in senders(args.mail_account):
                 print(f"{count}\t{sender}")
         elif args.addresses:
-            for address in addresses(args.account):
+            for address in addresses(args.mail_account):
                 print(address)
         else:
-            counts = report(args.account)
-            store_dir = resolve_store_dir(resolve_account(args.account))
+            counts = report(args.mail_account)
+            store_dir = resolve_store_dir(resolve_account(args.mail_account))
             print(f"manifest: {store_dir}")
             print(f"  messages           {counts['messages']:>8}")
             print(f"  downloaded         {counts['downloaded']:>8}  (held locally)")

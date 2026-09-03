@@ -34,7 +34,7 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     build.add_argument(
-        "--account",
+        "--mail-account",
         default=None,
         help="Account address; scopes the manifest store. "
         "Gmail `+tag` aliases are normalized automatically. "
@@ -129,7 +129,7 @@ def dispatch(args: argparse.Namespace) -> int:
             threads=args.threads,
             full=args.full,
         )
-        stats = catalog(args.account, options=options, interactive=interactive)
+        stats = catalog(args.mail_account, options=options, interactive=interactive)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -143,7 +143,7 @@ def dispatch(args: argparse.Namespace) -> int:
     store_dir = (
         args.store_dir.expanduser()
         if args.store_dir
-        else resolve_store_dir(resolve_account(args.account))
+        else resolve_store_dir(resolve_account(args.mail_account))
     )
     verb = "would write" if args.dry_run else "wrote"
     print(

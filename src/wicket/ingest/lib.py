@@ -228,7 +228,7 @@ def check_account_matches(
 ) -> str | None:
     """Warn when ``account`` is not the account this folder was addressed to.
 
-    ``--account`` is a *destination*, not a filter: it says which store to write,
+    ``--mail-account`` is a *destination*, not a filter: it says which store to write,
     and nothing about the folder. Naming the wrong one files the whole export
     into the wrong mailbox, silently and additively. So compare the folder's
     recipients against the target and refuse when another known account plainly
@@ -246,9 +246,9 @@ def check_account_matches(
     return (
         f"account mismatch: {mine} of {len(messages)} message(s) are addressed to "
         f"{account}, but {top} are addressed to {leader}. Recipients here: {counts}. "
-        f"--account names the store to write into, it does not filter the folder, "
-        f"so this would file mail belonging to {leader} into {account}. Re-run with "
-        f"--account {leader}, or pass --force if you meant it."
+        f"--mail-account names the store to write into, it does not filter the "
+        f"folder, so this would file mail belonging to {leader} into {account}. "
+        f"Re-run with --mail-account {leader}, or pass --force if you meant it."
     )
 
 
@@ -460,7 +460,7 @@ def _row_for(
 ) -> tuple[Row, str]:
     """Build the manifest row and archive rel-path for one new message.
 
-    ``labels`` is the ``--tags`` payload: a flat ``.eml`` export carries no
+    ``labels`` is the ``--tag`` payload: a flat ``.eml`` export carries no
     provider folders, so ``labels`` is ``None`` unless the owner names tags.
     """
     mid = str(m["id"])
@@ -476,7 +476,7 @@ def _row_for(
         "to": m["to"],
         "subject": m["subject"],
         "size": m["size"],
-        "labels": labels,  # --tags, or None for a bare .eml export
+        "labels": labels,  # --tag, or None for a bare .eml export
         "deleted": False,
         "downloaded": True,
         "domain": domain,
@@ -519,7 +519,7 @@ class Target:
     counterparty is, and an account is meaningless without the store it writes to.
 
     ``filing_domain`` and ``labels`` are the two optional write-overrides (the
-    ``--domain`` / ``--tags`` flags): a domain every newly-filed message goes
+    ``--domain`` / ``--tag`` flags): a domain every newly-filed message goes
     under instead of its computed counterparty, and tags recorded as each new
     row's ``labels``. Both touch only mail filed *this run* — an already-archived
     row (and a reply that joins its thread) is left byte-for-byte alone.
@@ -531,7 +531,7 @@ class Target:
     identities: Identities  # env.identities(): a test, not a set (wildcards)
     domain_aliases: dict[str, str]  # domains.load_domain_aliases(): subdomain folding
     filing_domain: str | None = None  # --domain: forced filing domain override
-    labels: list[str] | None = None  # --tags: recorded as each new row's labels
+    labels: list[str] | None = None  # --tag: recorded as each new row's labels
 
 
 def _new_rows(

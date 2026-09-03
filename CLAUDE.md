@@ -66,7 +66,7 @@ mailbox owns, and topical grouping of mailbox-owned mail is a *view*
   local folder is not a mailbox, and it is a move, never an unlink.
 - **Never create a store.** A destination (the mail root, an account, a bucket) is
   made by an explicit owner `mkdir`, never inferred by a verb. A mistyped
-  `--account` must be a hard error, and an absent mail root must **fail closed**:
+  `--mail-account` must be a hard error, and an absent mail root must **fail closed**:
   it means a locked vault, and writing there would leave mail in plaintext under
   the mount point.
 - **An archived message is never deleted.** Additivity is what the whole ingest

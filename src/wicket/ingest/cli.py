@@ -25,7 +25,7 @@ def parser() -> argparse.ArgumentParser:
             "into the year-sharded manifest + archive, for a mailbox wicket "
             "cannot reach over IMAP. Additive: a message already archived is left "
             "untouched, only new ones are filed, and no archived message is ever "
-            "deleted. Re-running is idempotent. With no --account, each thread is "
+            "deleted. Re-running is idempotent. With no --mail-account, each thread is "
             "routed to the account it was addressed to and mail nobody claims is "
             "left alone."
         ),
@@ -38,7 +38,7 @@ def parser() -> argparse.ArgumentParser:
         "or a single .eml file.",
     )
     build.add_argument(
-        "--account",
+        "--mail-account",
         default=None,
         help="Send every thread to this one account, instead of routing each to "
         "the account it was addressed to. A destination, NOT a filter: it does "
@@ -63,12 +63,13 @@ def parser() -> argparse.ArgumentParser:
         "redirects mail that has no archived home yet.",
     )
     build.add_argument(
-        "--tags",
-        default=None,
-        help="Comma-separated tags recorded as the manifest `labels` for every "
-        "newly-added message (a flat .eml export carries no provider labels). "
-        "Applied only to messages filed this run; already-archived rows are left "
-        "untouched.",
+        "--tag",
+        action="append",
+        default=[],
+        help="A tag recorded in the manifest `labels` for every newly-added "
+        "message (a flat .eml export carries no provider labels); repeatable "
+        "(--tag a --tag b). Applied only to messages filed this run; "
+        "already-archived rows are left untouched.",
     )
     build.add_argument(
         "--dry-run",
@@ -79,8 +80,8 @@ def parser() -> argparse.ArgumentParser:
         "--force",
         action="store_true",
         help="Ingest even when the source is addressed to a different account "
-        "than --account. Refused by default: --account names the destination "
-        "store, it does not filter the source.",
+        "than --mail-account. Refused by default: --mail-account names the "
+        "destination store, it does not filter the source.",
     )
     build.add_argument(
         "--no-delete",
@@ -97,11 +98,7 @@ def parser() -> argparse.ArgumentParser:
 def dispatch(args: argparse.Namespace) -> int:
     """Parse argv into typed options, call the api, render the summary."""
     try:
-        tags = (
-            tuple(t.strip() for t in args.tags.split(",") if t.strip())
-            if args.tags
-            else ()
-        )
+        tags = tuple(args.tag)
         options = IngestOptions(
             src=args.src.expanduser(),
             source=args.source,
@@ -111,7 +108,7 @@ def dispatch(args: argparse.Namespace) -> int:
             domain=args.domain,
             tags=tags,
         )
-        stats = ingest(args.account, options=options)
+        stats = ingest(args.mail_account, options=options)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -167,7 +164,7 @@ def _render(stats: dict[str, object], args: argparse.Namespace) -> None:
 def _single(stats: dict[str, object], args: argparse.Namespace) -> dict[str, object]:
     """The single-target run, shaped like one entry of a routed run's per-account list."""
     return {
-        "account": resolve_store_dir(resolve_account(args.account)).parent.name,
+        "account": resolve_store_dir(resolve_account(args.mail_account)).parent.name,
         "added": stats["added"],
         "skipped": stats["skipped"],
         "unfiled": stats["unfiled"],

@@ -1,6 +1,6 @@
 """Tests for the ingest verb: the account guard, identity-aware filing, additivity.
 
-The guard exists because ``--account`` is a *destination*, not a filter: it names
+The guard exists because ``--mail-account`` is a *destination*, not a filter: it names
 the store to write into and says nothing about the folder. Naming the wrong one
 files an entire export into the wrong mailbox, silently and additively.
 """
@@ -549,7 +549,7 @@ def test_forced_domain_yields_to_an_archived_thread_anchor(tmp_path: Path) -> No
     assert not (tmp_path / ME / "archive" / "vendor.com").exists()
 
 
-# --- tags (--tags -> labels) ----------------------------------------------
+# --- tags (--tag -> labels) -----------------------------------------------
 
 
 def test_tags_are_recorded_as_labels(tmp_path: Path) -> None:

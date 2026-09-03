@@ -129,13 +129,13 @@ def example_outputs() -> list[tuple[str, str, str, int]]:
 
     Never executed, never real: every account, domain, path and count below is
     fabricated. One scenario per verb (catalog/fetch/report/ingest/config), plus
-    the shape a bad `--account` actually reports, so a reader sees a representative
-    range without pulling any figure from an actual mailbox.
+    the shape a bad `--mail-account` actually reports, so a reader sees a
+    representative range without pulling any figure from an actual mailbox.
     """
     return [
         (
             "catalog: incremental sweep",
-            "wicket catalog --account you@example.com",
+            "wicket catalog --mail-account you@example.com",
             "done: observed 128 message(s); wrote 2 year shard(s) under "
             "~/.delphi/mail/you@example.com/manifest\n",
             0,
@@ -143,14 +143,14 @@ def example_outputs() -> list[tuple[str, str, str, int]]:
         (
             "fetch: dry run",
             "wicket fetch --domains acme.com,globex.com --dry-run "
-            "--account you@example.com",
+            "--mail-account you@example.com",
             "done (dry-run): 14 to download, 6 already on disk; 3 already held. "
             "Nothing written.\n",
             0,
         ),
         (
             "report: one-screen summary",
-            "wicket report --account you@example.com",
+            "wicket report --mail-account you@example.com",
             "manifest: ~/.delphi/mail/you@example.com/manifest\n"
             "  messages               3241\n"
             "  downloaded             2987  (held locally)\n"
@@ -178,7 +178,7 @@ def example_outputs() -> list[tuple[str, str, str, int]]:
         ),
         (
             "error: unknown account",
-            "wicket report --account nobody@example.com",
+            "wicket report --mail-account nobody@example.com",
             "unknown account 'nobody@example.com': it has no store under "
             "~/.delphi/mail and is not listed in account-aliases.json. If it "
             "is an address you receive at, add it as an alias of the account "

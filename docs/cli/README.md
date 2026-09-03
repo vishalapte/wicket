@@ -45,7 +45,7 @@ _Illustrative only. Fabricated by the command's own author to show the range of 
 
 ### catalog: incremental sweep
 
-Invocation: `wicket catalog --account you@example.com`
+Invocation: `wicket catalog --mail-account you@example.com`
 
 ```text
 done: observed 128 message(s); wrote 2 year shard(s) under ~/.delphi/mail/you@example.com/manifest
@@ -55,7 +55,7 @@ Exit code: `0`
 
 ### fetch: dry run
 
-Invocation: `wicket fetch --domains acme.com,globex.com --dry-run --account you@example.com`
+Invocation: `wicket fetch --domains acme.com,globex.com --dry-run --mail-account you@example.com`
 
 ```text
 done (dry-run): 14 to download, 6 already on disk; 3 already held. Nothing written.
@@ -65,7 +65,7 @@ Exit code: `0`
 
 ### report: one-screen summary
 
-Invocation: `wicket report --account you@example.com`
+Invocation: `wicket report --mail-account you@example.com`
 
 ```text
 manifest: ~/.delphi/mail/you@example.com/manifest
@@ -109,7 +109,7 @@ Exit code: `0`
 
 ### error: unknown account
 
-Invocation: `wicket report --account nobody@example.com`
+Invocation: `wicket report --mail-account nobody@example.com`
 
 ```text
 unknown account 'nobody@example.com': it has no store under ~/.delphi/mail and is not listed in account-aliases.json. If it is an address you receive at, add it as an alias of the account that owns it; if it is genuinely a new mailbox, create its store directory first.

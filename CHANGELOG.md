@@ -10,6 +10,23 @@ All notable changes to this project are documented here, following
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.0 - 2026-09-03
+
+### Changed
+- **`--account` renamed to `--mail-account` on `catalog`, `fetch`, `report`, and
+  `ingest`.** The old name was overloaded: on `catalog`/`fetch`/`report` it scopes
+  which of your own stores to operate on, but on `ingest` it is a destination
+  override, not a scope — same flag name, two different roles. One name now
+  covers both, with the role carried by which verb it's on. `$WICKET_ACCOUNT`
+  (the env-var fallback) is unchanged.
+- **`ingest --tags a,b,c` (comma-separated) replaced by a repeatable `--tag`**
+  (`--tag a --tag b`), matching the repeatable-flag convention `wicket config`
+  already uses (`--item`, `--add`, `--remove`).
+- **`fetch --dest` renamed to `--target`.** `--dest` named the root directory
+  downloaded `.eml` is filed under; `--target` is the more precise word for a
+  transformation's destination, and it's what racecar's own CLI canon reserves
+  for this concept.
+
 ## 0.3.0 - 2026-09-03
 
 ### Added
