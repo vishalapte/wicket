@@ -15,7 +15,10 @@ def check_gitignore(root: Path) -> list[Finding]:
         return [
             Finding("Blocker", ".gitignore", "missing-file", ".gitignore is required")
         ]
-    text = path.read_text(encoding="utf-8")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        return [Finding("Blocker", ".gitignore", "encoding-error", str(exc))]
     findings: list[Finding] = []
     if not re.search(r"^\.venv/?\s*$", text, re.MULTILINE):
         findings.append(

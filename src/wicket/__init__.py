@@ -7,8 +7,8 @@ here (this file holds no code):
     from wicket.catalog.api import catalog, CatalogOptions
     from wicket.fetch.api import fetch, FetchOptions, held_messages
     from wicket.report.api import report, senders, addresses, manifest
-    from wicket.config import resolve_store_dir, resolve_archive_dir
+    from wicket.env import resolve_store_dir, resolve_archive_dir
 
 Every entry point takes ``account=`` (multi-user, n accounts); a single account
-under ``~/mail`` is the default.
+under the mail root is the default.
 """

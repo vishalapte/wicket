@@ -21,7 +21,7 @@ def _toml_load(path: Path, label: str) -> tuple[dict[str, Any] | None, list[Find
         ]
     try:
         return tomllib.loads(path.read_text(encoding="utf-8")), []
-    except tomllib.TOMLDecodeError as exc:
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
         return None, [Finding("Blocker", label, "parse-error", str(exc))]
 
 

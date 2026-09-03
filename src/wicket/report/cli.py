@@ -1,26 +1,24 @@
-"""CLI entry: python -m wicket.report
+"""The `report` verb's argparse face: `parser()` + `dispatch()`.
 
-Pattern 3 (leaf CLI): read-only reports over the manifest. No IMAP, no
-credentials; it only reads the year-sharded store. Output goes to stdout, one
-record per line, so it pipes (`... | head`, `> senders.tsv`).
+Not a CLI entry (no `__main__.py` in this package on purpose) — `python -m
+wicket report ...` is the only way in. The root `wicket/__main__.py`
+(Pattern 2) imports this module, folds `parser()`'s arguments into its own
+`report` subparser via `parents=[...]`, and calls `dispatch()` once argparse
+has resolved the verb.
 """
 
 import argparse
-import signal
 import sys
+from collections import Counter
 
-from wicket.config import ACCOUNT_ENV_VAR, resolve_account, resolve_store_dir
-from wicket.report.api import addresses, report, senders
-
-
-def commands() -> list[tuple[str, str]]:
-    return []  # leaf — no sub-packages
+from wicket.env import ACCOUNT_ENV_VAR, resolve_account, resolve_store_dir
+from wicket.report.api import addresses, bucket, report, senders
 
 
 def parser() -> argparse.ArgumentParser:
-    """Build the CLI parser (factory contract: introspectable by tooling)."""
+    """Argument definitions only (`add_help=False`): folded into the root's subparser."""
     build = argparse.ArgumentParser(
-        prog="python -m wicket.report",
+        add_help=False,
         description=(
             "Read-only reports over the year-sharded manifest (no IMAP). With "
             "no flag, prints a one-screen summary; otherwise one record per line."
@@ -38,6 +36,13 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Every distinct address seen in From or To, sorted.",
     )
+    group.add_argument(
+        "--bucket",
+        metavar="NAME",
+        help="Every message ANY store holds that this bucket claims (travel, "
+        "shopping), grouped by store. A view, not a location: mail owned by a "
+        "mailbox stays in that mailbox's store. Ignores --account.",
+    )
     build.add_argument(
         "--account",
         default=None,
@@ -47,10 +52,12 @@ def parser() -> argparse.ArgumentParser:
     return build
 
 
-def run(args: argparse.Namespace) -> int:
+def dispatch(args: argparse.Namespace) -> int:
     """Call the api for the requested report and print it to stdout."""
     try:
-        if args.senders:
+        if args.bucket:
+            _print_bucket(args.bucket)
+        elif args.senders:
             for sender, count in senders(args.account):
                 print(f"{count}\t{sender}")
         elif args.addresses:
@@ -73,13 +80,18 @@ def run(args: argparse.Namespace) -> int:
     return 0
 
 
-def main() -> int:
-    # Streaming output: let a closed downstream pipe (`| head`) end the process
-    # quietly via SIGPIPE rather than raising a BrokenPipeError traceback.
-    if hasattr(signal, "SIGPIPE"):
-        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
-    return run(parser().parse_args())
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+def _print_bucket(name: str) -> None:
+    """Per store: how many messages the bucket claims, and from which domains."""
+    found = bucket(name)
+    if not found:
+        print(f"{name}: no mail in any store")
+        return
+    total = 0
+    for account, rows in found.items():
+        held = sum(1 for _, row in rows if row.get("downloaded"))
+        by_domain = Counter(domain for domain, _ in rows)
+        total += len(rows)
+        print(f"{account}: {len(rows)} message(s), {held} held locally")
+        for domain, count in by_domain.most_common():
+            print(f"  {count:>6}  {domain}")
+    print(f"{name}: {total} message(s) across {len(found)} store(s)")

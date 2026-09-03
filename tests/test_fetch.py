@@ -53,7 +53,10 @@ def test_build_domain_query_expands_and_orders() -> None:
     assert build_domain_query(["acme.com"]) == "{from:acme.com to:acme.com}"
 
 
-def _rec(
+# Seven parameters because a fetch record has seven fields; naming them here is
+# the point of the helper, and collapsing them into a dict would only move the
+# arity into every call site as untyped keys.
+def _rec(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     uid: bytes, msgid: str, thr: str, dt: datetime, frm: str, to: str, mid: str
 ) -> tuple[bytes, str, str, datetime, str, str, str]:
     return (uid, msgid, thr, dt, frm, to, mid)

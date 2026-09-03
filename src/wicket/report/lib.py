@@ -11,6 +11,7 @@ from collections import Counter
 from email.utils import getaddresses
 from pathlib import Path
 
+from wicket.domains import canonical_domain, route_of
 from wicket.manifest import Row, load_store
 
 
@@ -70,3 +71,28 @@ def summary(store_dir: Path) -> dict[str, int]:
         "senders": len(senders),
         "addresses": len(addrs),
     }
+
+
+def bucket_rows(
+    store_dir: Path,
+    bucket: str,
+    routes: dict[str, str],
+    aliases: dict[str, str],
+) -> list[tuple[str, Row]]:
+    """``(folded domain, row)`` for every message in ``store_dir`` that ``bucket`` claims.
+
+    A *view*, not a relocation. Mail owned by a real mailbox stays in that
+    mailbox's store (moving it would only mean the next `catalog` re-observed it
+    and wrote it back), so "show me my travel mail" is a question answered by
+    reading across the stores, which is what this does.
+    """
+    out: list[tuple[str, Row]] = []
+    for row in load_store(store_dir).values():
+        sender = _from_address(row)
+        if not sender:
+            continue
+        if route_of(sender, routes, aliases) != bucket:
+            continue
+        _, _, domain = sender.partition("@")
+        out.append((canonical_domain(domain, aliases), row))
+    return out

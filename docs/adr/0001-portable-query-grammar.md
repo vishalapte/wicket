@@ -1,3 +1,9 @@
+---
+summary: Decision: one portable query grammar compiled per provider, rather than passing raw provider syntax through.
+pnode: [../../README.md]
+bearing: doctrine
+---
+
 # ADR 0001: A portable query grammar across Gmail and Fastmail
 
 - **Status:** Accepted
@@ -17,7 +23,7 @@ There are really four search surfaces, not two:
 | Surface | What it is | Used by |
 |---|---|---|
 | **Gmail search** (`X-GM-RAW`) | Gmail's full consumer search language | gmail backend |
-| **IMAP `SEARCH`** (RFC 3501) | Standard IMAP key set | fastmail backend (now) |
+| **IMAP `SEARCH`** (`RFC 3501`) | Standard IMAP key set | fastmail backend (now) |
 | **JMAP `FilterCondition`** | Structured typed filter object | fastmail backend (future) |
 | Fastmail web operators | UI-only sugar | not used |
 
@@ -72,8 +78,8 @@ per backend. Two rules resolve the tension above:
    not a silent no-op.
 
 The collision table is maintained mechanically in `docs/QUERY-FIDELITY.md`
-(the living spec, drift-checked by `scripts/check_query_fidelity.py`); this
-ADR is the dated record of *why*.
+(the living spec, drift-checked by the fidelity checker that ships with the
+compiler in Phase 3); this ADR is the dated record of *why*.
 
 ## Examples
 

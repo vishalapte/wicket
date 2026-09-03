@@ -14,8 +14,6 @@ from ._constants import (
     CANON_DEV_TOOLS,
     CANON_DJANGO_TOOLS,
     CANON_ISORT_PROFILE,
-    CANON_PYLINT_FORBIDDEN_DISABLE,
-    CANON_PYLINT_REQUIRED_DISABLE,
     CANON_REQUIRES_PYTHON,
     FORBIDDEN_HATCH_SUBKEYS,
     FORBIDDEN_TOOL_KEYS,
@@ -149,7 +147,9 @@ def check_library_pyproject(  # pylint: disable=too-many-locals,too-many-stateme
     # Django shapes must carry djhtml in [dependency-groups].django (PACKAGING.md
     # §6). Keyed on manage.py so non-Django repos are never flagged. Entries may be
     # version-pinned ("djhtml>=3.0"), so compare on the distribution name only.
-    is_django = (root / "manage.py").exists() or (root / "server" / "manage.py").exists()
+    is_django = (root / "manage.py").exists() or (
+        root / "server" / "manage.py"
+    ).exists()
     if is_django:
         django_group = groups.get("django")
         django_names = (
@@ -298,78 +298,86 @@ def check_library_pyproject(  # pylint: disable=too-many-locals,too-many-stateme
             )
         )
 
-    findings.extend(_check_pylint_canon(tool, label))
+    findings.extend(check_pylint_plugin_canon(data, label))
+
+    # Only ONE thing under [tool.pylint] is asserted -- the plugin incompatibility above --
+    # and the two rules that used to sit here were deleted after examination rather than
+    # relaxed. The line between them is not severity, it is what kind of claim each makes:
+    # the plugin rule states a FACT about racecar's own lint recipe, while both deleted rules
+    # stated a PREFERENCE about the owner's linter.
+    #
+    # ignore-paths: required '^scripts/', justified as excluding vendored racecar check scripts
+    # from doc-coherence. False -- check_docs, check_doc_graph and check_file_placement all
+    # scan `*.md` only, so a vendored `scripts/check_packaging.py` was never in scope. What the
+    # rule DID do was change pylint's scope as a side effect (ignore-paths filters even
+    # explicitly-passed files), silently dropping every first-party file under scripts/ from
+    # lint. It cost coverage to buy nothing. The one thing it genuinely excluded is MARKDOWN
+    # under scripts/, and a scripts/README.md belongs inside the doc gate, not outside it.
+    #
+    # MESSAGES CONTROL.disable: which messages a repo suppresses is the owner's judgement, and
+    # racecar advises rather than overrules (shared/OWNERSHIP.md). See _constants.py.
+    #
+    # Both are pylint's own keys, and what a repo scopes out of its own linter is its call.
 
     return findings, data
 
 
-def _pylint_disable(tool: dict[str, Any]) -> list[str] | None:
-    """The pylint disable list, or None if no pylint config is present.
+# pylint's own alias: MASTER was renamed MAIN in pylint 2.14 and both still load plugins.
+# A repo predating the rename carries MASTER, and that is exactly the repo most likely to
+# carry a plugin list from before the canonical lint went parallel -- so reading only MAIN
+# would miss the population the rule is for.
+PYLINT_MAIN_SECTIONS = ("MAIN", "MASTER")
 
-    Tolerates the section spelling variants pylint accepts in pyproject
-    (``MESSAGES CONTROL`` / ``messages_control``) and a bare ``disable`` under
-    ``[tool.pylint]``.
+# The one plugin racecar knows cannot be loaded globally, and why. Not a list of approved
+# plugins: which plugins a repo loads is its call, and this names the single combination
+# racecar's own recipe makes unworkable.
+PARALLEL_HOSTILE_PLUGINS = {
+    "pylint_pytest": (
+        "cannot survive the canonical `pylint -j 0` library pass in racecar.mk: "
+        "FixtureChecker.open() saves the already-patched VariablesChecker.add_message "
+        "into _original_add_message and patches again, and parallel mode calls open() "
+        "once per job per worker with no matching close(). The chain reaches ~980 frames "
+        "and every job dies with RecursionError, which pylint reports as an astroid "
+        "failure naming an innocent file. racecar.mk already passes this plugin on the "
+        "one invocation that needs it -- the serial test-profile run -- so remove it "
+        "here (`load-plugins = []`) and the suites stay graded."
+    ),
+}
+
+
+def check_pylint_plugin_canon(data: dict[str, Any], label: str) -> list[Finding]:
+    """Flag a globally loaded pylint plugin that racecar's own lint recipe cannot run.
+
+    racecar knew this failure in full and knew it in a comment: its own pyproject
+    documents the RecursionError mechanism precisely, and nothing enforced it, so an
+    adopter could hold the incompatible combination until `make lint` exploded on a file
+    with nothing wrong with it. Two racecar decisions meeting -- loading the plugin
+    globally was correct while the canonical lint was serial, and became wrong when the
+    recipe gained `-j 0` -- with the adopter merely where they met.
+
+    Blocker rather than Finding: the combination does not degrade the gate, it breaks it,
+    and the diagnosis is unreachable from the failure text.
     """
-    pylint = tool.get("pylint")
-    if not isinstance(pylint, dict):
-        return None
-    for key in (
-        "MESSAGES CONTROL",
-        "messages_control",
-        "MESSAGES_CONTROL",
-        "messages control",
-    ):
-        sect = pylint.get(key)
-        if isinstance(sect, dict) and "disable" in sect:
-            return [str(x) for x in (sect.get("disable") or [])]
-    if "disable" in pylint:
-        return [str(x) for x in (pylint.get("disable") or [])]
-    return None
-
-
-def _check_pylint_canon(tool: dict[str, Any], label: str) -> list[Finding]:
-    master = tool.get("pylint", {}).get("MASTER", {}) or {}
-    master_ignore = master.get("ignore-paths", []) or []
+    pylint_cfg = (data.get("tool", {}) or {}).get("pylint", {}) or {}
     findings: list[Finding] = []
-    if not any("^scripts/" in str(p) for p in master_ignore):
-        findings.append(
-            Finding(
-                "Blocker",
-                label,
-                "[tool.pylint.MASTER].ignore-paths",
-                "must include '^scripts/' to exclude vendored racecar check "
-                "scripts from doc-coherence checks",
-            )
-        )
-
-    disable = _pylint_disable(tool)
-    if disable is None:
-        findings.append(
-            Finding(
-                "Blocker",
-                label,
-                "[tool.pylint] disable",
-                'missing canonical pylint disable set; see PACKAGING.md "pylint canon"',
-            )
-        )
-        return findings
-    present = set(disable)
-    for code in sorted(CANON_PYLINT_REQUIRED_DISABLE - present):
-        findings.append(
-            Finding(
-                "Blocker",
-                label,
-                "[tool.pylint] disable",
-                f'missing required disable {code!r}; see PACKAGING.md "pylint canon"',
-            )
-        )
-    for code in sorted(CANON_PYLINT_FORBIDDEN_DISABLE & present):
-        findings.append(
-            Finding(
-                "Blocker",
-                label,
-                "[tool.pylint] disable",
-                f"{code!r} must not be disabled — class/function docstrings are required",
-            )
-        )
+    for section in PYLINT_MAIN_SECTIONS:
+        block = pylint_cfg.get(section)
+        if not isinstance(block, dict):
+            continue
+        plugins = block.get("load-plugins")
+        if isinstance(plugins, str):
+            plugins = [p.strip() for p in plugins.split(",")]
+        if not isinstance(plugins, list):
+            continue
+        for name in plugins:
+            why = PARALLEL_HOSTILE_PLUGINS.get(str(name).strip())
+            if why:
+                findings.append(
+                    Finding(
+                        "Blocker",
+                        label,
+                        f"[tool.pylint.{section}].load-plugins",
+                        f"{name} {why}",
+                    )
+                )
     return findings

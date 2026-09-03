@@ -1,7 +1,10 @@
-"""CLI entry: python -m wicket.catalog
+"""The `catalog` verb's argparse face: `parser()` + `dispatch()`.
 
-Pattern 3 (leaf CLI): argparse owns this layer; the worker logic lives in
-the utility modules (sweep / auth / config) it dispatches to.
+Not a CLI entry (no `__main__.py` in this package on purpose) — `python -m
+wicket catalog ...` is the only way in. The root `wicket/__main__.py`
+(Pattern 2) imports this module, folds `parser()`'s arguments into its own
+`catalog` subparser via `parents=[...]`, and calls `dispatch()` once argparse
+has resolved the verb.
 """
 
 import argparse
@@ -10,7 +13,7 @@ import sys
 from pathlib import Path
 
 from wicket.catalog.api import AuthError, CatalogOptions, catalog
-from wicket.config import (
+from wicket.env import (
     ACCOUNT_ENV_VAR,
     ALL_MAIL_MAILBOX,
     DEFAULT_THREADS,
@@ -19,17 +22,13 @@ from wicket.config import (
 )
 
 
-def commands() -> list[tuple[str, str]]:
-    return []  # leaf — no sub-packages
-
-
 def parser() -> argparse.ArgumentParser:
-    """Build the CLI parser (factory contract: introspectable by tooling)."""
+    """Argument definitions only (`add_help=False`): folded into the root's subparser."""
     build = argparse.ArgumentParser(
-        prog="python -m wicket.catalog",
+        add_help=False,
         description=(
             "Sweep mailbox headers (never bodies) into the year-sharded "
-            "manifest at ~/mail/<account>/manifest/YYYY.jsonl, one row per "
+            "manifest at <mail-root>/<account>/manifest/YYYY.jsonl, one row per "
             "message (the observation fields and the `deleted` flag). Merges "
             "with settlement already in the store; re-running is idempotent."
         ),
@@ -45,7 +44,7 @@ def parser() -> argparse.ArgumentParser:
         "--store-dir",
         type=Path,
         default=None,
-        help="Override the manifest store dir. Default: ~/mail/<account>/manifest/.",
+        help="Override the manifest store dir. Default: <mail-root>/<account>/manifest/.",
     )
     build.add_argument(
         "--state-dir",
@@ -108,7 +107,7 @@ def _parse_years(raw: str) -> list[int]:
     return years
 
 
-def run(args: argparse.Namespace) -> int:
+def dispatch(args: argparse.Namespace) -> int:
     """Parse argv into typed kwargs, call the api, render the summary."""
     interactive = (not args.non_interactive) and sys.stdin.isatty()
 
@@ -164,11 +163,3 @@ def run(args: argparse.Namespace) -> int:
         if stats[key]:
             print(f"warning: {stats[key]} {label}", file=sys.stderr)
     return 0
-
-
-def main() -> int:
-    return run(parser().parse_args())
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

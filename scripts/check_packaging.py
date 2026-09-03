@@ -1,6 +1,6 @@
 """Validate project files against the racecar packaging canon.
 
-See arch-coherence/PACKAGING.md for the canon this script enforces.
+See arch-python/PACKAGING.md for the canon this script enforces.
 
 Shape detection (per PACKAGING.md §"Scope"):
 
@@ -26,6 +26,8 @@ Usage:
     python check_packaging.py                  # validate current directory
     python check_packaging.py --root <path>    # validate elsewhere
     python check_packaging.py --strict         # treat Findings as Blockers
+
+Complexity: O(k)
 """
 
 from __future__ import annotations
@@ -51,7 +53,7 @@ def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=(
             "Validate project files against the racecar packaging canon. "
-            "See arch-coherence/PACKAGING.md."
+            "See arch-python/PACKAGING.md."
         )
     )
     p.add_argument(

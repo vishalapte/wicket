@@ -11,11 +11,12 @@ below both verbs in the layering.
 
 from __future__ import annotations
 
+from collections.abc import Container
 from email.utils import getaddresses
 from pathlib import Path
 
-from wicket.config import normalize_account
 from wicket.domains import DOMAIN_RE, canonical_domain, expand_domain
+from wicket.env import normalize_account
 from wicket.manifest import Row, read_shard, store_shards, write_shard
 
 # --- Filing-domain rule --------------------------------------------------
@@ -34,14 +35,21 @@ def _parse_header_addresses(header_value: str) -> list[str]:
     return [addr.lower() for _, addr in getaddresses([header_value]) if addr]
 
 
-def _canonical_external(addr: str, me: str, aliases: dict[str, str]) -> str | None:
+def _canonical_external(
+    addr: str, me: str, aliases: dict[str, str], mine: Container[str] = frozenset()
+) -> str | None:
     """Canonical domain of ``addr``, or None if it is ``me`` or malformed.
+
+    ``mine`` is the owner's other addresses (`env.identities`); one of them is
+    no more a counterparty than ``me`` is. Empty by default, so a caller that
+    knows only the mailbox address gets the historical behavior.
 
     The result becomes a filesystem path segment (`<domain>/<month>/<msgid>.eml`),
     so a crafted header like `x@../../etc` must never pass: DOMAIN_RE forbids `/`
     and `..`, and a rejected address just drops out.
     """
-    if normalize_account(addr) == me:
+    canonical = normalize_account(addr)
+    if canonical == me or canonical in mine:
         return None
     domain = _domain_of(addr)
     if domain and DOMAIN_RE.match(domain):
@@ -54,6 +62,7 @@ def compute_domain(
     to_header: str,
     imap_email: str,
     domain_aliases: dict[str, str] | None = None,
+    identities: Container[str] = frozenset(),
 ) -> str | None:
     """Return the alias-canonical domain a thread files under, or None (ADR 0002).
 
@@ -62,20 +71,23 @@ def compute_domain(
     ignored. For **outbound** mail (From is you) it is the single external
     recipient's domain, or None when you wrote to several distinct domains.
     Applied to a thread's earliest message. ``imap_email`` is your own address
-    (the mailbox owner); `+tag` aliasing is normalized.
+    (the mailbox owner); `+tag` aliasing is normalized. ``identities`` widens
+    "you" to every address you receive at (`env.identities`), so mail sent to
+    a burner or forwarding address of yours still files under the counterparty
+    rather than under your own alias domain.
     """
     aliases = domain_aliases or {}
     me = normalize_account(imap_email)
     from_addrs = _parse_header_addresses(from_header)
     sender = from_addrs[0] if from_addrs else ""
-    if sender and normalize_account(sender) == me:
+    if sender and (normalize_account(sender) == me or sender in identities):
         domains = {
             d
             for addr in _parse_header_addresses(to_header)
-            if (d := _canonical_external(addr, me, aliases)) is not None
+            if (d := _canonical_external(addr, me, aliases, identities)) is not None
         }
         return next(iter(domains)) if len(domains) == 1 else None
-    return _canonical_external(sender, me, aliases)
+    return _canonical_external(sender, me, aliases, identities)
 
 
 def build_domain_query(

@@ -46,7 +46,9 @@ def check_requirements(root: Path, shape: Shape) -> list[Finding]:
     Each path: if present, validated; if absent, no finding.
     """
     findings: list[Finding] = []
-    candidates: list[Path] = [root / "requirements.txt"]  # the library lockfile, all shapes
+    candidates: list[Path] = [
+        root / "requirements.txt"
+    ]  # the library lockfile, all shapes
     if shape.name == "src+server":
         candidates.append(root / "server" / "requirements.txt")
     for path in candidates:

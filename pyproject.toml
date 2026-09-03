@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=64"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "wicket"
-version = "0.2.0"
+version = "0.3.0"
 description = "Portable, read-only mail tooling over IMAP: catalog a mailbox into a year-sharded manifest, fetch matching .eml by counterparty domain, and report over the manifest. Gmail today, Fastmail planned."
 requires-python = ">=3.12"
 authors = [{ name = "Vishal Apte", email = "vishal@enine.com" }]
@@ -14,10 +14,7 @@ license = "MIT"
 dependencies = []
 
 [project.scripts]
-wicket-catalog = "wicket.catalog.__main__:main"
-wicket-fetch = "wicket.fetch.__main__:main"
-wicket-report = "wicket.report.__main__:main"
-wicket-ingest = "wicket.ingest.__main__:main"
+wicket = "wicket.__main__:main"
 
 # Canonical dev tool set per racecar's arch-coherence/PACKAGING.md, the
 # "Dev tooling" rules (PEP 735 dependency group).
@@ -32,10 +29,12 @@ dev = [
     "mypy",
     "pytest",
     "pytest-cov",
+    "pytest-xdist",
     "pip-audit",
     "import-linter",
     "pre-commit",
     "pyyaml",
+    "types-PyYAML",
     "validate-pyproject",
 ]
 
@@ -98,7 +97,14 @@ ignore-docstrings = true
 
 [tool.pylint.MAIN]
 py-version = "3.12"
-load-plugins = ["pylint_pytest"]
+# Canon is the empty list, and it is load-bearing rather than cosmetic:
+# pylint_pytest's FixtureChecker re-patches VariablesChecker.add_message on every
+# open(), and racecar.mk's canonical `pylint -j 0` library pass calls open() once
+# per job per worker with no matching close(), so the chain recurses until every
+# job dies with an AstroidError naming an innocent file. racecar.mk already loads
+# the plugin on the one pass that needs it — the serial test-profile run — so the
+# suites stay graded with this empty.
+load-plugins = []
 
 [tool.pylint.MASTER]
 # Repo-relative regexes to skip. The doc-coherence pre-pass (scripts/check_docs.py)
@@ -144,13 +150,14 @@ exclude_lines = [
 root_package = "wicket"
 
 [[tool.importlinter.contracts]]
-name = "wicket layering (three verbs over the shared store)"
+name = "wicket layering (five verbs over the shared store)"
 type = "layers"
 layers = [
-  "wicket.catalog.__main__ | wicket.fetch.__main__ | wicket.report.__main__ | wicket.ingest.__main__",
-  "wicket.catalog.api | wicket.fetch.api | wicket.report.api | wicket.ingest.api",
-  "wicket.catalog.lib | wicket.fetch.lib | wicket.report.lib | wicket.ingest.lib",
+  "wicket.__main__",
+  "wicket.catalog.cli | wicket.fetch.cli | wicket.report.cli | wicket.ingest.cli | wicket.config.cli",
+  "wicket.catalog.api | wicket.fetch.api | wicket.report.api | wicket.ingest.api | wicket.config.api",
+  "wicket.catalog.lib | wicket.fetch.lib | wicket.report.lib | wicket.ingest.lib | wicket.config.lib",
   "wicket.reconcile",
   "wicket.auth | wicket.domains | wicket.message | wicket.manifest",
-  "wicket.config",
+  "wicket.env",
 ]

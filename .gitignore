@@ -6,3 +6,12 @@ __pycache__/
 .mypy_cache/
 .pytest_cache/
 htmlcov/
+
+# racecar telemetry — local-only usage/build ledgers + per-developer settings. The
+# telemetry writers also drop a self-ignoring `.telemetry/.gitignore` (`*`), so this is
+# belt-and-suspenders; the ledger is never committable either way.
+.telemetry/
+
+# The upgrade verdict ledger: a working note about one upgrade run, not a repo
+# artifact (upgrade/README.md, "The verdict ledger").
+.racecar-verdicts.json

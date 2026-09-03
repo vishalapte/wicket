@@ -7,10 +7,11 @@ from pathlib import Path
 
 import pytest
 
-import wicket.config as config
+from wicket import env
 from wicket.catalog import api as catalog_api
 from wicket.fetch import api as fetch_api
 from wicket.fetch.api import held_messages
+from wicket.fetch.lib import ThreadContext
 from wicket.manifest import shard_path, write_shard
 from wicket.report.api import addresses, manifest, report, senders
 
@@ -52,7 +53,7 @@ def _seed(root: Path) -> Path:
 def test_held_messages_filters_downloaded_and_domains(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(config, "MAIL_ROOT", _seed(tmp_path))
+    monkeypatch.setattr(env, "MAIL_ROOT", _seed(tmp_path))
     got = list(held_messages(account="you@gmail.com", domains={"delta.com"}))
     assert len(got) == 1  # b@x is acme.com, c@x is not downloaded
     row, eml = got[0]
@@ -63,7 +64,7 @@ def test_held_messages_filters_downloaded_and_domains(
 def test_manifest_loads_whole_store(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(config, "MAIL_ROOT", _seed(tmp_path))
+    monkeypatch.setattr(env, "MAIL_ROOT", _seed(tmp_path))
     assert set(manifest("you@gmail.com")) == {"a@x", "b@x", "c@x"}
 
 
@@ -73,7 +74,7 @@ def test_manifest_loads_whole_store(
 def test_report_summarizes_store(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(config, "MAIL_ROOT", _seed(tmp_path))
+    monkeypatch.setattr(env, "MAIL_ROOT", _seed(tmp_path))
     counts = report("you@gmail.com")
     assert counts["messages"] == 3
     assert counts["downloaded"] == 2
@@ -83,7 +84,7 @@ def test_report_summarizes_store(
 def test_senders_ranked_by_count(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(config, "MAIL_ROOT", _seed(tmp_path))
+    monkeypatch.setattr(env, "MAIL_ROOT", _seed(tmp_path))
     got = dict(senders("you@gmail.com"))
     assert got == {"fares@delta.com": 1, "sales@acme.com": 1, "news@delta.com": 1}
 
@@ -91,7 +92,7 @@ def test_senders_ranked_by_count(
 def test_addresses_distinct_and_sorted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(config, "MAIL_ROOT", _seed(tmp_path))
+    monkeypatch.setattr(env, "MAIL_ROOT", _seed(tmp_path))
     assert addresses("you@gmail.com") == [
         "fares@delta.com",
         "news@delta.com",
@@ -106,38 +107,50 @@ def test_addresses_distinct_and_sorted(
 def test_resolve_account_arg_env_discover(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv(config.ACCOUNT_ENV_VAR, raising=False)
+    monkeypatch.delenv(env.ACCOUNT_ENV_VAR, raising=False)
+    # An empty (but PRESENT) mail root: no account exists yet, so any account still
+    # bootstraps. It must exist — an absent root means a locked vault, not an empty
+    # store. The test also never reads the developer's real store.
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setattr(env, "MAIL_ROOT", empty)
     # explicit arg wins, and is normalized (+tag stripped, lowercased)
-    assert config.resolve_account("You+tag@Gmail.com") == "you@gmail.com"
+    assert env.resolve_account("You+tag@Gmail.com") == "you@gmail.com"
     # env var when no arg
-    monkeypatch.setenv(config.ACCOUNT_ENV_VAR, "env@gmail.com")
-    assert config.resolve_account(None) == "env@gmail.com"
-    # discovery of the sole ~/mail account when neither is set
-    monkeypatch.delenv(config.ACCOUNT_ENV_VAR, raising=False)
-    monkeypatch.setattr(config, "MAIL_ROOT", _seed(tmp_path))
-    assert config.resolve_account(None) == "you@gmail.com"
+    monkeypatch.setenv(env.ACCOUNT_ENV_VAR, "env@gmail.com")
+    assert env.resolve_account(None) == "env@gmail.com"
+    # discovery of the sole account under the mail root when neither is set.
+    # Seeded into its OWN root: the empty one above must not be a sibling of it,
+    # or discovery would see two directories and call it ambiguous.
+    seeded = tmp_path / "seeded"
+    seeded.mkdir()
+    monkeypatch.delenv(env.ACCOUNT_ENV_VAR, raising=False)
+    monkeypatch.setattr(env, "MAIL_ROOT", _seed(seeded))
+    assert env.resolve_account(None) == "you@gmail.com"
 
 
 def test_resolve_account_raises_when_none(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.delenv(config.ACCOUNT_ENV_VAR, raising=False)
-    monkeypatch.setattr(config, "MAIL_ROOT", tmp_path / "empty")
+    monkeypatch.delenv(env.ACCOUNT_ENV_VAR, raising=False)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setattr(env, "MAIL_ROOT", empty)
     with pytest.raises(ValueError, match="no account"):
-        config.resolve_account(None)
+        env.resolve_account(None)
 
 
 def test_resolve_state_dir_is_per_account(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     base = tmp_path / "state"
-    monkeypatch.setattr(config, "DEFAULT_STATE_DIR", base)
-    path = config.resolve_state_dir("You+tag@Gmail.com")
+    monkeypatch.setattr(env, "DEFAULT_STATE_DIR", base)
+    path = env.resolve_state_dir("You+tag@Gmail.com")
     assert path == base / "you@gmail.com"
     assert path.is_dir()
     # override replaces the base; the account segment still applies
     other = tmp_path / "elsewhere"
-    assert config.resolve_state_dir("you@gmail.com", other) == other / "you@gmail.com"
+    assert env.resolve_state_dir("you@gmail.com", other) == other / "you@gmail.com"
 
 
 # --- catalog() wiring (no real IMAP) -------------------------------------
@@ -146,9 +159,10 @@ def test_resolve_state_dir_is_per_account(
 def test_catalog_resolves_paths_and_passes_dry_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(config, "MAIL_ROOT", tmp_path / "mail")
-    monkeypatch.setattr(config, "DEFAULT_STATE_DIR", tmp_path / "state")
-    monkeypatch.delenv(config.ACCOUNT_ENV_VAR, raising=False)
+    (tmp_path / "mail").mkdir(exist_ok=True)
+    monkeypatch.setattr(env, "MAIL_ROOT", tmp_path / "mail")
+    monkeypatch.setattr(env, "DEFAULT_STATE_DIR", tmp_path / "state")
+    monkeypatch.delenv(env.ACCOUNT_ENV_VAR, raising=False)
 
     seen: dict[str, object] = {}
 
@@ -189,9 +203,10 @@ def test_fetch_options_require_exactly_one_of_domains_or_query() -> None:
 def test_fetch_wires_query_and_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(config, "MAIL_ROOT", tmp_path / "mail")
-    monkeypatch.setattr(config, "DEFAULT_STATE_DIR", tmp_path / "state")
-    monkeypatch.delenv(config.ACCOUNT_ENV_VAR, raising=False)
+    (tmp_path / "mail").mkdir(exist_ok=True)
+    monkeypatch.setattr(env, "MAIL_ROOT", tmp_path / "mail")
+    monkeypatch.setattr(env, "DEFAULT_STATE_DIR", tmp_path / "state")
+    monkeypatch.delenv(env.ACCOUNT_ENV_VAR, raising=False)
 
     seen: dict[str, object] = {}
 
@@ -213,7 +228,7 @@ def test_fetch_wires_query_and_paths(
     )
 
     assert seen["interactive"] is False  # default
-    ctx = seen["ctx"]
+    ctx: ThreadContext = seen["ctx"]  # type: ignore[assignment]
     assert ctx.dry_run is True
     assert ctx.dest == tmp_path / "mail" / "you@gmail.com" / "archive"
     assert "acme.com" in str(seen["query"])

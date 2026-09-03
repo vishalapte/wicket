@@ -1,7 +1,10 @@
-"""CLI entry: python -m wicket.fetch
+"""The `fetch` verb's argparse face: `parser()` + `dispatch()`.
 
-Pattern 3 (leaf CLI): argparse owns this layer; the worker logic lives in
-the utility modules (fetch / auth / config) it dispatches to.
+Not a CLI entry (no `__main__.py` in this package on purpose) — `python -m
+wicket fetch ...` is the only way in. The root `wicket/__main__.py`
+(Pattern 2) imports this module, folds `parser()`'s arguments into its own
+`fetch` subparser via `parents=[...]`, and calls `dispatch()` once argparse
+has resolved the verb.
 """
 
 import argparse
@@ -9,18 +12,14 @@ import imaplib
 import sys
 from pathlib import Path
 
-from wicket.config import DEFAULT_THREADS
+from wicket.env import DEFAULT_THREADS
 from wicket.fetch.api import AuthError, FetchOptions, fetch
 
 
-def commands() -> list[tuple[str, str]]:
-    return []  # leaf — no sub-packages
-
-
 def parser() -> argparse.ArgumentParser:
-    """Build the CLI parser (factory contract: introspectable by tooling)."""
+    """Argument definitions only (`add_help=False`): folded into the root's subparser."""
     build = argparse.ArgumentParser(
-        prog="python -m wicket.fetch",
+        add_help=False,
         description=(
             "Download full .eml for every message in matching Gmail threads, "
             "filed under <dest>/<domain>/YYYY-MM/<msg-id>.eml. The domain is "
@@ -47,7 +46,7 @@ def parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Destination root for .eml files; files go into "
-        "<domain>/YYYY-MM/. Default: ~/mail/<account>/archive/.",
+        "<domain>/YYYY-MM/. Default: <mail-root>/<account>/archive/.",
     )
     build.add_argument(
         "--state-dir",
@@ -60,7 +59,7 @@ def parser() -> argparse.ArgumentParser:
         "--account",
         default=None,
         help="Account that scopes --dest and the manifest store "
-        "(~/mail/<account>/). Gmail `+tag` aliases are normalized "
+        "(<mail-root>/<account>/). Gmail `+tag` aliases are normalized "
         "automatically. Required if $WICKET_ACCOUNT is unset.",
     )
     build.add_argument(
@@ -101,7 +100,7 @@ def parser() -> argparse.ArgumentParser:
     return build
 
 
-def run(args: argparse.Namespace) -> int:
+def dispatch(args: argparse.Namespace) -> int:
     """Parse argv into typed kwargs, call the api, render the summary."""
     interactive = (not args.non_interactive) and sys.stdin.isatty()
     try:
@@ -137,11 +136,3 @@ def run(args: argparse.Namespace) -> int:
             f"{stats['held']} already held."
         )
     return 0
-
-
-def main() -> int:
-    return run(parser().parse_args())
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

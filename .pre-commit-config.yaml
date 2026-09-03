@@ -1,9 +1,31 @@
 # Canonical racecar pre-commit hooks. Run `pre-commit autoupdate` periodically
 # to bump pinned revs.
 
+# Hooks run at `pre-commit` unless they say otherwise. Without this, pre-commit's
+# default is *every* stage, so each always_run doc checker below fires a second time
+# at commit-msg — the same work twice per commit. The two commit-msg gates opt back
+# in explicitly with their own `stages:`.
+default_stages: [pre-commit]
+
 repos:
   - repo: local
     hooks:
+      # Secret scan first: a leaked credential must fail the commit before any other
+      # hook touches the staged set. gitleaks is a Go binary (not pip-installable), so
+      # it stays a repo: local / language: system hook backed by scripts/install_system_deps.sh
+      # rather than a remote repo — keeping the whole config deterministic and network-free
+      # at hook time, consistent with every other hook here. It reads the git index itself
+      # (--staged), so no filenames are passed and it always runs. --redact keeps any hit
+      # out of the terminal. Shipped by default but not in check_packaging's required set
+      # (like djhtml): its absence surfaces as advisory config drift on upgrade, not a Blocker,
+      # because it depends on a non-pip binary a consumer may not have.
+      - id: gitleaks
+        name: gitleaks — no hardcoded secrets in the staged diff
+        entry: gitleaks git --pre-commit --redact --staged --verbose
+        language: system
+        pass_filenames: false
+        always_run: true
+
       # isort first (orders imports), then black (formats the result, including the
       # reordered imports). Reverse order would force black to run twice.
       # Both use --settings-file/--config to match `make fmt` exactly.
@@ -11,7 +33,7 @@ repos:
         name: isort
         entry: bash -c 'CONF=$(make -s print-LIB_PYPROJECT); python -m isort --settings-file "$CONF" "$@"' --
         language: python
-        additional_dependencies: [isort==5.13.2]
+        additional_dependencies: [isort==8.0.1]
         types: [python]
         exclude: '^scripts/'
 
@@ -19,7 +41,7 @@ repos:
         name: black
         entry: bash -c 'CONF=$(make -s print-LIB_PYPROJECT); python -m black --config "$CONF" "$@"' --
         language: python
-        additional_dependencies: [black==24.10.0]
+        additional_dependencies: [black==26.5.1]
         types: [python]
         exclude: '^scripts/'
 
@@ -49,62 +71,87 @@ repos:
         always_run: true
 
       - id: no-upward-imports-in-business-modules
-        name: arch-coherence/PYTHON.md §1 — business modules must not import from root package directly
-        entry: python scripts/check_upward_imports.py
+        name: arch-python/PYTHON.md §1 — business modules must not import from root package directly
+        entry: bash -c 'for d in $(make -s print-RACECAR_SCRIPT_DIRS); do f="$d/check_upward_imports.py"; [ -f "$f" ] && exec python "$f" "$@"; done; echo "cannot find check_upward_imports.py" >&2; exit 1' --
         language: python
         types: [python]
         exclude: '(__main__|__init__)\.py$'
 
       - id: doc-coherence-mechanical-pre-pass
         name: doc-coherence/README.md — mechanical pre-pass (link / §N / vocabulary drift)
-        entry: python scripts/check_docs.py
+        entry: bash -c 'for d in $(make -s print-RACECAR_SCRIPT_DIRS); do f="$d/check_docs.py"; [ -f "$f" ] && exec python "$f" "$@"; done; echo "cannot find check_docs.py" >&2; exit 1' --
         language: python
         pass_filenames: false
         always_run: true
 
       - id: todo-format
         name: shared/TODO_FORMAT.md — TODO item schema (id / Prio / Depends / Updated)
-        entry: python scripts/check_todo_format.py
+        entry: bash -c 'for d in $(make -s print-RACECAR_SCRIPT_DIRS); do f="$d/check_todo_format.py"; [ -f "$f" ] && exec python "$f" "$@"; done; echo "cannot find check_todo_format.py" >&2; exit 1' --
         language: python
         pass_filenames: false
         always_run: true
 
       - id: file-placement
         name: doc-coherence/README.md — markdown docs placement (top-level whitelist / subdir README+CLAUDE)
-        entry: python scripts/check_file_placement.py
+        entry: bash -c 'for d in $(make -s print-RACECAR_SCRIPT_DIRS); do f="$d/check_file_placement.py"; [ -f "$f" ] && exec python "$f" "$@"; done; echo "cannot find check_file_placement.py" >&2; exit 1' --
+        language: python
+        # pyyaml is not this checker's own dependency: it imports
+        # check_doc_graph.graph_edges to resolve `pnode` frontmatter edges, and
+        # check_doc_graph parses that frontmatter with yaml. check_doc_graph is not
+        # itself a hook (it runs under `make docs`, in .venv, where PyYAML is already
+        # present), so the dep has no other place to be declared.
+        #
+        # Without this line the hook's isolated venv dies on ModuleNotFoundError: yaml
+        # while `make docs` stays green -- two interpreters, one script. That asymmetry
+        # is the expensive part: the gate you would naturally reach for to reproduce the
+        # failure is the one that passes.
+        additional_dependencies: [pyyaml]
+        pass_filenames: false
+        always_run: true
+
+      # The changelog is a record other tooling READS — the version-bump gate below and
+      # the brief both go by the version its headings state — so a malformed heading
+      # silently changes what they read instead of failing. Shipped by default but
+      # deliberately NOT in check_packaging's required-hook set (like gitleaks and
+      # content-blind): a repo that predates this hook picks the checker up through
+      # `make docs` on its next sync either way, and adding it here as well is an upgrade
+      # decision its owner makes, not a Blocker racecar hands them for a file they have
+      # not touched.
+      - id: changelog-headings
+        name: shared/COMMITS.md — changelog headings parse; the newest matches the version home
+        entry: bash -c 'for d in $(make -s print-RACECAR_SCRIPT_DIRS); do f="$d/check_changelog.py"; [ -f "$f" ] && exec python "$f" "$@"; done; echo "cannot find check_changelog.py" >&2; exit 1' --
+        language: python
+        pass_filenames: false
+        always_run: true
+
+      # Content-blindness: no tracked file's prose may embed a real figure (a
+      # count, rate, notional). Off by default; opt in with
+      # `content_blind: true` in README frontmatter (no other config needed).
+      - id: content-blind
+        name: docs-orchestrator/CONTENT_BLINDNESS.md — no real figures in prose
+        entry: python scripts/check_content_blind.py
         language: python
         pass_filenames: false
         always_run: true
 
       - id: no-cross-module-string-relations
-        name: arch-coherence/DJANGO.md §2 — no cross-module string ORM relations (skipped if no manage.py)
+        name: arch-python/DJANGO.md §2 — no cross-module string ORM relations (skipped if no manage.py)
         entry: bash -c 'VENV=; for d in .venv venv ../venv; do [ -d "$d" ] && VENV=$d && break; done; export PATH="${VENV:+$VENV/bin:}$PATH"; if find . -maxdepth 3 -name "manage.py" -not -path "*/.venv/*" -not -path "*/venv/*" | grep -q .; then python scripts/check_dj_model_ref_as_string.py; fi'
         language: system
         pass_filenames: false
         always_run: true
 
-      - id: prose-punctuation
-        name: shared/VOICE.md — no em-dashes / en-dashes / `--` in prose (Markdown, Python docstrings)
-        entry: python scripts/check_prose_punctuation.py
-        language: python
-        types_or: [markdown, python]
-        # scripts/ is vendored racecar; its own docstrings carry em-dashes, so this
-        # hook must skip it, exactly as isort/black do and as the pylint MASTER
-        # ignore-paths already does. Divergence from templates/classic kept on
-        # purpose; escalated so racecar adds the same exclude (see the finding).
-        exclude: '^scripts/'
-
       # The commit-msg-stage hooks below need `pre-commit install --hook-type commit-msg`
       # (racecar.mk's `install-dev` installs both hook types). They read the commit
       # message, which only exists at commit-msg time.
-      - id: version-bump-gate
-        name: shared/COMMITS.md — a bumpable commit type must bump the version home
-        entry: python scripts/check_version_bump.py
+      - id: commit-message-budget
+        name: shared/COMMITS.md — subject under 72 chars, body prose under 12 lines
+        entry: python scripts/check_commit_message.py
         language: python
         stages: [commit-msg]
 
-      - id: prose-punctuation-commit-msg
-        name: shared/VOICE.md — no em-dashes / en-dashes / `--` in the commit message
-        entry: python scripts/check_prose_punctuation.py --commit-msg
+      - id: version-bump-gate
+        name: shared/COMMITS.md — a bumpable commit type must bump the version home
+        entry: python scripts/check_version_bump.py
         language: python
         stages: [commit-msg]

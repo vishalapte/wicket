@@ -13,7 +13,7 @@
    store, preserving observation (manifest.merge_settlement).
 
 Read-only on the mailbox (``SELECT`` is read-only). No CLI; the CLI layer
-(``wicket.fetch.__main__``) seeds credentials and calls ``download()``.
+(``wicket.fetch.cli``) seeds credentials and calls ``download()``.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from threading import Thread
 from typing import cast
 
 from wicket.auth import AuthError, open_mailbox
-from wicket.config import DEFAULT_THREADS
+from wicket.env import DEFAULT_THREADS
 from wicket.manifest import (
     Row,
     load_store,

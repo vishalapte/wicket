@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Enforce arch-coherence/PYTHON.md §1: business modules must not import directly
+"""Enforce arch-python/PYTHON.md §1: business modules must not import directly
 from a root package.
 
 Only `__init__.py` files may import from a root package (the environment-layer
-channel defined in arch-coherence/README.md "Environment layer exception").
+channel defined in arch-python/README.md "Environment layer exception").
 Business modules that need inherited state read it via their own package's
 `__init__.py`. The forbidden pattern is a module
 reaching UP into the top-level of ITS OWN root package: a file whose tree is
@@ -35,6 +35,8 @@ script lives at the repo root but pyproject.toml is in a sub-package).
 
 Exits 0 if clean, 1 if any violation is found. Files that match no configured
 root are skipped.
+
+Complexity: O(files x lines per file)
 """
 
 from __future__ import annotations
@@ -73,8 +75,8 @@ def _owning_root(path: Path, roots: set[str]) -> str | None:
     """Return the configured root package whose tree contains `path`.
 
     The owning root is the configured root name that appears as a path segment
-    identifying the file's package tree (e.g. `src/xenocrates/ib/x.py` is
-    owned by `xenocrates`; `server/apps/accounts/forms.py` by `apps`). Returns
+    identifying the file's package tree (e.g. `src/widgets/ib/x.py` is
+    owned by `widgets`; `server/apps/accounts/forms.py` by `apps`). Returns
     None if no configured root is on the path. If more than one configured root
     is on the path (nested), the OUTERMOST is the owner — that is the top-level
     package whose top-level `from <root> import ...` would be the upward reach.

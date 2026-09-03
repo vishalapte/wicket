@@ -10,20 +10,16 @@ library pyproject) is a local variable passed to the two checks that need it.
 
 Public API is re-exported here so `from check_packaging_rules import detect_shape`
 works, and the entry re-exports the same names so `from check_packaging import
-detect_shape` keeps working for the other arch-coherence scripts.
+detect_shape` keeps working for the other arch-python scripts.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from ._changelog import check_changelog
 from ._common import _rel_for_audit
-from ._server import (
-    check_server_importlinter_coverage,
-    check_server_isort_coverage,
-    check_server_pyproject,
-)
 from ._findings import Finding
 from ._forbidden import check_forbidden_lockfiles, check_forbidden_pylintrc
 from ._gitignore import check_gitignore
@@ -31,7 +27,13 @@ from ._makefile import check_makefile
 from ._optin import check_optin
 from ._precommit import check_precommit
 from ._pyproject import check_library_pyproject
+from ._pytyped import check_py_typed
 from ._requirements import check_requirements
+from ._server import (
+    check_server_importlinter_coverage,
+    check_server_isort_coverage,
+    check_server_pyproject,
+)
 from ._shape import Shape, detect_shape
 from ._version import check_legacy_version_file
 
@@ -47,6 +49,7 @@ __all__ = [
     "check_gitignore",
     "check_legacy_version_file",
     "check_library_pyproject",
+    "check_py_typed",
     "check_makefile",
     "check_optin",
     "check_precommit",
@@ -72,14 +75,30 @@ def run_all(root: Path) -> list[Finding]:
 
     # The library pyproject, parsed once; its data and version flag feed the
     # server-coverage and legacy-VERSION audits below. A pure server shape has none.
-    lib_data: dict | None = None
+    #
+    # The flat `django` shape is skipped here: its root pyproject is a config-home
+    # (tool config, ignore-paths), not a publishable library manifest, the same way a
+    # repo with no [project] is not a package (PACKAGING.md "Scope" / VERSION). Auditing
+    # it for PEP 621 [project]/[build-system]/dev-group would Blocker a legitimate
+    # django-admin startproject site. racecar may prefer server/ but must not force
+    # package canon onto Django's own default layout (SG2).
+    lib_data: dict[str, Any] | None = None
     has_canonical_version = False
-    if shape.library_pyproject is not None:
+    if shape.library_pyproject is not None and shape.name != "django":
         lib_findings, lib_data = check_library_pyproject(root, shape.library_pyproject)
         findings += lib_findings
         project = lib_data.get("project") if isinstance(lib_data, dict) else None
         has_canonical_version = isinstance(project, dict) and bool(
             project.get("version")
+        )
+
+        # PEP 561: the marker that makes this library's annotations visible to anything
+        # importing it as an installed package, and the packaging that ships it.
+        findings += check_py_typed(
+            root,
+            lib_data,
+            _rel_for_audit(root, shape.library_pyproject),
+            shape.source_root,
         )
 
     # src+server: isort and import-linter must also cover the server tree.
@@ -109,10 +128,10 @@ def run_all(root: Path) -> list[Finding]:
     )
     findings += check_requirements(root, shape)
     findings += check_forbidden_lockfiles(root)
-    findings += check_forbidden_pylintrc(root)
+    findings += check_forbidden_pylintrc(root, shape)
     findings += check_gitignore(root)
     findings += check_makefile(root)
-    findings += check_precommit(root)
+    findings += check_precommit(root, shape)
     findings += check_changelog(root)
     findings += check_optin(root)
     return findings

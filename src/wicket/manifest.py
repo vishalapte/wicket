@@ -48,7 +48,7 @@ def write_shard(path: Path, rows: Shard) -> None:
     """Atomically replace a shard, rows id-sorted and keys sorted.
 
     Deterministic so an unchanged store rewrites byte-identically (idempotent).
-    Private mailbox metadata, so the dir is 0700 and the file 0600.
+    Private mailbox metadata, so the dir is `0700` and the file `0600`.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(path.parent, 0o700)

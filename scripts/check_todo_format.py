@@ -26,6 +26,9 @@ Exit 0 if clean, 1 if any drift is found.
 
 Usage:
     python3 <path-to>/check_todo_format.py
+
+Complexity: O(F + L), where F is files/dirs walked under the repo root and L is total
+lines across matched markdown files.
 """
 
 from __future__ import annotations
@@ -35,16 +38,10 @@ import sys
 from datetime import date
 from pathlib import Path
 
+from check_packaging_rules._files import repo_files
+from check_packaging_rules._root import find_repo_root
 
-def _find_repo_root() -> Path:
-    start = Path.cwd()
-    for p in [start, *start.parents]:
-        if (p / ".git").exists():
-            return p
-    return start
-
-
-REPO_ROOT = _find_repo_root()
+REPO_ROOT = find_repo_root()
 
 H2_RE = re.compile(r"^##\s+(.*?)\s*$")
 H3_RE = re.compile(r"^###\s+(.*?)\s*$")
@@ -80,7 +77,7 @@ def _iso_date_ok(value: str) -> bool:
 
 def _markdown_files() -> list[Path]:
     out: list[Path] = []
-    for p in sorted(REPO_ROOT.rglob("*.md")):
+    for p in sorted(repo_files(REPO_ROOT, "*.md")):
         rel = p.relative_to(REPO_ROOT)
         if any(part.startswith(".") for part in rel.parts):
             continue
@@ -131,15 +128,17 @@ def check_file(path: Path) -> list[Finding]:
 
     for start, end in _todo_section_ranges(lines, mask):
         # Item heading lines within this section.
-        item_heads: list[int] = []
+        item_heads: list[tuple[int, re.Match[str]]] = []
         for i in range(start, end):
             if mask[i]:
                 continue
             h3 = H3_RE.match(lines[i])
-            if h3 and ITEM_RE.match(h3.group(1)):
-                item_heads.append(i)
-        for idx, head in enumerate(item_heads):
-            item = ITEM_RE.match(H3_RE.match(lines[head]).group(1))
+            # Keep the match rather than re-deriving it below: re-matching the same line a
+            # second time relied on an invariant maintained here, four lines away, and gave
+            # the type checker nothing to narrow on.
+            if h3 and (item_match := ITEM_RE.match(h3.group(1))):
+                item_heads.append((i, item_match))
+        for idx, (head, item) in enumerate(item_heads):
             item_id = item.group("id")
             lineno = head + 1
             if item_id in seen_ids:
@@ -153,7 +152,7 @@ def check_file(path: Path) -> list[Finding]:
                 )
             else:
                 seen_ids[item_id] = lineno
-            body_end = item_heads[idx + 1] if idx + 1 < len(item_heads) else end
+            body_end = item_heads[idx + 1][0] if idx + 1 < len(item_heads) else end
             body = [lines[j].strip() for j in range(head + 1, body_end) if not mask[j]]
             if not any(PRIO_RE.match(b) for b in body):
                 findings.append(
@@ -212,8 +211,8 @@ def main() -> int:
     root_mask = _code_mask(root_lines)
     has_index = any(
         not root_mask[i]
-        and H2_RE.match(ln)
-        and H2_RE.match(ln).group(1).strip().lower() == "todo"
+        and (h2 := H2_RE.match(ln))
+        and h2.group(1).strip().lower() == "todo"
         for i, ln in enumerate(root_lines)
     )
     if not has_index:

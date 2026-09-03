@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from wicket.manifest import (
+    Row,
     latest_shard_year,
     load_store,
     merge_catalog,
@@ -22,8 +23,8 @@ def test_load_store_merges_all_shards(tmp_path: Path) -> None:
 
 
 def test_merge_settlement_updates_existing_and_adds_new() -> None:
-    prior = {"a@x": {"id": "a@x", "from": "y@z.com"}}
-    settlements = {
+    prior: dict[str, Row] = {"a@x": {"id": "a@x", "from": "y@z.com"}}
+    settlements: dict[str, Row] = {
         "a@x": {"downloaded": True, "path": "p"},
         "b@x": {"id": "b@x", "downloaded": True},
     }
@@ -35,7 +36,7 @@ def test_merge_settlement_updates_existing_and_adds_new() -> None:
 
 def test_write_read_roundtrip_and_idempotent(tmp_path: Path) -> None:
     path = shard_path(tmp_path, 2024)
-    rows = {
+    rows: dict[str, Row] = {
         "b@x": {"id": "b@x", "date": "2024-02-01T00:00:00+00:00"},
         "a@x": {"id": "a@x", "date": "2024-01-01T00:00:00+00:00"},
     }
@@ -60,7 +61,9 @@ def test_merge_refreshes_observation_and_preserves_settlement() -> None:
             "path": "acme.com/2024-03/18f2.eml",
         }
     }
-    observed = {"a@x": {"id": "a@x", "from": "new@acme.com", "subject": "Hi"}}
+    observed: dict[str, Row] = {
+        "a@x": {"id": "a@x", "from": "new@acme.com", "subject": "Hi"}
+    }
     merged = merge_catalog(prior, observed, complete=True)
     assert merged["a@x"]["from"] == "new@acme.com"  # observation refreshed
     assert merged["a@x"]["subject"] == "Hi"
@@ -90,7 +93,7 @@ def test_incomplete_catalog_preserves_unseen_untouched() -> None:
 
 def test_returning_message_clears_deleted() -> None:
     prior = {"a@x": {"id": "a@x", "deleted": True, "downloaded": True, "path": "p.eml"}}
-    observed = {"a@x": {"id": "a@x", "from": "x@y.com"}}
+    observed: dict[str, Row] = {"a@x": {"id": "a@x", "from": "x@y.com"}}
     merged = merge_catalog(prior, observed, complete=True)
     assert merged["a@x"]["deleted"] is False
     assert merged["a@x"]["downloaded"] is True

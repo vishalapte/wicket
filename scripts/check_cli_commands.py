@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Enforce arch-coherence/PYTHON.md §3: the `__main__.py` + `commands()` CLI contract.
+"""Enforce arch-python/PYTHON.md §3: the `__main__.py` + `commands()` CLI contract.
 
 Scope is deliberately narrow: this script checks commands only. It does not
 reimplement §1 (Module Structure) or §2 (Imports) — those are owned by
@@ -23,7 +23,10 @@ At every node in the CLI tree rooted at `<pkg>` the walker confirms:
      - `python -m <pkg> --help` exits 0 at every node.
 4. Each listed child `<pkg>.<name>` is a real, runnable entry point — either a
    sub-package with its own `__main__.py` (recurse into it) or a `.py` module
-   with an `if __name__ == "__main__":` guard.
+   with an `if __name__ == "__main__":` guard. BOTH shapes are read the same
+   way: the module shape gets `parser()` introspection, `subcommands()`, and
+   the no-silent-omission scan exactly as the package shape does. It did not,
+   once, and a leaf module's flags reached no reader at all.
 5. Registration symmetry: the filesystem under `pkg` is scanned for any
    direct-child sub-package with a `__main__.py`, or any `.py` module with an
    `if __name__ == "__main__":` guard, that is NOT in `commands()`. These are
@@ -34,8 +37,18 @@ At every node in the CLI tree rooted at `<pkg>` the walker confirms:
 
 # Importable API
 
-    from scripts.check_cli_commands import audit_cli_tree
+    import sys
+    sys.path.insert(0, "scripts")
+    from check_cli_commands import audit_cli_tree
     tree = audit_cli_tree("fubar")        # enriched Node, JSON-serialisable
+
+Import it by putting `scripts/` on the path and using the BARE name, never
+`from scripts.check_cli_commands import …`. `scripts/` holds no `__init__.py`, so
+the dotted form gives mypy a second module name for one file and it aborts the
+whole run with "Source file found twice under different module names" before
+checking anything — a caller who follows the documented form breaks their own
+typecheck gate. gen_cli_docs.py imports this module the same way, for the same
+reason.
 
 Every node in the returned tree carries both the audit affordances AND
 the agent-facing resolutions, side by side:
@@ -49,6 +62,11 @@ the agent-facing resolutions, side by side:
       "orphan":      bool,                          # registered by parent?
       "violations":  [str, ...],                    # messages at this node
       "children":    [<node>, ...],                 # registered + orphan kids
+      "args":        [<arg>, ...] | null,           # parser() surface; null when
+                                                    # no parser() is exposed. Set on
+                                                    # "module" nodes as well as
+                                                    # "package" ones — a leaf is a
+                                                    # leaf whichever shape it took.
 
       # --- agent-facing resolutions (enrichment, computed once here) ---
       "command":     "python -m <pkg>",             # literal invocation
@@ -74,14 +92,24 @@ empties) for its own needs; downstream does NOT enrich.
 
 # CLI
 
-    python scripts/check_cli_commands.py <root.package> [<root.package> ...]
-    python scripts/check_cli_commands.py --json <root.package>
+    python scripts/check_cli_commands.py [<root> ...]
+    python scripts/check_cli_commands.py --json <root>
+
+A `<root>` is a dotted package name (`acme`) or a filesystem path to the
+package directory (`src/acme`). A path to a namespace directory with no
+`__init__.py` — `src`, or `.` — is descended one level to its sole child
+package (ambiguity errors). With no `<root>` at all, the default is `src`
+when a src/ layout is present, else the current directory. A path root is
+put on `sys.path` and `PYTHONPATH` so its `python -m <pkg>` probes resolve
+without an editable install.
 
 Default output is the walked tree plus a violations summary. With
 `--json`, emits the enriched tree (single dict for one root, list of
 dicts for multiple) to stdout.
 
 Exits 0 if clean, 1 if any violation is found.
+
+Complexity: O(V+E) DFS over the CLI package/module tree, amortized by import memoization
 """
 
 # This checker is deliberately one module. A package split was tried and reverted
@@ -141,6 +169,9 @@ Node = dict[str, Any]
 # structural walk is single-threaded, so no lock is needed. The cache lives
 # for the life of the process — fine because the tool runs one-shot per
 # invocation and each `audit_cli_tree` call sees a stable filesystem.
+# Memoization, applied deliberately to an impure function: `importlib.import_module`
+# has side effects (module-scope code runs once), so the point isn't just avoiding
+# redundant work -- it's avoiding replaying those side effects a second time.
 _IMPORT_MAIN_CACHE: dict[str, tuple[ModuleType | None, str | None]] = {}
 
 
@@ -150,9 +181,11 @@ def _import_main(pkg: str) -> tuple[ModuleType | None, str | None]:
     Returns `(module, error)`:
 
     - `(module, None)` — import succeeded.
-    - `(None, None)` — no `__main__.py` file (clean `ModuleNotFoundError`).
+    - `(None, None)` — no `__main__.py` file: a `ModuleNotFoundError` naming the
+      target module or one of its ancestors, which is the only kind that proves absence.
     - `(None, "<TypeName>: <msg>")` — `__main__.py` exists but raised
-      during import. Any non-`ModuleNotFoundError` exception is captured
+      during import, including a `ModuleNotFoundError` naming a dependency.
+      Any non-`ModuleNotFoundError` exception is captured
       as a structural violation rather than killed the audit. This shows
       up when a `__main__.py` does real work at module scope (a separate
       §3 anti-pattern — code must live behind `main()`, guarded by
@@ -165,8 +198,20 @@ def _import_main(pkg: str) -> tuple[ModuleType | None, str | None]:
             importlib.import_module(f"{pkg}.__main__"),
             None,
         )
-    except ModuleNotFoundError:
-        result = (None, None)
+    except ModuleNotFoundError as exc:
+        # `ModuleNotFoundError` proves only that SOME import in the chain failed. It is
+        # raised both when `<pkg>/__main__.py` is absent and when it exists and imports a
+        # dependency this interpreter lacks -- and `exc.name` is what tells them apart.
+        # Attributing absence without checking it reports a file that is plainly on disk
+        # as missing, on any repo whose `__main__.py` imports anything outside the stdlib.
+        # The blast radius is not one repo: racecar's SessionStart hook runs this checker
+        # with whatever `python3` is on PATH, so a session opened outside the project venv
+        # was handed a fabricated CLI-contract violation as authoritative context.
+        target = f"{pkg}.__main__"
+        absent = exc.name is not None and (
+            exc.name == target or target.startswith(f"{exc.name}.")
+        )
+        result = (None, None) if absent else (None, f"{type(exc).__name__}: {exc}")
     # Importing an adopter's __main__ runs their code; any failure is data, not
     # a reason to crash the audit.
     except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -294,15 +339,19 @@ def _args_from_parser(parser_obj: argparse.ArgumentParser) -> list[dict[str, Any
         if action.help is argparse.SUPPRESS:
             continue
 
-        group = action_to_group.get(id(action))
-        if group is None:
+        # Named apart from the `group` loop variable that built action_to_group above:
+        # that one is always a group, this one is a lookup that may miss.
+        owning_group = action_to_group.get(id(action))
+        if owning_group is None:
             out.append(_describe_action(action))
             continue
-        if id(group) in seen_groups:
+        if id(owning_group) in seen_groups:
             continue
-        seen_groups.add(id(group))
+        seen_groups.add(id(owning_group))
         members = [
-            _describe_action(a) for a in group._group_actions if _filter_member(a)
+            _describe_action(a)
+            for a in owning_group._group_actions
+            if _filter_member(a)
         ]
         if not members:
             continue
@@ -311,7 +360,7 @@ def _args_from_parser(parser_obj: argparse.ArgumentParser) -> list[dict[str, Any
             out.append(members[0])
             continue
         entry: dict[str, Any] = {"oneOf": members}
-        if group.required:
+        if owning_group.required:
             entry["required"] = True
         out.append(entry)
     return out
@@ -355,6 +404,27 @@ def _introspect_parser(mod: ModuleType) -> tuple[
 # pylint: enable=protected-access
 
 
+# Words that are nouns in every context, and therefore never legal in a verb slot.
+#
+# The grammar rule in `docs/nomenclature/README.md — node is the noun, subcommand is the
+# verb — needs judgment to apply, because whether a given word reads as an action is
+# arguable. This list needs none: these four are nouns wherever they appear, so a
+# membership test decides it. That is why the rule lives here rather than in prose. The
+# walk already has every declared verb in hand, so the check is free.
+#
+# `hosts`, `config` and `status` remain legal as READ-ONLY report verbs — see §3's
+# narrow exception — so they are deliberately absent from this list. Only `fleet` is
+# absolute: it names a population and never an act.
+#
+# SCOPE: this is tested against `subcommands()` — argparse names — and never against
+# module names. A leaf in `python -m a.b.c.d` may be a noun or a verb, because which
+# one it holds depends on the shape: a node with subparsers puts the action in the
+# subparser and the object in the leaf (`racecar.fleet profile`), while a node without
+# them puts the action in the leaf itself (`a.b.contacts.build`). Applying this list to
+# module names would reject `racecar.fleet`, which is the correct shape.
+ALWAYS_NOUNS = frozenset({"fleet"})
+
+
 def _read_subcommands(
     mod: ModuleType,
 ) -> tuple[list[tuple[str, str]] | None, list[str]]:
@@ -381,24 +451,85 @@ def _read_subcommands(
         return None, [
             f"`subcommands()` must return list[tuple[str, str]]; got {result!r}"
         ]
-    bad_names = [
-        n for n, _ in result if not n or any(c in n for c in (".", " ", "\t", "/"))
-    ]
-    if bad_names:
-        return result, [
+    return result, _name_violations([n for n, _ in result])
+
+
+def _name_violations(names: list[str]) -> list[str]:
+    """Grade the declared verb names: well-formed as argparse, and not nouns.
+
+    Split out of `_read_subcommands` so that function keeps one return per way of
+    failing to *read* the declaration, while every complaint about what the
+    declaration SAYS accumulates here. Both rules are reported together rather than
+    short-circuiting: a node with a malformed name and a noun name has two problems,
+    and fixing them one round-trip at a time is the checker's fault, not the caller's.
+    """
+    violations: list[str] = []
+    bad = [n for n in names if not n or any(c in n for c in (".", " ", "\t", "/"))]
+    if bad:
+        violations.append(
             "`subcommands()` entries must be plain argparse names "
-            f"(no dots, spaces, slashes): {bad_names}"
-        ]
-    return result, []
+            f"(no dots, spaces, slashes): {bad}"
+        )
+    nouns = sorted(ALWAYS_NOUNS.intersection(names))
+    if nouns:
+        violations.append(
+            f"verb slot holds a noun: {nouns}. The node already names the object; a "
+            "verb slot holds an action. Rename each to the action performed — which "
+            "differs per verb and is never a fixed substitute "
+            "(docs/nomenclature/README.md)."
+        )
+    return violations
+
+
+# Directories `_resolve_root` added to sys.path so a path-given or src-layout
+# root imports. Subprocess probes inherit them via PYTHONPATH; see `_run`.
+_PROBE_PATHS: list[str] = []
+
+
+# Seconds a single `python -m <pkg>` probe may take. Generous for an import-heavy tree
+# on a cold cache, and finite, which is the property that matters: the audit fans these
+# out and inherits the slowest one.
+PROBE_TIMEOUT = 60
 
 
 def _run(pkg: str, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [sys.executable, "-m", pkg, *args],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    env = os.environ.copy()
+    if _PROBE_PATHS:
+        # `_resolve_root` put these on the in-process sys.path so the package
+        # imports; the `python -m <pkg>` child needs them too, or the probe
+        # fails "No module named <pkg>" for any package not pip-installed into
+        # the venv (a src-layout root run without an editable install).
+        prior = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = os.pathsep.join(
+            [*_PROBE_PATHS, *([prior] if prior else [])]
+        )
+    try:
+        return subprocess.run(
+            [sys.executable, "-m", pkg, *args],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            timeout=PROBE_TIMEOUT,
+            # The probe answers "what does this print"; it never answers a question.
+            # Closing stdin turns a node that reads it into an immediate EOF rather than
+            # a wait, which is the common hang and the one a timeout recovers from most
+            # expensively.
+            stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired:
+        # A node that does not return is a finding about that node, not a reason for the
+        # audit to stop. Without this the whole gate hangs on one misbehaving entry
+        # point, and a gate that can hang is a gate people learn to skip.
+        return subprocess.CompletedProcess(
+            args=[sys.executable, "-m", pkg, *args],
+            returncode=124,
+            stdout="",
+            stderr=(
+                f"probe did not exit within {PROBE_TIMEOUT}s. A node invoked this way "
+                "must print and return; blocking on input or serving is the defect."
+            ),
+        )
 
 
 def _parse_listing(stdout: str) -> list[tuple[str, str]]:
@@ -466,7 +597,7 @@ class _Probe:
 def _violations_from_help(
     pkg: str, result: subprocess.CompletedProcess[str]
 ) -> list[str]:
-    if result.returncode != 0:
+    if result.returncode:
         return [
             f"`python -m {pkg} --help` exited {result.returncode}; "
             f"stderr: {result.stderr.strip()[:200]}"
@@ -477,7 +608,7 @@ def _violations_from_help(
 def _violations_from_sub_help(
     pkg: str, sub_name: str, result: subprocess.CompletedProcess[str]
 ) -> list[str]:
-    if result.returncode != 0:
+    if result.returncode:
         return [
             f"`subcommands()` lists `{sub_name}` but "
             f"`python -m {pkg} {sub_name} --help` exited "
@@ -492,7 +623,7 @@ def _violations_from_noargs(
     noargs: subprocess.CompletedProcess[str],
 ) -> list[str]:
     out: list[str] = []
-    if noargs.returncode != 0:
+    if noargs.returncode:
         out.append(
             f"`python -m {pkg}` (no args) exited {noargs.returncode}; "
             f"stderr: {noargs.stderr.strip()[:200]}"
@@ -769,6 +900,147 @@ def _make_node(pkg: str, *, orphan: bool) -> Node:
     }
 
 
+def _import_module_node(pkg: str) -> tuple[ModuleType | None, str | None]:
+    """Import a runnable `.py` module node; a failure is data, not a crash.
+
+    The counterpart to `_import_main` for the other shape §3 allows a runnable entry to
+    take, and it exists for the same reason: importing an adopter's module runs their
+    code, and a node that will not import is a finding about THAT node rather than an
+    exception that ends the walk before its siblings are ever reached.
+    """
+    try:
+        return importlib.import_module(pkg), None
+    # The import executes adopter code, which may raise anything at all.
+    except Exception as exc:  # pylint: disable=broad-except
+        return None, f"{type(exc).__name__}: {exc}"
+
+
+def _audit_surface(node: Node, mod: ModuleType, pattern: str) -> None:
+    """Read a runnable node's argument surface and hold it to §3's contracts.
+
+    Called for BOTH shapes §3 (item 4) allows a runnable entry to take: a sub-package's
+    `__main__.py`, and a `.py` module carrying an `if __name__ == "__main__":` guard.
+
+    It used to run for the first only, inline in `_audit_package`, and the module shape
+    was given a bare node — `args: None`, `subcommands: None`, no source scan — after
+    being imported one line earlier and thrown away. Nothing downstream could recover
+    the omission, because the audit is the one walk everything else reads: `docs/cli/**`
+    published a flag list for a leaf that had none, the llm-summary spine under-reported
+    the same surface, and `check_vocabulary.py` — which reads this tree rather than
+    re-walking, so that there is one opinion about what the CLI declares — found no flags
+    at all in a repo whose flags all live in leaf modules, and correctly refused to
+    report a vacuous pass. `make docs` then hard-failed on a check about the adopter's
+    own code, which is how the gap surfaced.
+
+    Worst of the four, the no-silent-omission rule below was unenforced for exactly the
+    node kind most likely to construct a parser: a leaf module could build an
+    `ArgumentParser` with no `parser()` factory and the audit said nothing.
+    """
+    # Optional argparse-subparser declaration (Pattern 2 + Pattern 3 only).
+    subcommands, subcmd_violations = _read_subcommands(mod)
+    node["violations"].extend(subcmd_violations)
+    if subcommands is not None:
+        if pattern == "pattern-1":
+            node["violations"].append(
+                "`subcommands()` declared on Pattern 1 node — argparse subparsers "
+                "require `main()`; subcommands() is for Patterns 2 + 3 only"
+            )
+        node["subcommands"] = [[name, desc] for name, desc in subcommands]
+        for sub_name, _sub_desc in subcommands:
+            node["violations"].append(_Probe("sub_help", node["pkg"], sub_name))
+
+    # Opportunistic argparse-parser introspection (prototype). When the
+    # leaf factors its parser construction into a `parser()` factory, walk
+    # the constructed ArgumentParser and emit a structured `args` view on
+    # the node + per-subparser. Authors that haven't refactored to expose
+    # parser() see no `args` field — no violation; this is currently an
+    # opt-in capability while the surface is being prototyped.
+    top_args, sub_args, parser_violations = _introspect_parser(mod)
+    node["violations"].extend(parser_violations)
+    if top_args is not None:
+        node["args"] = top_args
+    if sub_args:
+        # Stashed for _enrich to fold into the enriched subcommands list.
+        # The underscore prefix marks it as enrichment-internal; _enrich pops it.
+        node["_subparser_args"] = sub_args
+
+    # No-silent-omission enforcement. The spec binds two contracts that
+    # have to stay in sync with the actual argparse code, and both are
+    # detectable from the source AST:
+    #
+    #   1. Any Pattern 2/3 node that constructs `argparse.ArgumentParser(...)`
+    #      MUST expose a `parser()` factory — otherwise the audit can't
+    #      introspect the argument surface and the agent reads only
+    #      command/description, blind to flags.
+    #   2. Any Pattern 2/3 node that calls `add_subparsers(...)` MUST
+    #      declare `subcommands()` with one entry per `add_parser(<name>, ...)`
+    #      literal. Missing the function entirely or omitting a literal
+    #      both leave the agent's view of the subparser surface impoverished.
+    #
+    # Dynamic `add_parser(<expr>, ...)` calls (variables, loops, f-strings)
+    # surface as a soft warning — neither subcommands() nor the audit can
+    # statically enumerate them; the limitation is symmetric.
+    mod_file = getattr(mod, "__file__", None)
+    if not mod_file or pattern not in ("pattern-2", "pattern-3"):
+        return
+    scan = _scan_argparse_source(mod_file)
+
+    if scan.uses_argument_parser and top_args is None:
+        # parser() factory missing (or returned the wrong type — that
+        # error is already in parser_violations above). When the
+        # introspection succeeded, top_args is a list (possibly empty),
+        # not None.
+        if not parser_violations:
+            node["violations"].append(
+                "`main()` constructs `argparse.ArgumentParser(...)` but no "
+                "`parser()` factory is exposed — silent omission of the "
+                "parser-factory contract; the audit cannot introspect "
+                "flags/types/defaults. Factor parser construction into "
+                "`def parser() -> argparse.ArgumentParser` and have "
+                "`main()` call `parser().parse_args()`"
+            )
+
+    if not scan.uses_subparsers:
+        return
+    if subcommands is None:
+        node["violations"].append(
+            "`main()` uses `argparse.add_subparsers()` but no "
+            "`subcommands()` declared — silent omission of the §3 "
+            "subcommand contract; declare one entry per "
+            "`add_parser(...)` name"
+        )
+    else:
+        declared_names = {name for name, _ in subcommands}
+        missing = sorted(scan.literal_names - declared_names)
+        if missing:
+            node["violations"].append(
+                f"`subcommands()` is missing entries for `add_parser(...)` "
+                f"name(s) {missing} found in `main()` — silent omission "
+                "of part of the subcommand contract"
+            )
+    if scan.dynamic_markers:
+        node["violations"].append(
+            f"`add_parser(...)` called with non-literal name(s) "
+            f"{sorted(scan.dynamic_markers)} — static audit cannot verify "
+            "`subcommands()` covers these; refactor to literal names "
+            "so the contract is machine-checkable"
+        )
+
+
+def _audit_module_node(node: Node, mod: ModuleType | None) -> None:
+    """Finish a leaf runnable module's node: kind, pattern, and its surface.
+
+    One home for what a module node is, so the registered path and the two orphan paths
+    cannot describe the same shape three ways — which is how the surface read came to be
+    missing from all three while the package path had it.
+    """
+    node["kind"] = "module"
+    node["pattern"] = "pattern-3"
+    if mod is None:
+        return
+    _audit_surface(node, mod, "pattern-3")
+
+
 def _descend_broken(node: Node, pkg: str, seen: set[str]) -> None:
     """Recover traversal when a node is broken (no __main__.py or no valid
     commands()). Every direct-child sub-package on disk is audited so hidden
@@ -780,8 +1052,10 @@ def _descend_broken(node: Node, pkg: str, seen: set[str]) -> None:
     for name in disk_modules:
         child_pkg = f"{pkg}.{name}"
         orphan_node = _make_node(child_pkg, orphan=True)
-        orphan_node["kind"] = "module"
-        orphan_node["pattern"] = "pattern-3"
+        orphan_mod, import_err = _import_module_node(child_pkg)
+        _audit_module_node(orphan_node, orphan_mod)
+        if import_err is not None:
+            orphan_node["violations"].append(f"not importable: {import_err}")
         node["violations"].append(
             f"§3 orphan runnable module: `{child_pkg}` has main guard but "
             f"parent `{pkg}` cannot register it (no valid commands())"
@@ -792,7 +1066,13 @@ def _descend_broken(node: Node, pkg: str, seen: set[str]) -> None:
 # A single deterministic per-node audit; its linear shape is clearest unfactored.
 # pylint: disable=too-many-locals,too-many-statements
 def _audit_package(pkg: str, *, orphan: bool, seen: set[str]) -> Node:
-    """Audit one package node and recurse into its children. Returns a Node dict."""
+    """Audit one package node and recurse into its children. Returns a Node dict.
+
+    `seen` is the standard DFS-with-visited-set cycle guard (CLRS ch. 22): a repeat
+    hit reports the cycle rather than recursing infinitely. Needed because nothing
+    guarantees the CLI "tree" is actually acyclic -- a symlink or a package
+    registering an ancestor as a child would otherwise loop forever.
+    """
     node = _make_node(pkg, orphan=orphan)
 
     if pkg in seen:
@@ -826,93 +1106,7 @@ def _audit_package(pkg: str, *, orphan: bool, seen: set[str]) -> Node:
     node["pattern"] = pattern
     node["violations"].extend(classify_violations)
 
-    # Optional argparse-subparser declaration (Pattern 2 + Pattern 3 only).
-    subcommands, subcmd_violations = _read_subcommands(mod)
-    node["violations"].extend(subcmd_violations)
-    if subcommands is not None:
-        if pattern == "pattern-1":
-            node["violations"].append(
-                "`subcommands()` declared on Pattern 1 node — argparse subparsers "
-                "require `main()`; subcommands() is for Patterns 2 + 3 only"
-            )
-        node["subcommands"] = [[name, desc] for name, desc in subcommands]
-        for sub_name, _sub_desc in subcommands:
-            node["violations"].append(_Probe("sub_help", pkg, sub_name))
-
-    # Opportunistic argparse-parser introspection (prototype). When the
-    # leaf factors its parser construction into a `parser()` factory, walk
-    # the constructed ArgumentParser and emit a structured `args` view on
-    # the node + per-subparser. Authors that haven't refactored to expose
-    # parser() see no `args` field — no violation; this is currently an
-    # opt-in capability while the surface is being prototyped.
-    top_args, sub_args, parser_violations = _introspect_parser(mod)
-    node["violations"].extend(parser_violations)
-    if top_args is not None:
-        node["args"] = top_args
-    if sub_args:
-        # Stashed for _enrich to fold into the enriched subcommands list.
-        # The underscore prefix marks it as enrichment-internal; _enrich pops it.
-        node["_subparser_args"] = sub_args
-
-    # No-silent-omission enforcement. The spec binds two contracts that
-    # have to stay in sync with the actual argparse code, and both are
-    # detectable from the __main__.py AST:
-    #
-    #   1. Any Pattern 2/3 node that constructs `argparse.ArgumentParser(...)`
-    #      MUST expose a `parser()` factory — otherwise the audit can't
-    #      introspect the argument surface and the agent reads only
-    #      command/description, blind to flags.
-    #   2. Any Pattern 2/3 node that calls `add_subparsers(...)` MUST
-    #      declare `subcommands()` with one entry per `add_parser(<name>, ...)`
-    #      literal. Missing the function entirely or omitting a literal
-    #      both leave the agent's view of the subparser surface impoverished.
-    #
-    # Dynamic `add_parser(<expr>, ...)` calls (variables, loops, f-strings)
-    # surface as a soft warning — neither subcommands() nor the audit can
-    # statically enumerate them; the limitation is symmetric.
-    mod_file = getattr(mod, "__file__", None)
-    if mod_file and pattern in ("pattern-2", "pattern-3"):
-        scan = _scan_argparse_source(mod_file)
-
-        if scan.uses_argument_parser and top_args is None:
-            # parser() factory missing (or returned the wrong type — that
-            # error is already in parser_violations above). When the
-            # introspection succeeded, top_args is a list (possibly empty),
-            # not None.
-            if not parser_violations:
-                node["violations"].append(
-                    "`main()` constructs `argparse.ArgumentParser(...)` but no "
-                    "`parser()` factory is exposed — silent omission of the "
-                    "parser-factory contract; the audit cannot introspect "
-                    "flags/types/defaults. Factor parser construction into "
-                    "`def parser() -> argparse.ArgumentParser` and have "
-                    "`main()` call `parser().parse_args()`"
-                )
-
-        if scan.uses_subparsers:
-            if subcommands is None:
-                node["violations"].append(
-                    "`main()` uses `argparse.add_subparsers()` but no "
-                    "`subcommands()` declared — silent omission of the §3 "
-                    "subcommand contract; declare one entry per "
-                    "`add_parser(...)` name"
-                )
-            else:
-                declared_names = {name for name, _ in subcommands}
-                missing = sorted(scan.literal_names - declared_names)
-                if missing:
-                    node["violations"].append(
-                        f"`subcommands()` is missing entries for `add_parser(...)` "
-                        f"name(s) {missing} found in `main()` — silent omission "
-                        "of part of the subcommand contract"
-                    )
-            if scan.dynamic_markers:
-                node["violations"].append(
-                    f"`add_parser(...)` called with non-literal name(s) "
-                    f"{sorted(scan.dynamic_markers)} — static audit cannot verify "
-                    "`subcommands()` covers these; refactor to literal names "
-                    "so the contract is machine-checkable"
-                )
+    _audit_surface(node, mod, pattern)
 
     # Uniform: --help exits 0 everywhere.
     node["violations"].append(_Probe("help", pkg))
@@ -969,16 +1163,16 @@ def _audit_package(pkg: str, *, orphan: bool, seen: set[str]) -> Node:
             node["children"].append(child_node)
             continue
         if not _has_main_guard(source):
-            child_node["kind"] = "module"
-            child_node["pattern"] = "pattern-3"
+            # No guard means no runnable entry point, so there is no argument surface
+            # to read — the module is a library file the parent mis-registered.
+            _audit_module_node(child_node, None)
             child_node["violations"].append(
                 f"`commands()` lists `{name}` but `{child_pkg}` has no "
                 '`if __name__ == "__main__":` guard'
             )
             node["children"].append(child_node)
             continue
-        child_node["kind"] = "module"
-        child_node["pattern"] = "pattern-3"
+        _audit_module_node(child_node, child_mod)
         node["children"].append(child_node)
 
     # Orphan scan — direct-child CLI entries on disk not in commands().
@@ -997,8 +1191,10 @@ def _audit_package(pkg: str, *, orphan: bool, seen: set[str]) -> Node:
             continue
         child_pkg = f"{pkg}.{name}"
         orphan_node = _make_node(child_pkg, orphan=True)
-        orphan_node["kind"] = "module"
-        orphan_node["pattern"] = "pattern-3"
+        orphan_mod, import_err = _import_module_node(child_pkg)
+        _audit_module_node(orphan_node, orphan_mod)
+        if import_err is not None:
+            orphan_node["violations"].append(f"not importable: {import_err}")
         node["violations"].append(
             f'§3 orphan runnable module: `{child_pkg}` has `if __name__ == "__main__":` '
             f"but is not in parent's commands()"
@@ -1024,6 +1220,11 @@ def audit_cli_tree(root: str, *, max_workers: int | None = None) -> Node:
     `max_workers` caps concurrency for the subprocess fan-out; defaults
     to `_DEFAULT_MAX_WORKERS`. Pass `1` to force sequential probes (useful
     when debugging or reproducing pre-parallel behaviour).
+
+    The fan-out below is a scatter-gather: every `_Probe` is submitted to
+    a shared pool at once (scatter), then `_resolve_probes` rejoins each
+    one into its original tree position by identity once every future
+    has settled (gather).
     """
     tree = _audit_package(root, orphan=False, seen=set())
     probes = _collect_probes(tree)
@@ -1132,10 +1333,41 @@ def render_tree(node: Node, depth: int = 0) -> list[str]:
 # ---------- CLI ---------------------------------------------------------- #
 
 
+def _descend_to_package(arg: str, namespace_dir: Path) -> Path:
+    """`namespace_dir` is a directory with no `__init__.py` — a src-layout root
+    like `src`, or the cwd under `.`. Descend one level to its sole child
+    package. Zero or several is ambiguous and errors, asking for an explicit
+    root; racecar's shape model puts exactly one package under `src`."""
+    packages = sorted(
+        child
+        for child in namespace_dir.iterdir()
+        if child.is_dir() and (child / "__init__.py").is_file()
+    )
+    if len(packages) == 1:
+        return packages[0]
+    if not packages:
+        raise SystemExit(
+            f"check_cli_commands: `{arg}` has no __init__.py and contains no "
+            "child package; point at the package directory (e.g. `src/<pkg>`)"
+        )
+    names = ", ".join(p.name for p in packages)
+    raise SystemExit(
+        f"check_cli_commands: `{arg}` holds several packages ({names}); "
+        "name one explicitly (e.g. `src/<pkg>`)"
+    )
+
+
+def _default_root() -> str:
+    """No root on the command line: prefer a `src/` layout, else the cwd.
+    Both are resolved through `_resolve_root`, which descends to the package."""
+    return "src" if Path("src").is_dir() else "."
+
+
 def _resolve_root(arg: str) -> str:
-    """Turn `src/gfem` or `./src/gfem` into `gfem`, with the enclosing directory
-    added to sys.path so the package becomes importable. Dotted names pass
-    through unchanged."""
+    """Turn `src/acme` or `./src/acme` into `acme`, with the enclosing directory
+    added to sys.path so the package becomes importable. A namespace directory
+    with no `__init__.py` (e.g. `src`, or the cwd under `.`) is descended one
+    level to its sole child package. Dotted names pass through unchanged."""
     path = Path(arg)
     looks_like_path = ("/" in arg) or ("\\" in arg) or path.exists()
     if not looks_like_path:
@@ -1144,12 +1376,12 @@ def _resolve_root(arg: str) -> str:
     if not abs_path.is_dir():
         raise SystemExit(f"check_cli_commands: `{arg}` is not a directory")
     if not (abs_path / "__init__.py").is_file():
-        raise SystemExit(
-            f"check_cli_commands: `{arg}` has no __init__.py; not a Python package"
-        )
+        abs_path = _descend_to_package(arg, abs_path)
     parent = str(abs_path.parent)
     if parent not in sys.path:
         sys.path.insert(0, parent)
+    if parent not in _PROBE_PATHS:
+        _PROBE_PATHS.append(parent)
     return abs_path.name
 
 
@@ -1160,10 +1392,12 @@ def main(argv: list[str]) -> int:
     )
     parser.add_argument(
         "roots",
-        nargs="+",
+        nargs="*",
         help=(
-            "Dotted package names (e.g. `gfem`) or filesystem paths "
-            "to the package directory (e.g. `src/gfem`)."
+            "Dotted package names (e.g. `acme`) or filesystem paths "
+            "to the package directory (e.g. `src/acme`). Defaults to `src` "
+            "when a src/ layout is present, else the current directory; "
+            "either is descended to its sole child package."
         ),
     )
     parser.add_argument(
@@ -1181,7 +1415,7 @@ def main(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
 
-    roots = [_resolve_root(r) for r in args.roots]
+    roots = [_resolve_root(r) for r in (args.roots or [_default_root()])]
     trees = [audit_cli_tree(root, max_workers=args.workers) for root in roots]
     all_violations: list[tuple[str, str]] = []
     for tree in trees:

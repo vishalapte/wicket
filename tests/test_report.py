@@ -5,7 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from wicket.manifest import shard_path, write_shard
-from wicket.report.lib import addresses, all_addresses, sender_counts, summary
+from wicket.report.lib import (
+    addresses,
+    all_addresses,
+    bucket_rows,
+    sender_counts,
+    summary,
+)
 
 
 def test_summary_counts(tmp_path: Path) -> None:
@@ -68,3 +74,23 @@ def test_all_addresses_union_of_from_and_to(tmp_path: Path) -> None:
         "b@globex.com",
         "you@gmail.com",
     ]
+
+
+# --- bucket view (a query across stores, not a relocation) ----------------
+
+
+def test_bucket_rows_folds_the_domain_and_claims_only_its_own(tmp_path: Path) -> None:
+    routes = {"delta.com": "travel", "travel": "travel", "ikea.com": "shopping"}
+    folds = {"*.delta.com": "delta.com", "delta.com": "delta.com"}
+    store = tmp_path / "manifest"
+    write_shard(
+        store / "2026.jsonl",
+        {
+            "a": {"id": "a", "from": "news@t.delta.com", "downloaded": True},
+            "b": {"id": "b", "from": "offers@ikea.com", "downloaded": True},
+            "c": {"id": "c", "from": "them@acme.com", "downloaded": False},
+        },
+    )
+
+    got = bucket_rows(store, "travel", routes, folds)
+    assert [(domain, row["id"]) for domain, row in got] == [("delta.com", "a")]

@@ -16,7 +16,7 @@ import ssl
 import sys
 from pathlib import Path
 
-from wicket.config import (
+from wicket.env import (
     ALL_MAIL_MAILBOX,
     IMAP_HOST,
     IMAP_PORT,

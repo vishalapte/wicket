@@ -104,7 +104,7 @@ def check_server_importlinter_coverage(
 ) -> list[Finding]:
     """For Shape src+server: [tool.importlinter] must cover the server roots.
 
-    A bare `root_package = "xenocrates"` audits only the library import graph;
+    A bare `root_package = "widgets"` audits only the library import graph;
     `lint-imports` never looks at server at all, yet the existence-only check
     passes. The same multi-root blind spot as isort. The import-linter config
     must name at least one server top-level package -- either in `root_packages`
@@ -144,13 +144,33 @@ def check_server_importlinter_coverage(
     return []
 
 
+# The tool tables the server pyproject legitimately OWNS, because racecar.mk reads this
+# file as their config home: `typecheck` runs `cd $(SERVER) && mypy --config-file
+# pyproject.toml .`, and django-stubs is inert without the mypy plugin that loads the
+# settings module and builds the model graph.
+#
+# The concern the [tool.*] rule was written for is real -- tool config sprawling into a
+# non-installable subtree -- and it survives, because every OTHER tool the Makefile runs is
+# pointed at $(LIB_PYPROJECT) explicitly, so its config here would be read by nothing. What
+# did not survive is asserting that against the two tables racecar's own template ships and
+# its own recipe requires: an adopter following the template earned a permanent advisory
+# Finding, and an adopter following the checker got an untyped Django server, because with
+# no [tool.mypy] here mypy falls back to defaults and `strict` never reaches the server tree
+# at all. Measured on one adopter: 50 reported errors against 147 real ones.
+#
+# Per-table rather than whole-file: a permitted table beside a sprawling one still reports,
+# and the finding now NAMES the tables it means.
+SERVER_OWN_TOOLS = frozenset({"mypy", "django-stubs"})
+
+
 def check_server_pyproject(root: Path, pyproject_path: Path) -> list[Finding]:
     """Validate the server pyproject (only present for Shape src+server).
 
     server/pyproject.toml is intentionally PEP 735-only:
       - has [dependency-groups].runtime with the Django runtime deps
       - has NO [project] block (server is not a publishable package)
-      - has NO [tool.*] blocks (tool configs live in the library pyproject)
+      - has no [tool.*] block OTHER than the typing pair racecar.mk reads here
+        (SERVER_OWN_TOOLS); every other tool config lives in the library pyproject
       - has NO [build-system] (server is not pip-installable as a wheel)
     """
     label = _rel_for_audit(root, pyproject_path)
@@ -200,14 +220,15 @@ def check_server_pyproject(root: Path, pyproject_path: Path) -> list[Finding]:
             )
         )
 
-    if data.get("tool"):
+    sprawl = sorted(t for t in (data.get("tool") or {}) if t not in SERVER_OWN_TOOLS)
+    if sprawl:
         findings.append(
             Finding(
                 "Finding",
                 label,
                 "[tool.*]",
-                "tool configs should live in the library pyproject (src/pyproject.toml), "
-                "not in server/pyproject.toml",
+                f"tool configs should live in the library pyproject (src/pyproject.toml), "
+                f"not in server/pyproject.toml: {', '.join(f'[tool.{t}]' for t in sprawl)}",
             )
         )
 

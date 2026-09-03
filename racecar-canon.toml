@@ -1,0 +1,57 @@
+# racecar canon — the settings the DELIVERED files were authored under.
+#
+# GENERATED from racecar's own pyproject.toml by racecar/lib/delivery/canon.py.
+# Do not edit: `tests/test_canon_config_governs_delivered_files.py` fails when this and
+# the pyproject disagree, the same way the delivered-file manifest is pinned. Regenerate:
+#   python -m racecar.lib.delivery._sync --write-canon
+#
+# Delivered by every `racecar sync` to `racecar-canon.toml` at the adopter ROOT -- not
+# nested under `scripts/`, where isort's own first-party-import detection reads that
+# location and misclassifies a sibling module as third-party (issue #47). It is not the
+# adopter's configuration and must never be edited there either: the next sync overwrites
+# it, which is exactly the property that makes it canon's answer rather than a local one.
+#
+# WHY IT EXISTS. `racecar.mk` graded the delivered tree with the ADOPTER's pyproject.toml.
+# These files were authored under the settings below, so a repo that chose different ones
+# inherited a tree its own tools reject — and could not fix it, because the next sync
+# overwrites the files the finding names. The scope decision was right (the delivered tree
+# should be graded); the rulebook was wrong. This is the rulebook.
+#
+# WHY SOME SETTINGS ARE ABSENT. racecar's mypy_path, its drafts/ ignore and its pylint
+# init-hook name racecar's OWN tree, and shipped they would grade an adopter's copy against
+# directories it does not have. They are dropped by RACECAR_ONLY in canon.py, and any value
+# that still looks like a path after that drop is a hard error rather than a silent export.
+
+[tool.black]
+line-length = 88
+target-version = ["py312"]
+
+[tool.isort]
+profile = "black"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+
+[tool.pylint.MAIN]
+py-version = "3.12"
+
+[tool.pylint."MESSAGES CONTROL"]
+enable = ["useless-suppression"]
+disable = ["duplicate-code", "too-few-public-methods", "missing-module-docstring"]
+
+[tool.pylint.BASIC]
+no-docstring-rgx = "^_|^test_|^Test"
+docstring-min-length = 6
+
+[tool.pylint.SIMILARITIES]
+min-similarity-lines = 12
+ignore-docstrings = true
+
+[tool.pylint.DESIGN]
+max-branches = 32
+max-locals = 23
+max-args = 10
+max-nested-blocks = 6
+max-attributes = 10
+max-bool-expr = 8

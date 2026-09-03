@@ -15,17 +15,17 @@ from pathlib import Path
 from typing import Iterator
 
 from wicket.auth import AuthError, load_credentials
-from wicket.config import (
-    ALIASES_FILENAME,
+from wicket.domains import domain_aliases_path, load_domain_aliases
+from wicket.env import (
     CREDENTIALS_FILENAME,
     DEFAULT_THREADS,
+    MAIL_ROOT,
     normalize_account,
     resolve_account,
     resolve_archive_dir,
     resolve_state_dir,
     resolve_store_dir,
 )
-from wicket.domains import load_domain_aliases
 from wicket.fetch.lib import ThreadContext, download
 from wicket.manifest import Row, load_store
 from wicket.reconcile import build_domain_query
@@ -87,17 +87,17 @@ def fetch(
 
     ``options`` (a `FetchOptions`) carries the filter and paths; exactly one of
     its ``domains`` / ``query`` is set. Resolves the account and its per-account
-    dest (``options.dest`` override else ``~/mail/<account>/archive``), store,
-    and credential file (``<state-dir>/<account>/imap.json``). Loads the alias
-    file (``<state-dir>/<account>/domain-aliases.json`` by default), seeds
+    dest (``options.dest`` override else ``<mail-root>/<account>/archive``), store,
+    and credential file (``<state-dir>/<account>/imap.json``). Loads the
+    subdomain-fold map (``<mail-root>/domain-aliases.json`` by default — ONE home,
+    shared with `ingest`, and not per-account: a fold is a fact about a domain, not
+    about a mailbox, and a *bucket* has no state dir to put it in), seeds
     credentials (the login email is the "me" identity for filing), then runs
     `lib.download` and returns its stats dict.
     """
     resolved = resolve_account(account)
     state = resolve_state_dir(resolved, options.state_dir)
-    alias_path = options.alias_file
-    if alias_path is None:
-        alias_path = state / ALIASES_FILENAME
+    alias_path = options.alias_file or domain_aliases_path(MAIL_ROOT)
     domain_aliases = load_domain_aliases(alias_path)
     search = _domain_query(options.domains, options.query, domain_aliases)
 

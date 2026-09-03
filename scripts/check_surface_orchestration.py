@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Advisory surfaces detector (arch-coherence/SURFACES.md §7).
+"""Advisory surfaces detector (arch-python/SURFACES.md §7).
 
 SURFACES.md doctrine: one library exposed through N thin surfaces (`lib -> api ->
 {cli, mcp, web/django}`). Orchestration policy (resolve inputs, seed credentials,
@@ -51,6 +51,8 @@ Usage (invoked by `make arch`):
     python scripts/check_surface_orchestration.py [--root <dir>] [--threshold N] [--strict]
 
 --root defaults to CWD. Exit 0 always unless --strict and a Finding was reported.
+
+Complexity: O(F)
 """
 
 from __future__ import annotations
@@ -61,8 +63,9 @@ import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
-from check_packaging import detect_shape
+from check_packaging import Shape, detect_shape
 
 # Minimum length of a repeated api-call sequence to flag as restated orchestration.
 # A single shared call is legitimate (each surface calls its api entry once); two or
@@ -107,15 +110,14 @@ class Finding:
 # --- source roots + package walk are the local helpers below) ----------------
 
 
-def _library_pyproject(root: Path) -> Path | None:
-    shape, _ = detect_shape(root)
+def _library_pyproject(shape: Shape) -> Path | None:
     pyproject = shape.library_pyproject
     if pyproject is None or not pyproject.is_file():
         return None
     return pyproject
 
 
-def _manifest(pyproject: Path) -> list[dict]:
+def _manifest(pyproject: Path) -> list[dict[str, Any]]:
     """Return the `[[tool.racecar.roles.vertical]]` entries (may be empty)."""
     data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
     roles = data.get("tool", {}).get("racecar", {}).get("roles", {})
@@ -168,6 +170,24 @@ def _subpackages(directory: Path) -> set[str]:
     }
 
 
+def _dir_files_and_subpackages(directory: Path) -> tuple[dict[str, Path], set[str]]:
+    """`(files, subpackages)` from ONE `iterdir()` pass rather than two.
+
+    `_discover_verticals` used to call `directory.glob("*.py")` and `_subpackages`
+    (its own `iterdir()`) separately for every directory it visits -- two directory
+    listings of the same directory where one suffices.
+    """
+    files: dict[str, Path] = {}
+    subpkgs: set[str] = set()
+    for p in sorted(directory.iterdir()):
+        if p.is_dir():
+            if (p / "__init__.py").is_file():
+                subpkgs.add(p.name)
+        elif p.suffix == ".py" and p.stem != "__init__":
+            files[p.stem] = p
+    return files, subpkgs
+
+
 def _has_role(name: str, files: dict[str, Path], subpkgs: set[str]) -> bool:
     """A canonical role is present as a module (`name.py`) OR a package (`name/`)."""
     return name in files or name in subpkgs
@@ -195,12 +215,7 @@ def _discover_verticals(src_roots: list[Path]) -> list[Vertical]:
                 continue
             if not (directory / "__init__.py").is_file() and directory != pkg:
                 continue
-            files = {
-                p.stem: p
-                for p in sorted(directory.glob("*.py"))
-                if p.stem != "__init__"
-            }
-            subpkgs = _subpackages(directory)
+            files, subpkgs = _dir_files_and_subpackages(directory)
 
             # Surfaces by name -- the only analysis anchors. No surface -> library.
             surfaces: list[str] = []
@@ -259,6 +274,35 @@ def _django_vertical(root: Path) -> Vertical | None:
     return Vertical(name="server", prefix="server", modules={}, surfaces=[CANON_DJANGO])
 
 
+def _import_reaches_subpackage(node: ast.AST, prefix: str, subpkgs: set[str]) -> bool:
+    """True if a single import ``node`` reaches a subpackage in ``subpkgs``.
+
+    Split out of _main_imports_deeper so that function stays under the return-count cap;
+    the branch set is identical (relative and absolute ImportFrom, plain Import). Relative
+    and absolute forms are mutually exclusive per node, so the early returns preserve the
+    original fall-through semantics.
+    """
+    if isinstance(node, ast.ImportFrom):
+        if node.level == 1 and node.module and node.module.split(".")[0] in subpkgs:
+            return True  # from .subpkg[...] import ...
+        if node.level == 1 and node.module is None:
+            return any(
+                alias.name in subpkgs for alias in node.names
+            )  # from . import subpkg
+        return bool(  # absolute import into a subpackage
+            node.module
+            and node.module.startswith(prefix + ".")
+            and node.module[len(prefix) + 1 :].split(".")[0] in subpkgs
+        )
+    if isinstance(node, ast.Import):
+        return any(
+            alias.name.startswith(prefix + ".")
+            and alias.name[len(prefix) + 1 :].split(".")[0] in subpkgs
+            for alias in node.names
+        )
+    return False
+
+
 def _main_imports_deeper(directory: Path, prefix: str) -> bool:
     """True if ``directory/__main__.py`` imports a module nested BELOW ``directory`` (a
     subpackage / deeper module).
@@ -270,48 +314,37 @@ def _main_imports_deeper(directory: Path, prefix: str) -> bool:
     vertical's ``__main__`` caps an in-package stack by importing its own subpackage ->
     True.
     """
-    main = directory / "__main__.py"
-    if not main.is_file():
+    main_py = directory / "__main__.py"
+    if not main_py.is_file():
         return False
     subpkgs = _subpackages(directory)
     if not subpkgs:
         return False
     try:
-        tree = ast.parse(main.read_text(encoding="utf-8"))
+        tree = ast.parse(main_py.read_text(encoding="utf-8"))
     except (SyntaxError, OSError):
         return False
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            if node.level == 1 and node.module and node.module.split(".")[0] in subpkgs:
-                return True  # from .subpkg[...] import ...
-            if node.level == 1 and node.module is None:
-                if any(alias.name in subpkgs for alias in node.names):
-                    return True  # from . import subpkg
-            if (
-                node.module
-                and node.module.startswith(prefix + ".")
-                and node.module[len(prefix) + 1 :].split(".")[0] in subpkgs
-            ):
-                return True  # absolute import into a subpackage
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                if (
-                    alias.name.startswith(prefix + ".")
-                    and alias.name[len(prefix) + 1 :].split(".")[0] in subpkgs
-                ):
-                    return True
-    return False
+    return any(
+        _import_reaches_subpackage(node, prefix, subpkgs) for node in ast.walk(tree)
+    )
 
 
 # --- role identification: name or mapping only -------------------------------
 
 
-def _identify(v: Vertical, manifest_by_prefix: dict[str, dict]) -> list[Finding]:
+def _identify(
+    v: Vertical, manifest_by_prefix: dict[str, dict[str, Any]]
+) -> list[Finding]:
     """Apply any manifest mapping over the name-detected roles; return Findings.
 
     Roles are already set from canonical names during discovery. The manifest (Tier 2)
     is authority when present: it can rename `lib`/`api` and re-declare `surfaces`.
     There is no Tier 3 -- nothing is inferred from the import graph.
+
+    The two-tier model is convention over configuration (Rails, D.H. Hansson, ~2005):
+    a role defaults to whatever the canonical filename already says, and explicit
+    manifest configuration is reserved for the exception -- a naming convention that
+    doesn't hold -- rather than required everywhere.
     """
     entry = manifest_by_prefix.get(v.prefix) or manifest_by_prefix.get(v.name)
     if entry:
@@ -396,7 +429,13 @@ def _windows(seq: list[str], size: int) -> set[tuple[str, ...]]:
 
 
 def _restated(verticals: list[Vertical], threshold: int) -> list[Finding]:
-    """Flag api-call windows that appear across two or more surfaces of a vertical."""
+    """Flag api-call windows that appear across two or more surfaces of a vertical.
+
+    The detection itself is k-gram / w-shingling: reduce each surface's call sequence to
+    its set of fixed-size sliding windows (`_windows`) and flag any window shared by two
+    or more surfaces -- the same technique behind near-duplicate/plagiarism detection
+    (Broder's w-shingling), applied to api-call sequences instead of text.
+    """
     findings: list[Finding] = []
     for v in verticals:
         if not v.api or not v.surfaces:
@@ -418,7 +457,9 @@ def _restated(verticals: list[Vertical], threshold: int) -> list[Finding]:
         for surface, windows in per_face.items():
             for window in windows:
                 shared.setdefault(window, []).append(surface)
-        for window, surfaces in sorted(shared.items(), key=lambda x: (-len(x[0]), x[0])):
+        for window, surfaces in sorted(
+            shared.items(), key=lambda x: (-len(x[0]), x[0])
+        ):
             if len(surfaces) >= 2:
                 findings.append(
                     Finding(
@@ -442,11 +483,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--strict", action="store_true", help="exit 1 on any Finding")
     args = parser.parse_args(argv)
 
-    pyproject = _library_pyproject(args.root)
+    shape, _ = detect_shape(args.root)
+    pyproject = _library_pyproject(shape)
     if pyproject is None:
         print("check_surface_orchestration: pyproject.toml not found; nothing to check")
         return 0
-    shape, _ = detect_shape(args.root)
     src_roots = _src_roots(args.root, shape.name)
 
     verticals = _discover_verticals(src_roots)
@@ -454,11 +495,13 @@ def main(argv: list[str]) -> int:
     if django is not None:
         verticals.append(django)
     if not verticals:
-        print("check_surface_orchestration: no surfaces verticals found; nothing to check")
+        print(
+            "check_surface_orchestration: no surfaces verticals found; nothing to check"
+        )
         return 0
 
     manifest = _manifest(pyproject)
-    manifest_by_prefix: dict[str, dict] = {}
+    manifest_by_prefix: dict[str, dict[str, Any]] = {}
     for entry in manifest:
         key = entry.get("name") or ""
         manifest_by_prefix[str(key)] = entry

@@ -15,7 +15,7 @@ from pathlib import Path
 
 from wicket.auth import AuthError, load_credentials
 from wicket.catalog.lib import sweep
-from wicket.config import (
+from wicket.env import (
     ALL_MAIL_MAILBOX,
     CREDENTIALS_FILENAME,
     DEFAULT_THREADS,
@@ -78,8 +78,8 @@ def catalog(
     """Sweep ``account``'s mailbox headers into the year-sharded manifest.
 
     ``options`` (a `CatalogOptions`) carries the run knobs. Resolves the account
-    (`config.resolve_account`), the manifest store (``options.store_dir``
-    override else ``~/mail/<account>/manifest``), and the credential file
+    (`env.resolve_account`), the manifest store (``options.store_dir``
+    override else ``<mail-root>/<account>/manifest``), and the credential file
     (``<state-dir>/<account>/imap.json``). Seeds credentials in this thread (the
     per-year workers never prompt). Sweeps incrementally by default (from the
     latest year in the manifest forward), fully when ``options.full`` is set, or

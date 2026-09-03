@@ -10,9 +10,10 @@ by INTERNALDATE year (UTC):
 
 Row shape (one JSON object per line, ADR 0002 unified schema)::
 
-    {"id": "caa+1x@mail.gmail.com", "msgid": "16f3...",
-     "thread_id": "1690...", "date": "2026-06-07T...", "size": 48211,
-     "from": "fidelity.alerts@fidelity.com", "to": ["you@gmail.com"],
+    {"id": "<message-id>", "msgid": "<gmail-msgid>",
+     "thread_id": "<gmail-thrid>", "date": "<internaldate, `ISO-8601`>",
+     "size": <bytes>,
+     "from": "sender@example.com", "to": ["you@example.com"],
      "subject": "Your account statement is ready",
      "labels": ["\\\\Inbox"]}
 
@@ -26,7 +27,7 @@ The inventory is the *observation* face of the mailbox (what exists,
 re-swept and replaced whole); the archive manifest is the *settlement*
 face (what has been saved or noop'd, append-only). Same key, two write
 regimes; they are never merged. Each shard is replaced atomically
-(tmp + rename, 0600). A ``years``-restricted sweep touches only the
+(tmp + rename, `0600`). A ``years``-restricted sweep touches only the
 requested years' shards. (Removing stale year shards on a full sweep is
 not yet implemented.)
 
@@ -47,7 +48,7 @@ from pathlib import Path
 from typing import Iterator
 
 from wicket.auth import open_mailbox
-from wicket.config import DEFAULT_THREADS
+from wicket.env import DEFAULT_THREADS
 from wicket.manifest import merge_catalog, read_shard, shard_path, write_shard
 from wicket.message import message_key
 
@@ -97,7 +98,7 @@ def _search_year_uids(conn: imaplib.IMAP4_SSL, year: int) -> list[bytes]:
     """UIDs whose INTERNALDATE *UTC* year may be `year`.
 
     IMAP SINCE/BEFORE compare the stored INTERNALDATE's date portion with
-    its timezone disregarded (RFC 3501), so a UTC-year boundary message can
+    its timezone disregarded (`RFC 3501`), so a UTC-year boundary message can
     sit a server-date day outside the year. Widen the window by one day on
     each side; the caller's UTC bucketing drops the overshoot. Sharding
     stays strictly UTC; the search is merely a superset.

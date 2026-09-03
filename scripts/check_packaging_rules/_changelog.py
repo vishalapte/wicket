@@ -27,7 +27,11 @@ def check_changelog(root: Path) -> list[Finding]:
                 "CHANGELOG.md is recommended (Keep a Changelog format)",
             )
         ]
-    if not _CHANGELOG_HEADER_RE.search(path.read_text(encoding="utf-8")):
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        return [Finding("Finding", "CHANGELOG.md", "encoding-error", str(exc))]
+    if not _CHANGELOG_HEADER_RE.search(text):
         return [
             Finding(
                 "Finding",

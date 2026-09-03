@@ -1,3 +1,9 @@
+---
+summary: Decision: one year-sharded manifest keyed by a provider-neutral message key, with catalog and fetch as separate verbs over it.
+pnode: [../../README.md]
+bearing: doctrine
+---
+
 # ADR 0002: The message manifest: one store, one key, two verbs
 
 - **Status:** Accepted
@@ -39,13 +45,27 @@ no usable `Message-ID`, the key is `"<provider>:<native-id>"` (e.g.
 ### 2. One store, account-scoped, year-sharded
 
 ```
-~/mail/<account>/manifest/YYYY.jsonl
+<mail-root>/<store>/manifest/YYYY.jsonl
 ```
 
-Sibling to the `.eml` archive under one mail root: `~/mail/<account>/archive/`.
+Sibling to the `.eml` archive under one mail root: `<mail-root>/<store>/archive/`.
 One JSON Lines row per message, keyed by `id`, sharded by INTERNALDATE-UTC year.
 Year-sharding keeps writes cheap at six-figure scale: a write touches only the
 affected year(s).
+
+> **Amended 2026-07-13.** Two things named here have moved on; the decision
+> itself is unchanged.
+>
+> - **The mail root is no longer `~/mail`.** It is `~/.delphi/mail`, overridable
+>   with `$WICKET_MAIL_ROOT`, so the tree can follow an encrypted vault. The verbs
+>   fail closed when it is absent rather than creating it — see
+>   [the README](../../README.md#where-data-lives).
+> - **A store is not always an account.** It is an account (a real mailbox) *or* a
+>   **bucket** (a topical destination that is no mailbox: `travel`, `shopping`).
+>   Only accounts are swept by `catalog`/`fetch`; a bucket holds only mail no
+>   mailbox owns, because a manifest is the observation record *of a mailbox* and
+>   `catalog` would re-observe anything relocated out of one. Everything below
+>   holds for both.
 
 ### 3. A row is progressively enriched, not all-or-none
 
@@ -66,7 +86,7 @@ to several distinct domains. The owner identity is the `imap.json` login email;
 each candidate is alias-canonicalized and must be a well-formed domain (it becomes
 a path segment) or the result is `null`.
 
-**All timestamps in a row are stored UTC** (ISO-8601, `+00:00` offset); a
+**All timestamps in a row are stored UTC** (`ISO-8601`, `+00:00` offset); a
 message's shard is the UTC year of its `date`. The mailbox's INTERNALDATE is
 normalized to UTC on the way in, so the same mailbox always lands in the same
 shard regardless of where it is read.

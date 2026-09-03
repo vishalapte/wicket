@@ -1,10 +1,16 @@
+---
+summary: The key-by-key portable-query divergence table Gmail and Fastmail are compiled against.
+pnode: [../README.md]
+bearing: contract
+---
+
 # Query fidelity: portable keys → Gmail / Fastmail
 
 The living, key-by-key spec for wicket's portable query grammar. The decision
 and rationale are in [`adr/0001-portable-query-grammar.md`](adr/0001-portable-query-grammar.md);
-this file is the table the compiler implements and that
-`scripts/check_query_fidelity.py` will drift-check (every portable key must have
-a row here *and* a compile branch in both backends).
+this file is the table the compiler implements, and the fidelity checker that
+ships with the compiler (Phase 3) will drift-check it: every portable key must
+have a row here *and* a compile branch in both backends.
 
 Status: **spec only**: no compiler exists yet; Gmail is queried with a raw
 `--query` string, and the portable layer lands with the Fastmail backend.
