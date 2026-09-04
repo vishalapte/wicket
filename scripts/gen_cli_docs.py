@@ -25,7 +25,7 @@ What each page carries is DERIVED:
 - **Leaf nodes** (``leaf``): the invocation, the command's description, and its argparse
   **usage + options** — captured from ``python -m <pkg> --help`` under a pinned ``COLUMNS`` so the
   bytes are reproducible whoever regenerates them. A leaf that also declares the optional
-  ``example_outputs()`` contract ([architecture/CLI.md](../CLI.md)) gets a further
+  ``example_output()`` contract ([architecture/CLI.md](../CLI.md)) gets a further
   ``## Example output`` section, one labeled subsection per scenario.
 
 **Why capture ``--help`` rather than introspect the parser.** The §3 audit only surfaces a
@@ -33,7 +33,7 @@ structured ``args`` view when a leaf exposes a ``parser()`` factory; a leaf that
 inline has nothing to introspect. The help text is the authoritative, always-present rendering of
 the same surface, and pinning ``COLUMNS`` makes it deterministic.
 
-**Why ``example_outputs()`` is read directly, not through the §3 audit.** The audit's four
+**Why ``example_output()`` is read directly, not through the §3 audit.** The audit's four
 contracts (``commands()``, ``subcommands()``, ``parser()``, ``pipeline()``) all shape dispatch or
 discovery; ``check_cli_commands.py`` enforces them because getting one wrong breaks running the
 CLI. Sample output changes nothing about how the command runs — it exists purely so this
@@ -235,10 +235,10 @@ def _first_paragraph(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------------------------
-# A leaf's optional, hand-authored sample output (arch-python/CLI.md, "example_outputs()").
+# A leaf's optional, hand-authored sample output (arch-python/CLI.md, "example_output()").
 # ---------------------------------------------------------------------------------------------
-def node_example_outputs(node: Node) -> list[tuple[str, str, str, int]]:
-    """The leaf's fabricated ``example_outputs()`` entries, validated and normalized.
+def node_example_output(node: Node) -> list[tuple[str, str, str, int]]:
+    """The leaf's fabricated ``example_output()`` entries, validated and normalized.
 
     Mirrors ``node_description``'s own read: import the same module, look for the optional
     symbol, and degrade to "nothing here" rather than raise on any of absence, an import
@@ -256,7 +256,7 @@ def node_example_outputs(node: Node) -> list[tuple[str, str, str, int]]:
         module = importlib.import_module(_docstring_module(node))
     except Exception:  # pylint: disable=broad-exception-caught
         return []
-    fn = getattr(module, "example_outputs", None)
+    fn = getattr(module, "example_output", None)
     if not callable(fn):
         return []
     try:
@@ -333,7 +333,7 @@ def _example_output_section(node: Node) -> list[str]:
     live ``--help`` capture immediately above — the two are adjacent on the page but never
     blended into one block.
     """
-    examples = node_example_outputs(node)
+    examples = node_example_output(node)
     if not examples:
         return []
     lines = [

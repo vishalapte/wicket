@@ -10,6 +10,18 @@ All notable changes to this project are documented here, following
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.5.0 - 2026-09-04
+
+### Changed
+- **Breaking: `example_outputs()` renamed to `example_output()`.** The optional
+  CLI-docs contract (`racecar`'s `arch-python/CLI.md`) used the wrong plural — the
+  plural of the mass noun "output" is "output", not "outputs". No deprecation
+  window: the contract is optional and best-effort (`gen_cli_docs.py` reads it
+  with `getattr(..., None)`), so a leaf still on the old name simply stops being
+  picked up rather than erroring, and wicket's one call site is fixed in this same
+  change. `scripts/gen_cli_docs.py` (wicket's local copy of the generator) is
+  updated to read the new name.
+
 ## 0.4.0 - 2026-09-03
 
 ### Changed

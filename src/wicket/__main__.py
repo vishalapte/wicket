@@ -124,7 +124,7 @@ def main() -> int:
     return _VERBS[args.verb].dispatch(args)
 
 
-def example_outputs() -> list[tuple[str, str, str, int]]:
+def example_output() -> list[tuple[str, str, str, int]]:
     """Illustrative sample transcripts for the CLI-docs generator (arch-python/CLI.md).
 
     Never executed, never real: every account, domain, path and count below is
