@@ -1,6 +1,8 @@
 """Read-only reports over the manifest: senders by volume, addresses seen.
 
-No IMAP, no mutation: it loads the year-sharded store and summarizes. ``from`` /
+No IMAP, no mutation: it loads the year-sharded store and summarizes. A row the
+owner marked ``excluded`` (a duplicate copy, not kept locally) is not a message
+of its own: ``summary`` counts it separately and no view lists it. ``from`` /
 ``to`` are parsed defensively with ``getaddresses`` so a row in either format
 (a bare address, a list, or a raw header) yields the same addresses.
 """
@@ -23,6 +25,11 @@ def addresses(value: object) -> list[str]:
     return [a.strip().lower() for _, a in getaddresses(items) if a.strip() and "@" in a]
 
 
+def _messages(store_dir: Path) -> list[Row]:
+    """Every row of the store except the owner's ``excluded`` ones."""
+    return [r for r in load_store(store_dir).values() if not r.get("excluded")]
+
+
 def _from_address(row: Row) -> str | None:
     parsed = addresses(row.get("from"))
     return parsed[0] if parsed else None
@@ -31,7 +38,7 @@ def _from_address(row: Row) -> str | None:
 def sender_counts(store_dir: Path) -> list[tuple[str, int]]:
     """``(sender, message count)`` for every From address, descending by count."""
     counter: Counter[str] = Counter()
-    for row in load_store(store_dir).values():
+    for row in _messages(store_dir):
         sender = _from_address(row)
         if sender:
             counter[sender] += 1
@@ -41,15 +48,16 @@ def sender_counts(store_dir: Path) -> list[tuple[str, int]]:
 def all_addresses(store_dir: Path) -> list[str]:
     """Every distinct address ever seen in From or To, sorted."""
     seen: set[str] = set()
-    for row in load_store(store_dir).values():
+    for row in _messages(store_dir):
         seen.update(addresses(row.get("from")))
         seen.update(addresses(row.get("to")))
     return sorted(seen)
 
 
 def summary(store_dir: Path) -> dict[str, int]:
-    """One-screen counts: messages, held vs gone, observed-only, distinct addrs."""
-    rows = list(load_store(store_dir).values())
+    """One-screen counts: messages, held vs gone, observed-only, excluded, addrs."""
+    every = list(load_store(store_dir).values())
+    rows = [r for r in every if not r.get("excluded")]
     downloaded = [r for r in rows if r.get("downloaded")]
     gone = sum(1 for r in downloaded if r.get("deleted"))
     senders: set[str] = set()
@@ -68,6 +76,7 @@ def summary(store_dir: Path) -> dict[str, int]:
         "observed_only": sum(
             1 for r in rows if not r.get("downloaded") and "from" in r
         ),
+        "excluded": len(every) - len(rows),
         "senders": len(senders),
         "addresses": len(addrs),
     }
@@ -87,7 +96,7 @@ def bucket_rows(
     reading across the stores, which is what this does.
     """
     out: list[tuple[str, Row]] = []
-    for row in load_store(store_dir).values():
+    for row in _messages(store_dir):
         sender = _from_address(row)
         if not sender:
             continue

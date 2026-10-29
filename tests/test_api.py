@@ -7,18 +7,22 @@ from pathlib import Path
 
 import pytest
 
+import wicket.__main__ as root
 from wicket import env
 from wicket.catalog import api as catalog_api
+from wicket.catalog import cli as catalog_cli
 from wicket.fetch import api as fetch_api
+from wicket.fetch import cli as fetch_cli
 from wicket.fetch.api import held_messages
 from wicket.fetch.lib import ThreadContext
 from wicket.manifest import shard_path, write_shard
+from wicket.report import cli as report_cli
 from wicket.report.api import addresses, manifest, report, senders
 
 
-def _seed(root: Path) -> Path:
+def _seed(base: Path) -> Path:
     acct = "you@gmail.com"
-    store = root / acct / "manifest"
+    store = base / acct / "manifest"
     write_shard(
         shard_path(store, 2024),
         {
@@ -47,7 +51,7 @@ def _seed(root: Path) -> Path:
             },
         },
     )
-    return root
+    return base
 
 
 def test_held_messages_filters_downloaded_and_domains(
@@ -104,53 +108,130 @@ def test_addresses_distinct_and_sorted(
 # --- account / state resolution ------------------------------------------
 
 
-def test_resolve_account_arg_env_discover(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _account_folders(base: Path, *names: str, credential: bool = True) -> None:
+    """``base/accounts/<name>/``, each holding an ``imap.json`` link unless not
+    ``credential``."""
+    for name in names:
+        folder = base / "accounts" / name
+        folder.mkdir(parents=True)
+        if credential:
+            (folder / "imap.json").symlink_to(base / "gmail" / name / "imap.json")
+
+
+@pytest.fixture(name="state")
+def _state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A present, empty mail root (so any account bootstraps), no $WICKET_ACCOUNT, and a
+    ~/.config/wicket with no account folder yet."""
     monkeypatch.delenv(env.ACCOUNT_ENV_VAR, raising=False)
-    # An empty (but PRESENT) mail root: no account exists yet, so any account still
-    # bootstraps. It must exist — an absent root means a locked vault, not an empty
-    # store. The test also never reads the developer's real store.
     empty = tmp_path / "empty"
     empty.mkdir()
     monkeypatch.setattr(env, "MAIL_ROOT", empty)
-    # explicit arg wins, and is normalized (+tag stripped, lowercased)
+    monkeypatch.setattr(env, "DEFAULT_STATE_DIR", tmp_path / "wicket")
+    return tmp_path / "wicket"
+
+
+def test_resolve_account_takes_the_flag_first_and_normalizes_it(state: Path) -> None:
+    _account_folders(state, "a@x.com", "b@y.com")
     assert env.resolve_account("You+tag@Gmail.com") == "you@gmail.com"
-    # env var when no arg
+
+
+def test_resolve_account_takes_the_env_var_without_the_flag(
+    state: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _account_folders(state, "a@x.com", "b@y.com")
     monkeypatch.setenv(env.ACCOUNT_ENV_VAR, "env@gmail.com")
     assert env.resolve_account(None) == "env@gmail.com"
-    # discovery of the sole account under the mail root when neither is set.
-    # Seeded into its OWN root: the empty one above must not be a sibling of it,
-    # or discovery would see two directories and call it ambiguous.
-    seeded = tmp_path / "seeded"
-    seeded.mkdir()
-    monkeypatch.delenv(env.ACCOUNT_ENV_VAR, raising=False)
-    monkeypatch.setattr(env, "MAIL_ROOT", _seed(seeded))
+    assert env.resolve_account("flag@gmail.com") == "flag@gmail.com"  # the flag wins
+
+
+def test_resolve_account_takes_the_only_account_folder(state: Path) -> None:
+    _account_folders(state, "you@gmail.com")
+    _account_folders(state, "empty@gmail.com", credential=False)  # no imap.json: none
     assert env.resolve_account(None) == "you@gmail.com"
 
 
-def test_resolve_account_raises_when_none(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize("names", [(), ("a@x.com", "b@y.com")])
+def test_resolve_account_refuses_with_no_folder_or_several(
+    state: Path, names: tuple[str, ...]
 ) -> None:
-    monkeypatch.delenv(env.ACCOUNT_ENV_VAR, raising=False)
-    empty = tmp_path / "empty"
-    empty.mkdir()
-    monkeypatch.setattr(env, "MAIL_ROOT", empty)
-    with pytest.raises(ValueError, match="no account"):
+    _account_folders(state, *names)
+    with pytest.raises(ValueError) as refused:
         env.resolve_account(None)
+    said = str(refused.value)
+    assert said.startswith(f"no account: {len(names)} folders in {state / 'accounts'} ")
+    assert "pass --mail-account" in said
 
 
-def test_resolve_state_dir_is_per_account(
+def test_resolve_account_no_longer_takes_the_only_store(
+    state: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One store under the mail root is not an account folder: it is not the default."""
+    monkeypatch.setattr(env, "MAIL_ROOT", _seed(tmp_path / "seeded"))
+    with pytest.raises(ValueError, match="no account: 0 folders"):
+        env.resolve_account(None)
+    _account_folders(state, "you@gmail.com")
+    assert env.resolve_account(None) == "you@gmail.com"
+
+
+@pytest.mark.parametrize("verb", ["report", "catalog", "fetch"])
+def test_a_verb_without_the_flag_exits_2_unless_one_folder_holds_imap_json(
+    verb: str, state: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _account_folders(state, "a@x.com", "b@y.com")
+    argv = [verb] if verb == "report" else [verb, "--non-interactive"]
+    args = root.parser().parse_args(argv)
+    code = {"report": report_cli, "catalog": catalog_cli, "fetch": fetch_cli}[
+        verb
+    ].dispatch(args)
+    out, err = capsys.readouterr()
+    assert (code, out) == (2, "")
+    assert "no account: 2 folders in " in err and "pass --mail-account" in err
+
+
+def test_resolve_state_dir_is_the_accounts_folder(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    base = tmp_path / "state"
+    base = tmp_path / "wicket"
     monkeypatch.setattr(env, "DEFAULT_STATE_DIR", base)
+    (base / "accounts" / "you@gmail.com").mkdir(parents=True)
     path = env.resolve_state_dir("You+tag@Gmail.com")
-    assert path == base / "you@gmail.com"
-    assert path.is_dir()
-    # override replaces the base; the account segment still applies
+    assert path == base / "accounts" / "you@gmail.com" and path.is_dir()
+    # override replaces the base; accounts/<account> still applies
     other = tmp_path / "elsewhere"
-    assert env.resolve_state_dir("you@gmail.com", other) == other / "you@gmail.com"
+    (other / "accounts" / "you@gmail.com").mkdir(parents=True)
+    assert (
+        env.resolve_state_dir("you@gmail.com", other)
+        == other / "accounts" / "you@gmail.com"
+    )
+
+
+def test_resolve_state_dir_never_creates_and_a_missing_folder_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = tmp_path / "wicket"
+    monkeypatch.setattr(env, "DEFAULT_STATE_DIR", base)
+    with pytest.raises(env.NotLinked):
+        env.resolve_state_dir("you@gmail.com")
+    (base / "you@gmail.com").mkdir(parents=True)  # the old layout is no account
+    with pytest.raises(env.NotLinked):
+        env.resolve_state_dir("you@gmail.com")
+    (base / "accounts").mkdir()
+    (base / "accounts" / "you@gmail.com").symlink_to(tmp_path / "gone")  # to nothing
+    with pytest.raises(env.NotLinked):
+        env.resolve_state_dir("you@gmail.com")
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["wicket"]  # nothing made
+
+
+def test_a_folder_without_imap_json_still_resolves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Resolving a named account asks only for its folder: the credential is then
+    prompted for or refused, never skipped (owner, 2026-10-28)."""
+    monkeypatch.setattr(env, "DEFAULT_STATE_DIR", tmp_path / "wicket")
+    (tmp_path / "wicket" / "accounts" / "you@gmail.com").mkdir(parents=True)
+    path = env.resolve_state_dir("you@gmail.com")
+    assert not (path / "imap.json").exists()
+    assert env.account_dirs() == []  # yet it is not listed as an account
 
 
 # --- catalog() wiring (no real IMAP) -------------------------------------
@@ -162,6 +243,7 @@ def test_catalog_resolves_paths_and_passes_dry_run(
     (tmp_path / "mail").mkdir(exist_ok=True)
     monkeypatch.setattr(env, "MAIL_ROOT", tmp_path / "mail")
     monkeypatch.setattr(env, "DEFAULT_STATE_DIR", tmp_path / "state")
+    (tmp_path / "state" / "accounts" / "you@gmail.com").mkdir(parents=True)
     monkeypatch.delenv(env.ACCOUNT_ENV_VAR, raising=False)
 
     seen: dict[str, object] = {}
@@ -185,18 +267,19 @@ def test_catalog_resolves_paths_and_passes_dry_run(
     assert seen["interactive"] is False  # default
     assert seen["dry_run"] is True
     assert seen["store_dir"] == tmp_path / "mail" / "you@gmail.com" / "manifest"
-    assert seen["creds_path"] == tmp_path / "state" / "you@gmail.com" / "imap.json"
+    creds = tmp_path / "state" / "accounts" / "you@gmail.com" / "imap.json"
+    assert seen["creds_path"] == creds
 
 
 # --- fetch() wiring + mutual exclusivity ----------------------------------
 
 
-def test_fetch_options_require_exactly_one_of_domains_or_query() -> None:
+def test_fetch_options_take_at_most_one_of_domains_or_query() -> None:
     # The invariant lives in FetchOptions, so an ambiguous request cannot even
-    # be constructed (no account, no IMAP, no monkeypatching needed).
-    with pytest.raises(ValueError, match="exactly one"):
-        fetch_api.FetchOptions()  # neither
-    with pytest.raises(ValueError, match="exactly one"):
+    # be constructed (no account, no IMAP, no monkeypatching needed). Neither is
+    # a request too: every message not yet got, year by year (plan rule 1).
+    assert fetch_api.FetchOptions().query is None  # neither
+    with pytest.raises(ValueError, match="at most one"):
         fetch_api.FetchOptions(domains="a.com", query="x")  # both
 
 
@@ -206,6 +289,7 @@ def test_fetch_wires_query_and_paths(
     (tmp_path / "mail").mkdir(exist_ok=True)
     monkeypatch.setattr(env, "MAIL_ROOT", tmp_path / "mail")
     monkeypatch.setattr(env, "DEFAULT_STATE_DIR", tmp_path / "state")
+    (tmp_path / "state" / "accounts" / "you@gmail.com").mkdir(parents=True)
     monkeypatch.delenv(env.ACCOUNT_ENV_VAR, raising=False)
 
     seen: dict[str, object] = {}
@@ -217,7 +301,7 @@ def test_fetch_wires_query_and_paths(
 
     def fake_download(**kwargs: object) -> dict[str, int]:
         seen.update(kwargs)
-        return {"downloaded": 0, "failed": 0, "held": 0}
+        return {"downloaded": 0, "failed": 0, "got": 0}
 
     monkeypatch.setattr(fetch_api, "load_credentials", fake_load_credentials)
     monkeypatch.setattr(fetch_api, "download", fake_download)
@@ -230,9 +314,12 @@ def test_fetch_wires_query_and_paths(
     assert seen["interactive"] is False  # default
     ctx: ThreadContext = seen["ctx"]  # type: ignore[assignment]
     assert ctx.dry_run is True
-    assert ctx.dest == tmp_path / "mail" / "you@gmail.com" / "archive"
+    assert ctx.dest == tmp_path / "mail" / "you@gmail.com" / "archive"  # reconciled
+    assert ctx.staging_dir == tmp_path / "mail" / "you@gmail.com" / "staging"
+    assert ctx.duplicates_dir == tmp_path / "mail" / ".duplicates" / "you@gmail.com"
     assert "acme.com" in str(seen["query"])
-    assert seen["creds_path"] == tmp_path / "state" / "you@gmail.com" / "imap.json"
+    creds = tmp_path / "state" / "accounts" / "you@gmail.com" / "imap.json"
+    assert seen["creds_path"] == creds
 
 
 def test_sweep_years_incremental_full_and_explicit(tmp_path: Path) -> None:

@@ -3,8 +3,10 @@
 The single place the catalog face reaches the engine. It resolves the account,
 the per-account store and credential paths, seeds credentials (gated on
 ``interactive``), dispatches into `lib.sweep`, and returns the worker's
-stats dict unchanged. ``AuthError`` is re-exported so the face can map it
-without importing `wicket.auth`.
+stats dict unchanged. A real sweep holds the store's lock (`env.store_lock`) for
+its whole run; a dry run writes nothing and takes none. ``AuthError`` and
+``Halted`` are re-exported so the face can map them without importing
+`wicket.auth`.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from wicket.auth import AuthError, load_credentials
+from wicket.auth import AuthError, Halted, load_credentials
 from wicket.catalog.lib import sweep
 from wicket.env import (
     ALL_MAIL_MAILBOX,
@@ -22,10 +24,11 @@ from wicket.env import (
     resolve_account,
     resolve_state_dir,
     resolve_store_dir,
+    store_lock,
 )
 from wicket.manifest import latest_shard_year
 
-__all__ = ["AuthError", "CatalogOptions", "catalog"]
+__all__ = ["AuthError", "CatalogOptions", "Halted", "catalog"]
 
 
 @dataclass(frozen=True)
@@ -80,12 +83,13 @@ def catalog(
     ``options`` (a `CatalogOptions`) carries the run knobs. Resolves the account
     (`env.resolve_account`), the manifest store (``options.store_dir``
     override else ``<mail-root>/<account>/manifest``), and the credential file
-    (``<state-dir>/<account>/imap.json``). Seeds credentials in this thread (the
-    per-year workers never prompt). Sweeps incrementally by default (from the
+    (``<state-dir>/accounts/<account>/imap.json``). Seeds credentials in this thread
+    (the per-year workers never prompt). Sweeps incrementally by default (from the
     latest year in the manifest forward), fully when ``options.full`` is set, or
     the explicit ``options.years`` when given; returns `lib.sweep`'s stats dict.
     ``interactive=False`` is the default: a missing credential raises `AuthError`
-    instead of blocking on a prompt.
+    instead of blocking on a prompt. Raises `Halted` when a HALT is in force or the
+    sweep wrote one, and `env.StoreBusy` when another process holds the store's lock.
     """
     opts = options if options is not None else CatalogOptions()
     resolved = resolve_account(account)
@@ -96,11 +100,19 @@ def catalog(
         resolve_state_dir(resolved, opts.state_dir) / CREDENTIALS_FILENAME
     )
     load_credentials(credentials_path, interactive=interactive)
-    return sweep(
-        store_dir=store,
-        credentials_path=credentials_path,
-        mailbox=opts.mailbox,
-        years=_sweep_years(store, opts),
-        dry_run=opts.dry_run,
-        threads=opts.threads,
-    )
+
+    def run() -> dict[str, int]:
+        return sweep(
+            store_dir=store,
+            credentials_path=credentials_path,
+            mailbox=opts.mailbox,
+            years=_sweep_years(store, opts),
+            dry_run=opts.dry_run,
+            threads=opts.threads,
+            archive_dir=store.parent / "archive",  # the store's own archive
+        )
+
+    if opts.dry_run:
+        return run()
+    with store_lock(store):
+        return run()

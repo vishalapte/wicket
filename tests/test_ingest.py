@@ -8,6 +8,7 @@ files an entire export into the wrong mailbox, silently and additively.
 from __future__ import annotations
 
 from argparse import Namespace
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -15,13 +16,12 @@ import pytest
 from wicket.env import Identities, account_of
 from wicket.ingest.cli import _render
 from wicket.ingest.lib import (
-    AccountFor,
     Target,
     check_account_matches,
     ingest_folder,
     ingest_routed,
 )
-from wicket.manifest import load_store
+from wicket.manifest import load_store, read_shard, shard_path, write_shard
 
 ME = "you@gmail.com"
 WORK = "work@corp.com"
@@ -33,6 +33,7 @@ ALIASES = {
     "shopping": "shopping",
 }
 ACCOUNTS = {ME, WORK, "shopping"}  # the stores that exist
+AccountFor = Callable[[str], str | None]  # `wicket.filing.AccountFor`
 
 
 def _account_for(accounts: set[str] | None = None) -> AccountFor:
@@ -169,8 +170,10 @@ def test_outbound_to_a_burner_files_under_the_counterparty(tmp_path: Path) -> No
     assert stats["unfiled"] == 0
 
 
-def test_without_the_identity_set_the_same_thread_goes_unfiled(tmp_path: Path) -> None:
+def test_without_the_identity_set_the_same_thread_files_as_sent(tmp_path: Path) -> None:
     # The pre-alias behavior, pinned: this is the defect the identity set fixes.
+    # The burner reads as a second counterparty domain, so the thread is not filed
+    # under acme.com; since the sent rule (plan rule 8) that is sent/, not _unfiled/.
     src = tmp_path / "src"
     _eml(src, "a", frm=ME, to="client@acme.com, burner@duck.com")
 
@@ -180,7 +183,9 @@ def test_without_the_identity_set_the_same_thread_goes_unfiled(tmp_path: Path) -
         target=_target(tmp_path, identities=bare),
         account_for=_account_for(),
     )
-    assert stats["unfiled"] == 1
+    assert not (tmp_path / ME / "archive" / "acme.com").exists()
+    assert (tmp_path / ME / "archive" / "sent").is_dir()
+    assert stats["by_rule"] == {"sent": 1}
 
 
 # --- additivity (the property the whole verb rests on) --------------------
@@ -226,6 +231,113 @@ def test_dry_run_writes_nothing(tmp_path: Path) -> None:
     assert stats["added"] == 1
     assert not (tmp_path / ME / "archive").exists()
     assert not (tmp_path / ME / "manifest").exists()
+
+
+# --- a row is not a copy: only a file on disk is archived -----------------
+
+
+def _observed(target: Target, year: int, **fields: object) -> None:
+    """Seed the store with a catalog row for ``<a@test>`` (observed, not downloaded)."""
+    row: dict[str, object] = {
+        "id": "a@test",
+        "msgid": "1a0f296bf69d52b0",
+        "thread_id": "1765",
+        "date": f"{year}-07-06T09:00:04+00:00",
+        "from": "them@acme.com",
+        "labels": ["acme"],
+        "deleted": False,
+        "downloaded": False,
+        "domain": "acme.com",
+    }
+    row.update(fields)
+    write_shard(shard_path(target.store_dir, year), {"a@test": row})
+
+
+def test_an_observed_row_gets_the_file_and_keeps_its_observation(
+    tmp_path: Path,
+) -> None:
+    # The Gmail store has a catalog row for every message, downloaded or not. Such
+    # a row is not a copy: skipping the message and trashing its source lost it.
+    src = tmp_path / "src"
+    _eml(src, "a", frm="them@acme.com", to=ME)
+    target = _target(tmp_path)
+    _observed(target, 2025)  # catalog's shard (INTERNALDATE), not the Date header's
+
+    stats = ingest_folder(src=src, target=target, account_for=_account_for())
+    assert (stats["added"], stats["skipped"]) == (1, 0)
+    row = read_shard(shard_path(target.store_dir, 2025))["a@test"]
+    assert row["downloaded"] is True
+    assert (target.archive_dir / str(row["path"])).is_file()
+    assert str(row["path"]).startswith("acme.com/2026-07/")
+    # The observation is untouched, so fetch's msgid check now sees it as held.
+    assert row["msgid"] == "1a0f296bf69d52b0" and row["labels"] == ["acme"]
+    assert row["date"] == "2025-07-06T09:00:04+00:00" and row["thread_id"] == "1765"
+    assert not shard_path(target.store_dir, 2026).exists()  # no second row
+
+
+def test_a_row_whose_file_is_gone_is_restored_at_its_path(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    _eml(src, "a", frm="them@acme.com", to=ME)
+    target = _target(tmp_path)
+    ingest_folder(src=src, target=target, account_for=_account_for())
+    row = load_store(target.store_dir)["a@test"]
+    (target.archive_dir / str(row["path"])).unlink()
+
+    again = ingest_folder(src=src, target=target, account_for=_account_for())
+    assert again["added"] == 1
+    assert (target.archive_dir / str(row["path"])).is_file()
+    assert load_store(target.store_dir)["a@test"] == row
+
+
+def test_an_id_held_in_either_shard_is_skipped(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    _eml(src, "a", frm="them@acme.com", to=ME)
+    target = _target(tmp_path)
+    ingest_folder(src=src, target=target, account_for=_account_for())
+    _observed(target, 2027)  # a later shard's unarchived copy wins the id map
+
+    again = ingest_folder(src=src, target=target, account_for=_account_for())
+    assert (again["added"], again["skipped"]) == (0, 1)
+    assert len(list(target.archive_dir.rglob("*.eml"))) == 1  # no second copy
+
+
+def test_two_colon_ids_are_two_messages(tmp_path: Path) -> None:
+    # Amazon's urn: ids once all read as "urn": one row, the rest taken for
+    # in-folder duplicates and trashed with nothing archived.
+    src = tmp_path / "src"
+    src.mkdir()
+    for n in (1, 2):
+        (src / f"m{n}.eml").write_text(
+            f"Message-ID: <urn:correios:msg:{n}@amazon.com>\n"
+            f"From: ship@amazon.com\nTo: {ME}\n"
+            f"Date: Sun, 22 May 2011 20:2{n}:00 +0000\nSubject: order {n}\n\nbody\n",
+            encoding="utf-8",
+        )
+    stats = ingest_folder(src=src, target=_target(tmp_path), account_for=_account_for())
+    assert (stats["unique"], stats["dup"], stats["added"]) == (2, 0, 2)
+    assert sorted(load_store(_target(tmp_path).store_dir)) == [
+        "urn:correios:msg:1@amazon.com",
+        "urn:correios:msg:2@amazon.com",
+    ]
+
+
+def test_a_reply_to_a_colon_id_joins_its_thread(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.eml").write_text(
+        f"Message-ID: <urn:x:1@acme.com>\nFrom: them@acme.com\nTo: {ME}\n"
+        "Date: Mon, 06 Jul 2026 09:00:00 +0000\nSubject: q\n\nbody\n",
+        encoding="utf-8",
+    )
+    (src / "b.eml").write_text(
+        f"Message-ID: <r@gmail.com>\nIn-Reply-To: <urn:x:1@acme.com>\n"
+        f"From: {ME}\nTo: them@acme.com\n"
+        "Date: Mon, 06 Jul 2026 10:00:00 +0000\nSubject: Re: q\n\nbody\n",
+        encoding="utf-8",
+    )
+    ingest_folder(src=src, target=_target(tmp_path), account_for=_account_for())
+    rows = load_store(_target(tmp_path).store_dir)
+    assert rows["r@gmail.com"]["thread_id"] == rows["urn:x:1@acme.com"]["thread_id"]
 
 
 # --- routing (the thread is the unit) -------------------------------------
@@ -488,6 +600,27 @@ def test_a_path_that_does_not_exist_is_refused(tmp_path: Path) -> None:
             target=_target(tmp_path),
             account_for=_account_for(),
         )
+
+
+def test_an_exchange_bracketed_message_id_keys_instead_of_crashing(
+    tmp_path: Path,
+) -> None:
+    # Exchange mints `<[hex-...=@microsoft.com]>`; CPython 3.12's strict msg-id
+    # parser raises IndexError on it, which used to abort the whole folder.
+    one = _eml(tmp_path / "src", "a", frm="them@acme.com", to=ME)
+    one.write_text(
+        one.read_text(encoding="utf-8").replace(
+            "Message-ID: <a@test>", "Message-ID: <[AB12-CD=@microsoft.com]>"
+        ),
+        encoding="utf-8",
+    )
+
+    messages = _parsed(tmp_path / "src")
+    assert len(messages) == 1
+    parsed = messages[0]
+    assert parsed["id"] == "[ab12-cd=@microsoft.com]"
+    stats = ingest_folder(src=one, target=_target(tmp_path), account_for=_account_for())
+    assert stats["added"] == 1
 
 
 # --- forced filing domain (--domain) --------------------------------------

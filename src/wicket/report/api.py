@@ -42,7 +42,7 @@ def addresses(account: str | None = None) -> list[str]:
 
 
 def manifest(account: str | None = None) -> dict[str, Row]:
-    """The whole manifest for ``account`` (default: the sole account under the mail root)."""
+    """The whole manifest for ``account`` (default: the only account folder)."""
     return load_store(resolve_store_dir(resolve_account(account)))
 
 

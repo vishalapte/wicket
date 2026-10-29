@@ -47,7 +47,7 @@ def parser() -> argparse.ArgumentParser:
         "--mail-account",
         default=None,
         help="Account address; scopes the manifest store. Gmail `+tag` aliases "
-        f"are normalized. Required if ${ACCOUNT_ENV_VAR} is unset.",
+        f"are normalized. Default: ${ACCOUNT_ENV_VAR}, else the only account folder.",
     )
     return build
 
@@ -72,6 +72,9 @@ def dispatch(args: argparse.Namespace) -> int:
             print(f"    gone from Gmail  {counts['downloaded_gone']:>8}  (only copy)")
             print(f"    still in mailbox {counts['downloaded_present']:>8}")
             print(f"  observed only      {counts['observed_only']:>8}  (not held)")
+            print(
+                f"  excluded           {counts['excluded']:>8}  (duplicates not kept)"
+            )
             print(f"  distinct senders   {counts['senders']:>8}")
             print(f"  distinct addresses {counts['addresses']:>8}")
     except ValueError as exc:

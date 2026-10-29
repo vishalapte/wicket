@@ -12,14 +12,19 @@ import imaplib
 import sys
 from pathlib import Path
 
-from wicket.catalog.api import AuthError, CatalogOptions, catalog
+from wicket.catalog.api import AuthError, CatalogOptions, Halted, catalog
 from wicket.env import (
     ACCOUNT_ENV_VAR,
     ALL_MAIL_MAILBOX,
     DEFAULT_THREADS,
+    NotLinked,
+    StoreBusy,
     resolve_account,
     resolve_store_dir,
 )
+
+EXIT_HALTED = 3  # a HALT is in force, or this run wrote one
+EXIT_BUSY = 75  # EX_TEMPFAIL: another process holds the store's lock
 
 
 def parser() -> argparse.ArgumentParser:
@@ -38,7 +43,7 @@ def parser() -> argparse.ArgumentParser:
         default=None,
         help="Account address; scopes the manifest store. "
         "Gmail `+tag` aliases are normalized automatically. "
-        f"Required if ${ACCOUNT_ENV_VAR} is unset.",
+        f"Default: ${ACCOUNT_ENV_VAR}, else the only account folder.",
     )
     build.add_argument(
         "--store-dir",
@@ -50,8 +55,8 @@ def parser() -> argparse.ArgumentParser:
         "--state-dir",
         type=Path,
         default=None,
-        help="Where imap.json (email + app password) lives "
-        "(default: ~/.config/gmail; shared with the other tools).",
+        help="The base holding accounts/<account>/imap.json (email + app password) "
+        "(default: ~/.config/wicket; shared with the other tools).",
     )
     build.add_argument(
         "--mailbox",
@@ -107,6 +112,30 @@ def _parse_years(raw: str) -> list[int]:
     return years
 
 
+def _refused(exc: Exception) -> int:
+    """Print why the api refused, and return the exit code for it."""
+    if isinstance(exc, Halted):
+        print(f"halted: {exc.line}", file=sys.stderr)
+        print(
+            f"HALT at {exc.path}; clear it with `python -m wicket.halt clear "
+            f"--mail-account {exc.path.name}` (if Gmail rejected the app password, "
+            "re-seed it first)",
+            file=sys.stderr,
+        )
+        return EXIT_HALTED
+    if isinstance(exc, StoreBusy):
+        print(str(exc), file=sys.stderr)
+        return EXIT_BUSY
+    if isinstance(exc, AuthError):
+        print(f"auth error: {exc}", file=sys.stderr)
+        return 2
+    if isinstance(exc, imaplib.IMAP4.error):
+        print(f"IMAP error: {exc}", file=sys.stderr)
+        return 1
+    print(str(exc), file=sys.stderr)
+    return 2
+
+
 def dispatch(args: argparse.Namespace) -> int:
     """Parse argv into typed kwargs, call the api, render the summary."""
     interactive = (not args.non_interactive) and sys.stdin.isatty()
@@ -130,15 +159,10 @@ def dispatch(args: argparse.Namespace) -> int:
             full=args.full,
         )
         stats = catalog(args.mail_account, options=options, interactive=interactive)
-    except ValueError as exc:
-        print(str(exc), file=sys.stderr)
-        return 2
-    except AuthError as exc:
-        print(f"auth error: {exc}", file=sys.stderr)
-        return 2
-    except imaplib.IMAP4.error as exc:
-        print(f"IMAP error: {exc}", file=sys.stderr)
-        return 1
+    except NotLinked:
+        return 0  # no folder in ~/.config/wicket/accounts: a no-op, silent
+    except (ValueError, StoreBusy, AuthError, imaplib.IMAP4.error) as exc:
+        return _refused(exc)
 
     store_dir = (
         args.store_dir.expanduser()

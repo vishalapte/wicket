@@ -11,28 +11,10 @@ from wicket import env
 from wicket.env import (
     ACCOUNT_ALIASES_FILENAME,
     account_aliases_path,
-    discover_account,
     identities,
     load_account_aliases,
     resolve_account,
 )
-
-
-def test_discover_account_returns_sole_directory(tmp_path: Path) -> None:
-    (tmp_path / "you@gmail.com").mkdir()
-    assert discover_account(tmp_path) == "you@gmail.com"
-
-
-def test_discover_account_none_when_empty_or_missing(tmp_path: Path) -> None:
-    assert discover_account(tmp_path) is None
-    assert discover_account(tmp_path / "nope") is None
-
-
-def test_discover_account_none_when_ambiguous(tmp_path: Path) -> None:
-    (tmp_path / "a@x.com").mkdir()
-    (tmp_path / "b@y.com").mkdir()
-    assert discover_account(tmp_path) is None
-
 
 # --- account aliases, identities, and the closed-account guard -------------
 

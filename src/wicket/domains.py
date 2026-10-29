@@ -82,8 +82,17 @@ def load_domain_routes(path: Path | None) -> dict[str, str]:
     """
     if path is None or not path.exists():
         return {}
+    return parse_domain_routes(json.loads(path.read_text(encoding="utf-8")), path)
+
+
+def parse_domain_routes(raw: object, path: Path) -> dict[str, str]:
+    """The routes rule over a map already in memory; ``path`` names it in errors.
+
+    `load_domain_routes` reads the file through this, and `wicket.store` checks a map it is
+    about to write through it. A domain listed under two stores is refused here.
+    """
     return flatten_aliases(
-        json.loads(path.read_text(encoding="utf-8")),
+        raw,
         path,
         primary_ok=is_destination,
         alias_ok=lambda d: isinstance(d, str)
@@ -152,8 +161,17 @@ def load_domain_aliases(path: Path | None) -> dict[str, str]:
     """
     if path is None or not path.exists():
         return {}
+    return parse_domain_aliases(json.loads(path.read_text(encoding="utf-8")), path)
+
+
+def parse_domain_aliases(raw: object, path: Path) -> dict[str, str]:
+    """The alias rule over a map already in memory; ``path`` names it in errors.
+
+    `load_domain_aliases` reads the file through this, and `wicket.alias` checks a map it is
+    about to write through it.
+    """
     return flatten_aliases(
-        json.loads(path.read_text(encoding="utf-8")),
+        raw,
         path,
         primary_ok=lambda d: isinstance(d, str) and bool(DOMAIN_RE.match(d)),
         alias_ok=lambda d: isinstance(d, str)

@@ -12,11 +12,16 @@ speculatively.
 
 wicket is a standalone, stdlib-only library providing **four verbs** over one
 year-sharded manifest: `catalog` (observe the mailbox into the manifest) and
-`fetch` (download `.eml`), both read-only on the mailbox over IMAP; `report`
-(manifest summaries and bucket views, no IMAP); and `ingest` (file a local `.eml`
-export offline, routed per thread, for a mailbox IMAP cannot reach). A fifth
-subcommand, `config`, is a noun rather than a verb — CRUD over the three
-owner-authored maps — and takes its own nested subparsers accordingly. It was
+`fetch` (get `.eml` into the store's `staging/`; it files nothing), both read-only
+on the mailbox over IMAP; `report` (manifest summaries and bucket views, no IMAP);
+and `ingest`, the only verb that files (`--staged`: what fetch got; `--src`: a local
+`.eml` export, routed per thread, for a mailbox IMAP cannot reach). Every filing
+rule lives in `wicket.filing`. Four nouns: `python -m wicket.alias` and
+`python -m wicket.store` edit the three owner-authored maps,
+`python -m wicket.halt` lists, sets and clears an account's HALT (each logged), and
+`python -m wicket.account` lists, creates and deletes an account's folder in
+`~/.config/wicket/accounts` (it holds an `imap.json` link).
+It was
 lifted out of `factotum`; its consumers (factotum, meridian) depend on it. The
 provider story is mid-build: Gmail works today, Fastmail is planned behind a `--source`
 interface.
@@ -41,7 +46,7 @@ mailbox owns, and topical grouping of mailbox-owned mail is a *view*
 - **Layering is the contract.** `[tool.importlinter]` in `pyproject.toml` is the
   source of truth: one `layers` contract, `wicket.__main__` (root face) →
   per-verb `cli` (verb face) → per-verb `api` → per-verb worker → `reconcile` →
-  shared (`auth`/`domains`/`message`/`manifest`) → `env`, downward only
+  `filing` → shared (`auth`/`domains`/`message`/`manifest`) → `env`, downward only
   (acyclic). The four verbs are independent siblings (no cross-imports). The
   face → api → lib routing (a face reaches the engine through its api, not the
   worker/shared directly) is the recommended **convention**, reviewed not

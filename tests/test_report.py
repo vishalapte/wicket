@@ -94,3 +94,27 @@ def test_bucket_rows_folds_the_domain_and_claims_only_its_own(tmp_path: Path) ->
 
     got = bucket_rows(store, "travel", routes, folds)
     assert [(domain, row["id"]) for domain, row in got] == [("delta.com", "a")]
+
+
+def test_an_excluded_row_is_counted_apart_and_listed_nowhere(tmp_path: Path) -> None:
+    write_shard(
+        shard_path(tmp_path, 2024),
+        {
+            "1@x": {
+                "id": "1@x",
+                "from": "a@acme.com",
+                "to": ["you@g.com"],
+                "downloaded": True,
+            },
+            "1@x|gmail:2": {
+                "id": "1@x|gmail:2",
+                "from": "copy@dup.com",
+                "to": ["you@g.com"],
+                "excluded": "duplicate of 1@x",
+            },
+        },
+    )
+    s = summary(tmp_path)
+    assert (s["messages"], s["excluded"], s["observed_only"]) == (1, 1, 0)
+    assert sender_counts(tmp_path) == [("a@acme.com", 1)]
+    assert "copy@dup.com" not in all_addresses(tmp_path)

@@ -11,8 +11,10 @@ import argparse
 import sys
 from pathlib import Path
 
-from wicket.env import resolve_account, resolve_store_dir
+from wicket.env import StoreBusy, resolve_account, resolve_store_dir
 from wicket.ingest.api import IngestOptions, ingest
+
+EXIT_BUSY = 75  # EX_TEMPFAIL: a store this run writes is locked by another process
 
 
 def parser() -> argparse.ArgumentParser:
@@ -27,15 +29,26 @@ def parser() -> argparse.ArgumentParser:
             "untouched, only new ones are filed, and no archived message is ever "
             "deleted. Re-running is idempotent. With no --mail-account, each thread is "
             "routed to the account it was addressed to and mail nobody claims is "
-            "left alone."
+            "left alone. With --staged instead of --src, files what `wicket fetch` "
+            "got into one account's staging dir. A message whose row is excluded "
+            "is skipped and counted."
         ),
     )
-    build.add_argument(
+    source = build.add_mutually_exclusive_group(required=True)
+    source.add_argument(
         "--src",
         type=Path,
-        required=True,
         help="What to ingest: a folder of .eml (flat drag-export, not recursive) "
         "or a single .eml file.",
+    )
+    source.add_argument(
+        "--staged",
+        action="store_true",
+        help="File what `wicket fetch` got into <mail-root>/<account>/staging/ "
+        "for one account (--mail-account, $WICKET_ACCOUNT, or the only account "
+        "folder): "
+        "no routing, no account check, nothing to trash. A body the store already "
+        "archives under another name goes to <mail-root>/.duplicates/<account>/.",
     )
     build.add_argument(
         "--mail-account",
@@ -56,10 +69,11 @@ def parser() -> argparse.ArgumentParser:
         "--domain",
         default=None,
         help="File every newly-added message under this one domain folder "
-        "(<domain>/YYYY-MM/), overriding the counterparty domain the filing rule "
-        "would compute. A destination, NOT a filter: it does not select which "
-        "messages are ingested. A bare domain like acme.com. A reply that joins "
-        "an already-archived thread still files with its thread, so this only "
+        "(<domain>/YYYY-MM/), overriding the self, sent and counterparty rules. "
+        "A destination, NOT a filter: it does not select which messages are "
+        "ingested; with --staged it applies to every staged message of the "
+        "account. A bare domain like acme.com. A reply that joins an "
+        "already-archived thread still files with its thread, so this only "
         "redirects mail that has no archived home yet.",
     )
     build.add_argument(
@@ -100,7 +114,8 @@ def dispatch(args: argparse.Namespace) -> int:
     try:
         tags = tuple(args.tag)
         options = IngestOptions(
-            src=args.src.expanduser(),
+            src=args.src.expanduser() if args.src else None,
+            staged=args.staged,
             source=args.source,
             dry_run=args.dry_run,
             force=args.force,
@@ -115,11 +130,24 @@ def dispatch(args: argparse.Namespace) -> int:
     except FileNotFoundError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    except StoreBusy as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_BUSY
 
+    if args.staged:
+        _render_staged(stats, args)
+        return 0
     if stats.get("warning"):
         print(f"warning: {stats['warning']}", file=sys.stderr)
     _render(stats, args)
-    return 0
+    busy: list[dict[str, object]] = stats.get("busy", [])  # type: ignore[assignment]
+    for store in busy:
+        print(
+            f"busy: {store['account']} is locked by pid {store['pid'] or '?'}; its "
+            f"{store['messages']} message(s) were left for the next run",
+            file=sys.stderr,
+        )
+    return EXIT_BUSY if busy else 0
 
 
 def _render(stats: dict[str, object], args: argparse.Namespace) -> None:
@@ -145,6 +173,8 @@ def _render(stats: dict[str, object], args: argparse.Namespace) -> None:
             line += f" ({by_year})"
         if got["skipped"]:
             line += f"; {got['skipped']} already archived"
+        if got.get("excluded"):
+            line += f"; {got['excluded']} excluded, skipped"
         if got["unfiled"]:
             line += f"; {got['unfiled']} unfiled"
         print(line)
@@ -167,6 +197,7 @@ def _single(stats: dict[str, object], args: argparse.Namespace) -> dict[str, obj
         "account": resolve_store_dir(resolve_account(args.mail_account)).parent.name,
         "added": stats["added"],
         "skipped": stats["skipped"],
+        "excluded": stats.get("excluded", 0),
         "unfiled": stats["unfiled"],
         "added_by_year": stats["added_by_year"],
         "filed": stats["filed"],
@@ -179,3 +210,35 @@ def _print_filed(filed: dict[str, list[str]]) -> None:
         print(f"    {directory}/")
         for name in filed[directory]:
             print(f"      {name}")
+
+
+def _render_staged(stats: dict[str, object], args: argparse.Namespace) -> None:
+    """Print a staged run: what was staged, what was filed where, what was left."""
+    verb = "would file" if args.dry_run else "filed"
+    years: dict[int, int] = stats["added_by_year"]  # type: ignore[assignment]
+    by_year = ", ".join(f"{y}:{n}" for y, n in years.items())
+    line = f"staged: {stats['staged']} file(s); {verb} {stats['added']} to {stats['account']}"
+    if by_year:
+        line += f" ({by_year})"
+    print(line)
+    rules: dict[str, int] = stats["by_rule"]  # type: ignore[assignment]
+    if rules:
+        print("  by rule: " + ", ".join(f"{k} {n}" for k, n in rules.items()))
+    for key, label in (
+        ("archived", "already archived (staged copy removed)"),
+        ("duplicates", "set aside as duplicates"),
+        ("excluded", "excluded, skipped and left staged"),
+        ("unfiled", "unfiled"),
+    ):
+        if stats[key]:
+            print(f"  {stats[key]} {label}")
+    for key, label in (
+        ("refused", "refused (a different file is in the way; left staged)"),
+        ("unrecognized", "not a staged name (left alone)"),
+    ):
+        names: list[str] = stats[key]  # type: ignore[assignment]
+        if names:
+            print(f"  {len(names)} {label}:", file=sys.stderr)
+            for name in names:
+                print(f"    {name}", file=sys.stderr)
+    _print_filed(stats.get("filed", {}))  # type: ignore[arg-type]

@@ -11,6 +11,13 @@ bearing: doctrine
 - **Deciders:** Vishal (owner)
 - **Scope:** `wicket`: the on-disk record of the mailbox and the verbs over it.
 
+> **Amended 2026-10-27 (the fetch/ingest split).** `fetch` no longer files: it gets
+> bodies into `<store>/staging/` and writes no settlement, and `ingest --staged`
+> files them, so `ingest` is the only verb that writes `downloaded`, `path` and the
+> new settlement field `filed` (which filing rule placed the row). The filing rule
+> has one home, `wicket.filing`, and reads a thread's opener. §3 and §4 below are
+> amended in place.
+>
 > **Implementation status (2026-06-21):** the key, the year-sharded store, both
 > mutating verbs (`catalog`, `fetch`), the reconcile, and the two-boolean state
 > are implemented. `report` (read-only over the manifest) is a third verb added
@@ -41,6 +48,20 @@ all mail and portable across providers. When a message has
 no usable `Message-ID`, the key is `"<provider>:<native-id>"` (e.g.
 `gmail:18f2a3`) so every message has a stable, unique key. Provider-native ids
 (`msgid`, `thread_id`) are retained as fields for fast refetch.
+
+> **Amended 2026-10-26.** A `Message-ID` is not unique in practice: senders
+> reuse one for different mail, and Gmail can hold one message twice under two
+> Gmail ids. One row per key could then record only one of them, so the other
+> looked undownloaded on every run and the row flipped between the two. Within
+> a Gmail store the unit is now the Gmail message (`message.gmail_key`): the
+> first message recorded keeps the bare key, every later one with the same
+> `Message-ID` is keyed `<key>|gmail:<gmail-id>`, and a recorded message keeps
+> its key on every later run. The one merge is a link: a Gmail message whose
+> copy ingest already filed (no Gmail id on the row, its file on disk, the same
+> send time) takes that row. Ingest is unchanged and never splits. A duplicate
+> copy is cleaned up by hand, not by code: its row carries `excluded`
+> (`"duplicate of <row id>"`), which fetch never downloads, catalog carries
+> forward and never drops, and the reports leave out.
 
 ### 2. One store, account-scoped, year-sharded
 
@@ -74,7 +95,7 @@ affected year(s).
 | `id`, `msgid`, `thread_id`, `account` | identity | always |
 | `date`, `from`, `to`, `subject`, `size`, `labels`, `deleted` | `catalog` (observation) | observed |
 | `attachments` (filenames/types/sizes/count) | `--attachments` | enriched |
-| `downloaded`, `path` | `fetch` (settlement) | fetched |
+| `downloaded`, `path`, `filed` | `ingest` (settlement; `fetch` until 2026-10-27) | filed |
 | `domain` | reconcile (derived) | derived |
 
 `deleted` and `downloaded` are the two boolean axes (see §6). `domain` is the
@@ -98,9 +119,12 @@ A shard rewrite refreshes observation and preserves settlement already on the ro
 
 - **`catalog`**: observe the mailbox into the manifest's observation fields.
   Default incremental (new messages since the last run).
-- **`fetch`**: retrieve the `.eml` for matching threads, write settlement, and
-  file each `.eml` under its alias-canonical domain. The only verb that pulls
-  bodies. Two verbs suffice: a downloaded `.eml` already contains its attachments, so
+- **`fetch`**: retrieve the `.eml` for matching messages into the store's
+  `staging/`. The only verb that pulls bodies; it files nothing (amended
+  2026-10-27). `ingest --staged` then files each body by `wicket.filing`'s rank
+  (an archived thread member's folder, `--domain`, `self/`, `sent/`, the
+  alias-canonical counterparty domain, the fallback, `_unfiled`) and writes
+  settlement. Two verbs suffice: a downloaded `.eml` already contains its attachments, so
   retrieval needs no separate file-downloader, and `--attachments` records their
   metadata.
 

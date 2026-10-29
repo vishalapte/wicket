@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import stat
 from pathlib import Path
+
+import pytest
 
 from wicket.manifest import (
     Row,
@@ -12,6 +15,7 @@ from wicket.manifest import (
     merge_settlement,
     read_shard,
     shard_path,
+    write_eml,
     write_shard,
 )
 
@@ -104,3 +108,34 @@ def test_latest_shard_year(tmp_path: Path) -> None:
     write_shard(shard_path(tmp_path, 2023), {"a@x": {"id": "a@x"}})
     write_shard(shard_path(tmp_path, 2025), {"b@x": {"id": "b@x"}})
     assert latest_shard_year(tmp_path) == 2025
+
+
+def test_catalog_carries_excluded_forward() -> None:
+    prior: dict[str, Row] = {
+        "a|gmail:2": {"id": "a|gmail:2", "msgid": "2", "excluded": "duplicate of a"}
+    }
+    observed: dict[str, Row] = {
+        "a|gmail:2": {"id": "a|gmail:2", "msgid": "2", "subject": "s"}
+    }
+    merged = merge_catalog(prior, observed, complete=True)
+    assert merged["a|gmail:2"]["excluded"] == "duplicate of a"
+    assert merged["a|gmail:2"]["deleted"] is False
+
+
+def test_complete_catalog_keeps_an_unobserved_excluded_row() -> None:
+    prior: dict[str, Row] = {
+        "a|gmail:2": {"id": "a|gmail:2", "msgid": "2", "excluded": "duplicate of a"}
+    }
+    merged = merge_catalog(prior, {}, complete=True)
+    assert merged["a|gmail:2"]["excluded"] == "duplicate of a"
+    assert merged["a|gmail:2"]["deleted"] is True
+
+
+def test_write_eml_archives_read_only_and_never_overwrites(tmp_path: Path) -> None:
+    target = tmp_path / "acme.com" / "2024-03" / "18f2.eml"
+    write_eml(target, b"Message-ID: <a@acme>\r\n\r\nbody")
+    assert stat.S_IMODE(target.stat().st_mode) == 0o444  # -r--r--r--
+    assert not list(target.parent.glob("*.tmp"))
+    with pytest.raises(FileExistsError):
+        write_eml(target, b"changed")
+    assert target.read_bytes().endswith(b"body")  # the archived message is untouched

@@ -9,12 +9,12 @@ are actions. Their argument definitions live in their own (non-entry)
 `python -m wicket.catalog` is refused by the interpreter itself, and
 `python -m wicket catalog` is the only way in.
 
-`config` sits alongside them but is not a fifth action -- it is a genuine
-NOUN (the three owner-authored maps), so it takes a subparser of its own
-rather than flags: `python -m wicket config <account|domain> <aliases|routes>
-<list|create|update|delete>`. Mixing an action-verb group with one noun-group
-at the same node is the same shape `docker`/`kubectl` use (`docker ps` next to
-`docker network <verb>`); see `wicket.config.cli` for that tree.
+The owner-authored maps are nouns, each its own node: `python -m wicket.alias`
+(domain-aliases.json) and `python -m wicket.store` (domain-routes.json and
+account-aliases.json). So is the HALT, `python -m wicket.halt`, the one door that sets
+and clears it (each logged), and the account, `python -m wicket.account`, a folder in
+~/.config/wicket/accounts holding an imap.json link. This node lists the four in
+`commands()` beside its verbs; a bare `python -m wicket` prints them, runnable as printed.
 """
 
 import argparse
@@ -23,9 +23,9 @@ import sys
 from typing import Protocol
 
 from wicket.catalog import cli as catalog_cli
-from wicket.config import cli as config_cli
 from wicket.fetch import cli as fetch_cli
 from wicket.ingest import cli as ingest_cli
+from wicket.lib.cli import print_commands
 from wicket.report import cli as report_cli
 
 
@@ -41,12 +41,47 @@ _VERBS: dict[str, _VerbCLI] = {
     "fetch": fetch_cli,
     "report": report_cli,
     "ingest": ingest_cli,
-    "config": config_cli,
 }
 
 
 def commands() -> list[tuple[str, str]]:
-    return []  # no sub-package CLI entries -- the verbs are subcommands, not nodes
+    return [
+        (
+            "alias",
+            (
+                "A domain that is really another: their domain → the domain "
+                "it files under (domain-aliases.json)."
+            ),
+        ),
+        (
+            "store",
+            (
+                "Which store mail goes to: a sender domain (--from, "
+                "domain-routes.json) or one of your addresses (--to, "
+                "account-aliases.json) → a store under the mail root."
+            ),
+        ),
+        (
+            "halt",
+            (
+                "A HALT stops every IMAP connection to an account until it is "
+                "cleared: a file under ~/.local/state/wicket/halt/ (present means "
+                "halted), each set and clear logged in log/<account>.log."
+            ),
+        ),
+        (
+            "account",
+            (
+                "An account is a folder, ~/.config/wicket/accounts/<name>/, holding "
+                "an imap.json link to its credential file."
+            ),
+        ),
+    ]
+
+
+def _print_commands() -> None:
+    """The bare-invocation listing: the nouns, then the verbs, each runnable as printed."""
+    print_commands(__package__ or "wicket", commands(), subcommands())
 
 
 def subcommands() -> list[tuple[str, str]]:
@@ -55,7 +90,6 @@ def subcommands() -> list[tuple[str, str]]:
         ("fetch", "Download .eml for matching threads, filed by sender domain"),
         ("report", "Read-only reports over the manifest (senders, addresses)"),
         ("ingest", "Additively file a local .eml folder into the manifest + archive"),
-        ("config", "Manage account-aliases / domain-aliases / domain-routes maps"),
     ]
 
 
@@ -68,6 +102,8 @@ def parser() -> argparse.ArgumentParser:
             "fetch matching .eml, report over the manifest, or ingest a local "
             "export. Append --help to any verb for its options."
         ),
+        epilog="nouns: "
+        + ", ".join(f"python -m {__package__}.{name}" for name, _ in commands()),
     )
     sub = build.add_subparsers(dest="verb", required=True)
     help_by_verb = dict(subcommands())
@@ -99,12 +135,6 @@ def parser() -> argparse.ArgumentParser:
         help=help_by_verb["ingest"],
         description=ingest_cli.parser().description,
     )
-    sub.add_parser(
-        "config",
-        parents=[config_cli.parser()],
-        help=help_by_verb["config"],
-        description=config_cli.parser().description,
-    )
     return build
 
 
@@ -118,7 +148,7 @@ def main() -> int:
 
     built = parser()
     if not sys.argv[1:]:
-        built.print_help()
+        _print_commands()
         return 0
     args = built.parse_args()
     return _VERBS[args.verb].dispatch(args)
@@ -128,8 +158,8 @@ def example_output() -> list[tuple[str, str, str, int]]:
     """Illustrative sample transcripts for the CLI-docs generator (arch-python/CLI.md).
 
     Never executed, never real: every account, domain, path and count below is
-    fabricated. One scenario per verb (catalog/fetch/report/ingest/config), plus
-    the shape a bad `--mail-account` actually reports, so a reader sees a
+    fabricated. One scenario per verb (catalog/fetch/report/ingest), one for the
+    store and halt nouns, plus the shape a bad `--mail-account` actually reports, so a reader sees a
     representative range without pulling any figure from an actual mailbox.
     """
     return [
@@ -144,8 +174,16 @@ def example_output() -> list[tuple[str, str, str, int]]:
             "fetch: dry run",
             "wicket fetch --domains acme.com,globex.com --dry-run "
             "--mail-account you@example.com",
-            "done (dry-run): 14 to download, 6 already on disk; 3 already held. "
-            "Nothing written.\n",
+            "done (dry-run): 14 to download, 3 already got. Nothing written.\n",
+            0,
+        ),
+        (
+            "ingest: file what fetch staged",
+            "wicket ingest --staged --mail-account you@example.com",
+            "staged: 14 file(s); filed 14 to you@example.com (2026:14)\n"
+            "  by rule: rule 11, self 1, sent 2\n"
+            "    acme.example/2026-07/\n"
+            "      18f2a3b4c5d6e7f8.eml\n",
             0,
         ),
         (
@@ -171,9 +209,16 @@ def example_output() -> list[tuple[str, str, str, int]]:
             0,
         ),
         (
-            "config: list an account-aliases entry",
-            "wicket config account aliases list",
-            '{\n  "travel": [\n    "reservations@example-travel.test"\n  ]\n}\n',
+            "store: list each store's senders and addresses",
+            "python -m wicket.store list",
+            "travel\n  from: example-air.test\n  to:   reservations@example-travel.test\n",
+            0,
+        ),
+        (
+            "halt: list halted accounts",
+            "python -m wicket.halt list",
+            "account          halted                age\n"
+            "you@example.com  2026-10-27 08:00 IST  3h12m\n",
             0,
         ),
         (

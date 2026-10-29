@@ -2,9 +2,9 @@
 
 For every message in the mailbox (optionally restricted to INTERNALDATE
 years), fetch X-GM-MSGID, X-GM-THRID, RFC822.SIZE, INTERNALDATE,
-X-GM-LABELS, and the ``From:``, ``To:``, ``Subject:`` and ``Message-ID:``
-headers — never bodies — and write one JSON Lines row per message, sharded
-by INTERNALDATE year (UTC):
+X-GM-LABELS, and the ``From:``, ``To:``, ``Subject:``, ``Message-ID:`` and
+``Date:`` headers — never bodies — and write one JSON Lines row per message,
+sharded by INTERNALDATE year (UTC):
 
     <inventory-dir>/<YYYY>.jsonl
 
@@ -19,7 +19,10 @@ Row shape (one JSON object per line, ADR 0002 unified schema)::
 
 ``subject`` is RFC 2047-decoded to plain Unicode ('' when absent). ``id`` is
 the provider-neutral key (normalized Message-ID, else ``gmail:<msgid>``)
-shared with the archive manifest so the two faces join. These are the
+shared with the archive manifest so the two faces join; a second Gmail message
+with the same Message-ID is keyed ``<key>|gmail:<msgid>`` (``message.gmail_key``).
+The workers only observe: the main thread keys every observation against the
+whole store, then merges each into the year shard its row already lives in. These are the
 observation-owned fields; the archive manifest owns the settlement fields
 (status / domain / path) under the same key.
 
@@ -27,8 +30,9 @@ The inventory is the *observation* face of the mailbox (what exists,
 re-swept and replaced whole); the archive manifest is the *settlement*
 face (what has been saved or noop'd, append-only). Same key, two write
 regimes; they are never merged. Each shard is replaced atomically
-(tmp + rename, `0600`). A ``years``-restricted sweep touches only the
-requested years' shards. (Removing stale year shards on a full sweep is
+(tmp + rename, `0600`). A ``years``-restricted sweep replaces only the
+requested years' shards; a message whose row lives in another year's shard is
+merged there without dropping anything. (Removing stale year shards on a full sweep is
 not yet implemented.)
 
 Utility module: no CLI, no argparse, no main guard. The verb's api
@@ -45,20 +49,26 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, cast
 
-from wicket.auth import open_mailbox
+from wicket.auth import (
+    IMAP_FAILURES,
+    first_year,
+    open_mailbox,
+    parse_internaldate,
+    throttle_halt,
+)
 from wicket.env import DEFAULT_THREADS
-from wicket.manifest import merge_catalog, read_shard, shard_path, write_shard
-from wicket.message import message_key
-
-# Gmail answers `UID SEARCH ALL` with a single line listing every UID —
-# ~1.2MB at 155k messages — which trips imaplib's hard-coded 1MB line guard
-# and kills the full-sweep year discovery. imaplib exposes no public knob,
-# so raising the module attribute is the sanctioned workaround; 10MB gives
-# ~1.2M-message headroom. (protected-access/attr-defined: stdlib limitation.)
-_NEW_MAXLINE = max(getattr(imaplib, "_MAXLINE", 0), 10_000_000)
-setattr(imaplib, "_MAXLINE", _NEW_MAXLINE)
+from wicket.manifest import (
+    Shard,
+    eml_on_disk,
+    merge_catalog,
+    read_shard,
+    shard_path,
+    store_shards,
+    write_shard,
+)
+from wicket.message import GmailRow, gmail_key, message_id_of, message_key, sent_date
 
 BATCH_SIZE = 1000  # UIDs per IMAP FETCH; headers only, so larger than archive's.
 _UID_RE = re.compile(rb"\bUID\s+(\d+)")
@@ -66,32 +76,16 @@ _MSGID_RE = re.compile(rb"X-GM-MSGID\s+(\d+)")
 _THRID_RE = re.compile(rb"X-GM-THRID\s+(\d+)")
 _SIZE_RE = re.compile(rb"RFC822\.SIZE\s+(\d+)")
 _INTERNALDATE_RE = re.compile(rb'INTERNALDATE\s+"([^"]+)"')
-_HEADER_LITERAL_MARKER = b"BODY[HEADER.FIELDS (FROM TO SUBJECT MESSAGE-ID)]"
+_HEADER_LITERAL_MARKER = b"BODY[HEADER.FIELDS (FROM TO SUBJECT MESSAGE-ID DATE)]"
 _SHARD_RE = re.compile(r"^\d{4}\.jsonl$")
 
 
 # --- IMAP plumbing -------------------------------------------------------
 
 
-def _parse_internaldate(value: bytes) -> datetime | None:
-    """Parse Gmail's INTERNALDATE (e.g. ``22-Mar-2024 14:53:21 +0000``)."""
-    try:
-        return datetime.strptime(value.decode("ascii"), "%d-%b-%Y %H:%M:%S %z")
-    except ValueError:
-        return None
-
-
 def _chunked(items: list[bytes], size: int) -> Iterator[list[bytes]]:
     for i in range(0, len(items), size):
         yield items[i : i + size]
-
-
-def _search_all_uids(conn: imaplib.IMAP4_SSL) -> list[bytes]:
-    typ, data = conn.uid("SEARCH", "ALL")
-    if typ != "OK" or not data or not data[0]:
-        return []
-    uids: list[bytes] = data[0].split()
-    return uids
 
 
 def _search_year_uids(conn: imaplib.IMAP4_SSL, year: int) -> list[bytes]:
@@ -106,7 +100,9 @@ def _search_year_uids(conn: imaplib.IMAP4_SSL, year: int) -> list[bytes]:
     typ, data = conn.uid(
         "SEARCH", "SINCE", f"31-Dec-{year - 1}", "BEFORE", f"02-Jan-{year + 1}"
     )
-    if typ != "OK" or not data or not data[0]:
+    if typ != "OK":
+        raise imaplib.IMAP4.error(f"UID SEARCH {year} answered {typ}")
+    if not data or not data[0]:
         return []
     uids: list[bytes] = data[0].split()
     return uids
@@ -179,16 +175,20 @@ def _parse_labels(meta: bytes) -> list[str] | None:
     return None  # unbalanced — labels arrived as a literal; punt.
 
 
-def _parse_header_block(header_block: bytes) -> tuple[str, list[str], str, str]:
-    """Return ``(from_address, to_addresses, subject, message_id)`` from a raw
-    FROM+TO+SUBJECT+MESSAGE-ID header block.
+def _parse_header_block(
+    header_block: bytes,
+) -> tuple[str, list[str], str, str, datetime | None]:
+    """Return ``(from_address, to_addresses, subject, message_id, sent)`` from a
+    raw FROM+TO+SUBJECT+MESSAGE-ID+DATE header block.
 
     ``email.policy.default`` unfolds continuation lines and decodes RFC 2047
     encoded-words, so the subject is plain Unicode and addresses survive a
     display-name wrapper. ``from`` is the single lowercased address; ``to`` is
     the sorted set of lowercased recipient addresses (what the filing-domain
-    rule consumes); ``message_id`` is the raw header (normalized downstream).
-    All default to '' / [] when absent or unparseable.
+    rule consumes); ``message_id`` is the raw header (normalized downstream),
+    read by ``message.message_id_of`` rather than ``policy.default``, which
+    cuts some ids short; ``sent`` is the ``Date:`` header (``message.sent_date``).
+    All default to '' / [] / None when absent or unparseable.
     """
     parsed = email.message_from_bytes(header_block, policy=email.policy.default)
     _, from_addr = email.utils.parseaddr(str(parsed.get("From", "") or ""))
@@ -200,22 +200,27 @@ def _parse_header_block(header_block: bytes) -> tuple[str, list[str], str, str]:
         }
     )
     subject = str(parsed.get("Subject", "") or "")
-    message_id = str(parsed.get("Message-ID", "") or "")
-    return from_addr.strip().lower(), to_addrs, subject, message_id
+    message_id = message_id_of(header_block)
+    sent = sent_date(parsed.get("Date"))
+    return from_addr.strip().lower(), to_addrs, subject, message_id, sent
 
 
 def _finalize_record(meta: bytes, header_block: bytes) -> dict[str, object] | None:
-    """Turn accumulated FETCH bytes for one message into an inventory row."""
+    """Turn accumulated FETCH bytes for one message into an inventory row.
+
+    ``id`` is the message's ``message_key``; the planning-only ``_sent`` (its
+    Date) lets the main thread key it with ``gmail_key`` and is never stored.
+    """
     msgid_match = _MSGID_RE.search(meta)
     thrid_match = _THRID_RE.search(meta)
     size_match = _SIZE_RE.search(meta)
     date_match = _INTERNALDATE_RE.search(meta)
     if not (msgid_match and thrid_match and size_match and date_match):
         return None
-    internal_dt = _parse_internaldate(date_match.group(1))
+    internal_dt = parse_internaldate(date_match.group(1))
     if internal_dt is None:
         return None
-    from_addr, to_addrs, subject, message_id = _parse_header_block(header_block)
+    from_addr, to_addrs, subject, message_id, sent = _parse_header_block(header_block)
     gmail_msgid = f"{int(msgid_match.group(1)):x}"
     return {
         "id": message_key(
@@ -229,6 +234,7 @@ def _finalize_record(meta: bytes, header_block: bytes) -> dict[str, object] | No
         "to": to_addrs,
         "subject": subject,
         "labels": _parse_labels(meta),
+        "_sent": sent,
     }
 
 
@@ -250,10 +256,10 @@ def _fetch_rows_batch(
         "FETCH",
         b",".join(uids).decode("ascii"),
         "(X-GM-MSGID X-GM-THRID RFC822.SIZE INTERNALDATE X-GM-LABELS "
-        "BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT MESSAGE-ID)])",
+        "BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT MESSAGE-ID DATE)])",
     )
     if typ != "OK":
-        return [], len(uids)
+        raise imaplib.IMAP4.error(f"UID FETCH headers answered {typ}")
     rows: list[dict[str, object]] = []
     skips = 0
     meta = bytearray()
@@ -286,38 +292,23 @@ def _logout_quietly(conn: imaplib.IMAP4_SSL) -> None:
         pass  # logout failure must not mask the sweep result
 
 
-def _min_year(conn: imaplib.IMAP4_SSL) -> int | None:
-    """UTC year of the oldest message in the mailbox (None if empty)."""
-    uids = _search_all_uids(conn)
-    if not uids:
-        return None
-    typ, data = conn.uid("FETCH", uids[0].decode("ascii"), "(INTERNALDATE)")
-    if typ != "OK":
-        return None
-    for item in data:
-        chunk = item if isinstance(item, bytes) else item[0]
-        date_match = _INTERNALDATE_RE.search(chunk)
-        if date_match:
-            parsed = _parse_internaldate(date_match.group(1))
-            if parsed is not None:
-                return parsed.astimezone(timezone.utc).year
-    return None
-
-
 def _sweep_year(
     *,
     credentials_path: Path,
     mailbox: str,
     year: int,
-    store_dir: Path,
-    dry_run: bool,
-) -> dict[str, int]:
-    """Sweep one year on its own IMAP connection; write (or count) its shard.
+) -> tuple[list[dict[str, object]], dict[str, int]]:
+    """Sweep one year on its own IMAP connection; return its rows and stats.
 
     Keeps only rows whose INTERNALDATE-UTC year matches `year` — the
     widened search window (see `_search_year_uids`) means boundary
     messages surface in two adjacent workers, and this filter is what
-    guarantees each lands in exactly one shard. Returns per-year stats.
+    guarantees each lands in exactly one worker. Writes nothing: the main
+    thread keys and merges every year's rows (`_merge_observed`).
+
+    Opening the connection is the worker's stop check: `open_mailbox` refuses with
+    `Halted` once any HALT is in force. A command that is rejected, times out or
+    aborts writes a HALT and raises `Halted`, so no later year opens.
     """
     conn = open_mailbox(credentials_path, interactive=False, mailbox=mailbox)
     rows_for_year: list[dict[str, object]] = []
@@ -336,29 +327,87 @@ def _sweep_year(
                 if row["labels"] is None:
                     label_misses += 1
                 rows_for_year.append(row)
+    except IMAP_FAILURES as exc:
+        raise throttle_halt(credentials_path, f"catalog {year}", exc) from exc
     finally:
         _logout_quietly(conn)
-
-    observed = {str(r["id"]): r for r in rows_for_year}
-    if dry_run:
-        print(f"[dry-run] {year}: {len(observed)} row(s)")
-    else:
-        path = shard_path(store_dir, year)
-        merged = merge_catalog(read_shard(path), observed, complete=True)
-        write_shard(path, merged)
-        print(f"[catalog] {year}: {len(observed)} observed, {len(merged)} in shard")
-    return {
-        "messages": len(observed),
+    return rows_for_year, {
+        "messages": len(rows_for_year),
         "parse_skips": parse_skips,
         "label_misses": label_misses,
         "boundary_drops": boundary_drops,
     }
 
 
+def _merge_observed(
+    *,
+    store_dir: Path,
+    archive_dir: Path | None,
+    observed: list[dict[str, object]],
+    swept: set[int],
+    dry_run: bool,
+) -> int:
+    """Key every observed row against the whole store, then merge and write.
+
+    Rows are keyed in Gmail-id order with ``gmail_key``, so a message already
+    recorded keeps its row and a second message sharing its Message-ID gets its
+    own. Each row merges into the shard its key already lives in, else its own
+    INTERNALDATE year. A swept year's shard merges as a complete catalog (absence
+    proves deletion); a shard that only receives a row from another year's
+    sweep merges incompletely, so nothing in it is dropped or tombstoned.
+    Returns how many shards were merged.
+    """
+    prior: dict[int, Shard] = {
+        int(p.stem): read_shard(p) for p in store_shards(store_dir) if p.stem.isdigit()
+    }
+    rows: dict[str, GmailRow] = {}
+    year_of: dict[str, int] = {}
+    for year in sorted(prior):  # a later shard wins an id seen twice
+        for id_, row in prior[year].items():
+            rows[id_] = row
+            year_of[id_] = year
+
+    def held(row: GmailRow) -> bool:
+        return (
+            bool(row.get("downloaded"))
+            and archive_dir is not None
+            and eml_on_disk(row, archive_dir)
+        )
+
+    by_year: dict[int, Shard] = {}
+    for row in sorted(observed, key=lambda r: int(str(r["msgid"]), 16)):
+        sent = cast(datetime | None, row.pop("_sent", None))
+        key = gmail_key(
+            key=str(row["id"]),
+            gmail_id=str(row["msgid"]),
+            sent=sent,
+            rows=rows,
+            held=held,
+        )
+        row["id"] = key
+        year = year_of.get(key, datetime.fromisoformat(str(row["date"])).year)
+        by_year.setdefault(year, {})[key] = row
+
+    touched = sorted(swept | set(by_year))
+    for year in touched:
+        observed_year = by_year.get(year, {})
+        if dry_run:
+            print(f"[dry-run] {year}: {len(observed_year)} row(s)")
+            continue
+        merged = merge_catalog(
+            prior.get(year, {}), observed_year, complete=year in swept
+        )
+        write_shard(shard_path(store_dir, year), merged)
+        print(
+            f"[catalog] {year}: {len(observed_year)} observed, {len(merged)} in shard"
+        )
+    return len(touched)
+
+
 # --- Top-level worker ----------------------------------------------------
 
 
-def sweep(
+def sweep(  # pylint: disable=too-many-arguments
     *,
     store_dir: Path,
     credentials_path: Path,
@@ -366,6 +415,7 @@ def sweep(
     years: list[int] | None,
     dry_run: bool,
     threads: int = DEFAULT_THREADS,
+    archive_dir: Path | None = None,
 ) -> dict[str, int]:
     """Run one inventory sweep, one worker (and IMAP connection) per year.
 
@@ -384,13 +434,17 @@ def sweep(
     instead of blocking a worker thread on a prompt. A full sweep derives
     the year range from the oldest message's UTC year through the current
     UTC year (stale-shard removal outside that range is not yet implemented).
+    ``archive_dir`` lets keying tell a held ingest row (its ``.eml`` on disk),
+    which a Gmail copy links to; without it no row counts as held.
     """
     if years:
         targets = sorted(set(years))
     else:
         conn = open_mailbox(credentials_path, interactive=False, mailbox=mailbox)
         try:
-            first = _min_year(conn)
+            first = first_year(conn)
+        except IMAP_FAILURES as exc:
+            raise throttle_halt(credentials_path, "catalog first year", exc) from exc
         finally:
             _logout_quietly(conn)
         if first is None:
@@ -412,24 +466,43 @@ def sweep(
     )
 
     per_year: list[dict[str, int]] = []
+    observed: list[dict[str, object]] = []
+    swept: set[int] = set()
+    failure: BaseException | None = None
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [
+        futures = {
             pool.submit(
                 _sweep_year,
                 credentials_path=credentials_path,
                 mailbox=mailbox,
                 year=year,
-                store_dir=store_dir,
-                dry_run=dry_run,
-            )
+            ): year
             for year in targets
-        ]
+        }
         for future in as_completed(futures):
-            per_year.append(future.result())  # re-raises worker failures
+            try:
+                rows, stats = future.result()
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                failure = (
+                    failure or exc
+                )  # re-raised once the finished years are written
+                continue
+            observed.extend(rows)
+            per_year.append(stats)
+            swept.add(futures[future])
+    shards = _merge_observed(
+        store_dir=store_dir,
+        archive_dir=archive_dir,
+        observed=observed,
+        swept=swept,
+        dry_run=dry_run,
+    )
+    if failure is not None:
+        raise failure
 
     return {
         "messages": sum(s["messages"] for s in per_year),
-        "shards": len(per_year),
+        "shards": shards,
         "removed": 0,
         "parse_skips": sum(s["parse_skips"] for s in per_year),
         "label_misses": sum(s["label_misses"] for s in per_year),

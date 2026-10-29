@@ -8,15 +8,23 @@ not OAuth. The credential file is JSON of the form
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import json
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 # Secrets live OUTSIDE the repo (never committed, never on the command line).
-DEFAULT_STATE_DIR = Path.home() / ".config" / "gmail"
+# One folder per account, ``accounts/<account>/``, holding ``imap.json``: a link to the
+# provider's file (``~/.config/gmail/<account>/imap.json``), made by hand with ``ln -s``
+# or by a noun. The one home of an account.
+DEFAULT_STATE_DIR = Path.home() / ".config" / "wicket"
+ACCOUNTS_DIRNAME = "accounts"
 
 # Single secret file for IMAP credentials (email + 16-char app password).
 CREDENTIALS_FILENAME = "imap.json"
@@ -95,6 +103,27 @@ ACCOUNT_ENV_VAR = "WICKET_ACCOUNT"
 # reads $DELPHI_PRIVATE, even though the default path sits under ~/.delphi.
 MAIL_ROOT_ENV_VAR = "WICKET_MAIL_ROOT"
 MAIL_ROOT = Path(os.environ.get(MAIL_ROOT_ENV_VAR) or Path.home() / ".delphi" / "mail")
+
+# wicket's state base, ``$XDG_STATE_HOME/wicket``: what a run leaves for the next, never
+# mail and never a secret. XDG's state home, so it sits outside both the vault and
+# ~/.config, which is for configuration. Read at call time, so a test can point it at a
+# temp dir. Two dirs under it, never one: ``halt/<account>`` (present means halted) and
+# ``log/<account>.log`` (counts, years and HALT causes).
+STATE_HOME_ENV_VAR = "XDG_STATE_HOME"
+DEFAULT_STATE_HOME = Path.home() / ".local" / "state"
+HALT_DIRNAME = "halt"
+LOG_DIRNAME = "log"
+
+# The store lock's file, inside the manifest dir it guards (the lock follows the data).
+LOCK_FILENAME = ".lock"
+
+# Where `fetch` gets a body before `ingest --staged` files it: inside the store, so
+# a staged body sits in the vault beside the archive it is bound for.
+STAGING_DIRNAME = "staging"
+
+# The one home for duplicate copies, at the mail root: <mail root>/.duplicates/<store>/
+# <path>. Dotted, so it is no store (`known_accounts` skips it), and never unlinked.
+DUPLICATES_DIRNAME = ".duplicates"
 
 # Default worker-thread count for tools that parallelize IMAP work
 # (census year workers, gmail body workers). One worker = one IMAP
@@ -208,9 +237,18 @@ def load_account_aliases(path: Path | None = None) -> dict[str, str]:
     file = path or account_aliases_path()
     if not file.exists():
         return {}
+    return parse_account_aliases(json.loads(file.read_text(encoding="utf-8")), file)
+
+
+def parse_account_aliases(raw: object, path: Path) -> dict[str, str]:
+    """The account-alias rule over a map already in memory; ``path`` names it in errors.
+
+    `load_account_aliases` reads the file through this, and `wicket.store` checks a map it
+    is about to write through it, so a file the writer saves is one the reader accepts.
+    """
     mapping = flatten_aliases(
-        json.loads(file.read_text(encoding="utf-8")),
-        file,
+        raw,
+        path,
         primary_ok=lambda p: _is_address(p) or _is_bucket(p),
         alias_ok=lambda a: _is_address(a) or _is_wildcard(a),
         noun="address",
@@ -330,11 +368,13 @@ def known_accounts(mail_root: Path | None = None) -> set[str]:
 
 
 def resolve_account(account: str | None) -> str:
-    """Resolve the account from an explicit arg, the env var, or discovery.
+    """Resolve the account from an explicit arg, the env var, or the only account folder.
 
     The one home for account resolution, shared by every verb's api. Order:
-    the explicit ``account`` argument, then ``$WICKET_ACCOUNT``, then the sole
-    directory under the mail root. The result is canonicalized with
+    the explicit ``account`` argument, then ``$WICKET_ACCOUNT``, then the one folder in
+    ``~/.config/wicket/accounts`` holding ``imap.json`` (`account_dirs`): with one to
+    choose from, naming it is unnecessary (owner, 2026-10-28). No folder, or several,
+    raises, naming how many. The result is canonicalized with
     `normalize_account` and then mapped through the account-alias file, so an
     address you merely *receive* at (a burner, a forwarder) resolves to the
     account that owns it instead of minting a store of its own.
@@ -347,12 +387,16 @@ def resolve_account(account: str | None) -> str:
     """
     require_mail_root()  # before anything else: an absent root is a locked vault,
     # not an empty store, and must not read as "no account" (or worse, bootstrap).
-    chosen = account or os.environ.get(ACCOUNT_ENV_VAR) or discover_account()
+    chosen = account or os.environ.get(ACCOUNT_ENV_VAR)
     if not chosen:
-        raise ValueError(
-            f"no account: pass account=..., set ${ACCOUNT_ENV_VAR}, or keep "
-            f"exactly one account directory under {MAIL_ROOT}."
-        )
+        found = account_dirs()
+        if len(found) != 1:
+            raise ValueError(
+                f"no account: {len(found)} folders in {resolve_accounts_dir()} hold "
+                f"an {CREDENTIALS_FILENAME}, not one; pass --mail-account (or set "
+                f"${ACCOUNT_ENV_VAR})."
+            )
+        chosen = found[0].name
     resolved = normalize_account(chosen)
     existing = known_accounts()
     resolved = account_of(resolved, load_account_aliases(), existing) or resolved
@@ -366,22 +410,63 @@ def resolve_account(account: str | None) -> str:
     return resolved
 
 
+class NotLinked(Exception):
+    """The account has no folder under the state dir, so a verb does nothing.
+
+    A face maps this to a silent exit 0 (owner, 2026-10-27: a missing link is a no-op).
+    """
+
+    def __init__(self, path: Path) -> None:
+        super().__init__(f"no account folder at {path}")
+        self.path = path
+
+
+def resolve_accounts_dir(override: str | os.PathLike[str] | None = None) -> Path:
+    """The accounts dir, ``<base>/accounts``; never created here.
+
+    ``base`` defaults to `DEFAULT_STATE_DIR` (``~/.config/wicket``); ``override``
+    replaces it.
+    """
+    base = Path(override).expanduser() if override else DEFAULT_STATE_DIR
+    return base / ACCOUNTS_DIRNAME
+
+
 def resolve_state_dir(
     account: str, override: str | os.PathLike[str] | None = None
 ) -> Path:
-    """Return the per-account state dir, creating it owner-only (`0700`) if missing.
+    """Return the account's folder, ``<base>/accounts/<account>``; never create it.
 
-    Credentials live at ``<base>/<account>/imap.json`` (always per-account; no
-    legacy flat fallback). ``base`` defaults to `DEFAULT_STATE_DIR`
-    (``~/.config/gmail``); ``override`` replaces the base, and the account
-    segment is still appended under it. The account is canonicalized so `+tag`
-    aliases resolve to the same directory.
+    Credentials live at ``<base>/accounts/<account>/imap.json``, a link to the provider's
+    file. ``base`` defaults to `DEFAULT_STATE_DIR` (``~/.config/wicket``); ``override``
+    replaces it. The account is canonicalized so `+tag` aliases resolve to the same
+    folder. Raises `NotLinked` when the folder is absent; a folder without ``imap.json``
+    is returned, so the credential is prompted for or refused, never skipped.
     """
-    base = Path(override).expanduser() if override else DEFAULT_STATE_DIR
-    path = base / normalize_account(account)
-    path.mkdir(parents=True, exist_ok=True)
-    os.chmod(path, 0o700)  # mkdir mode is umask-masked; enforce explicitly.
+    path = resolve_accounts_dir(override) / normalize_account(account)
+    if not path.is_dir():
+        raise NotLinked(path)
     return path
+
+
+def account_dirs() -> list[Path]:
+    """Every account: each folder in ``~/.config/wicket/accounts`` holding ``imap.json``.
+
+    The one home of the list (owner, 2026-10-28: "list of accounts are all directories
+    that contain an imap.json"). A link counts even when its target does not exist yet;
+    a folder without one is no account. Sorted by name. Reads only; creates nothing.
+    """
+    root = resolve_accounts_dir()
+    if not root.is_dir():
+        return []
+    return [
+        p
+        for p in sorted(root.iterdir())
+        if p.is_dir()
+        and (
+            (p / CREDENTIALS_FILENAME).is_symlink()
+            or (p / CREDENTIALS_FILENAME).exists()
+        )
+    ]
 
 
 def resolve_store_dir(account: str) -> Path:
@@ -403,18 +488,123 @@ def resolve_archive_dir(account: str) -> Path:
     return MAIL_ROOT / normalize_account(account) / "archive"
 
 
-def discover_account(mail_root: Path | None = None) -> str | None:
-    """The sole account directory under the mail root, or None.
+def resolve_staging_dir(account: str) -> Path:
+    """Per-store staging dir (``<mail-root>/<store>/staging``), where `fetch` gets bodies.
 
-    Returns None when the root is absent, empty, or holds more than one account
-    (ambiguous, so the caller must be told to be explicit). Lets a single-account
-    setup skip `--mail-account` / `$WICKET_ACCOUNT`.
+    The one home for this path: `wicket.fetch` writes
+    ``<thread_id>/<msgid>@<INTERNALDATE>.eml`` here (`manifest.staged_name`) and
+    `wicket.ingest` files them from here into the archive. Never created here.
     """
-    root = mail_root or MAIL_ROOT
-    if not root.exists():
-        return None
-    names = [p.name for p in root.iterdir() if p.is_dir()]
-    return names[0] if len(names) == 1 else None
+    return MAIL_ROOT / normalize_account(account) / STAGING_DIRNAME
+
+
+def resolve_duplicates_dir(account: str) -> Path:
+    """Per-store duplicates dir (``<mail-root>/.duplicates/<store>``).
+
+    The one home for a body set aside as a copy of mail the store already archives,
+    kept at the path it would have had (``<folder>/YYYY-MM/<msgid>.eml``), never
+    unlinked. `wicket.fetch` counts what is here as got. Never created here.
+    """
+    return MAIL_ROOT / DUPLICATES_DIRNAME / normalize_account(account)
+
+
+def _state_base() -> Path:
+    """``$XDG_STATE_HOME/wicket`` (default ``~/.local/state/wicket``), read at call time."""
+    base = Path(os.environ.get(STATE_HOME_ENV_VAR) or DEFAULT_STATE_HOME).expanduser()
+    return base / "wicket"
+
+
+def _owner_only_dir(path: Path, create: bool) -> Path:
+    """``path``, made owner-only (``0700``) when ``create``; never made otherwise."""
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
+        os.chmod(path, 0o700)  # mkdir mode is umask-masked; enforce explicitly.
+    return path
+
+
+def resolve_halt_dir(*, create: bool = False) -> Path:
+    """The halt dir (``<state base>/halt``): one file per halted account, nothing else.
+
+    The one home for this path. ``wicket.auth`` is the only code that reads or writes
+    inside it. Not created unless ``create``: only `auth.write_halt` makes it.
+    """
+    return _owner_only_dir(_state_base() / HALT_DIRNAME, create)
+
+
+def resolve_halt_path(account: str) -> Path:
+    """The account's HALT file (``<state base>/halt/<account>``). Present means halted.
+
+    The account is canonicalized so ``+tag`` aliases resolve to the same file.
+    """
+    return resolve_halt_dir() / normalize_account(account)
+
+
+def resolve_log_path(account: str) -> Path:
+    """The account's log (``<state base>/log/<account>.log``). Never created here.
+
+    The account is canonicalized so ``+tag`` aliases resolve to the same file.
+    """
+    return _state_base() / LOG_DIRNAME / f"{normalize_account(account)}.log"
+
+
+def append_log(account: str, line: str) -> None:
+    """Append one locally timestamped line to the account's log: the one log writer.
+
+    The log dir is made owner-only (``0700``) and the file ``0600`` on first write. A line
+    carries counts, years and HALT causes only, never a subject, an address other
+    than the account's own, a path or a secret: the state dir sits outside the vault. The
+    caller owns what ``line`` says; a newline in it becomes a space, so one call is one line.
+    """
+    path = resolve_log_path(account)
+    _owner_only_dir(path.parent, True)
+    text = " ".join(line.splitlines())
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, "a", encoding="utf-8") as handle:
+        handle.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} {text}\n")
+
+
+class StoreBusy(RuntimeError):
+    """Another process holds the store's lock. A face maps this to exit 75 (EX_TEMPFAIL)."""
+
+    def __init__(self, manifest_dir: Path, pid: str) -> None:
+        super().__init__(
+            f"store {manifest_dir.parent.name} is busy: pid {pid or '?'} holds "
+            f"{manifest_dir / LOCK_FILENAME}; re-run when it finishes."
+        )
+        self.manifest_dir = manifest_dir
+        self.pid = pid
+
+
+@contextmanager
+def store_lock(manifest_dir: Path) -> Iterator[None]:
+    """Hold ``<manifest_dir>/.lock`` for the block: one writer per store at a time.
+
+    ``fcntl.flock``, non-blocking: a held lock raises `StoreBusy` naming the pid the
+    holder wrote into the file. The kernel drops the lock when the holder dies, so a
+    crash leaves nothing to clean up. Not re-entrant: a second take in one process
+    fails like any other (flock locks the open file, and this opens a new one), so an
+    api takes each store's lock once and nothing nests. The manifest dir is made as
+    ``write_shard`` makes it; the mail root itself is checked by `resolve_account`
+    before any verb gets here.
+    """
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    fd = os.open(manifest_dir / LOCK_FILENAME, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
+                raise
+            holder = os.pread(fd, 32, 0).decode("ascii", "replace").strip()
+            raise StoreBusy(manifest_dir, holder) from exc
+        os.ftruncate(fd, 0)
+        os.pwrite(fd, f"{os.getpid()}\n".encode("ascii"), 0)
+        try:
+            yield
+        finally:
+            os.ftruncate(fd, 0)  # still held: no other writer can see a stale pid
+    finally:
+        os.close(fd)  # closing the descriptor releases the flock
 
 
 def write_secret(path: Path, data: str) -> None:

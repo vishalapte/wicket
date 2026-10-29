@@ -4,7 +4,10 @@ The single place the ingest face reaches the engine. Read-only on any mailbox:
 ingest reads ``.eml`` already on disk and files them additively into the manifest
 + archive, so there is no IMAP and no credentials to seed (like `report.api`).
 
-Two modes, and the default is the safe one:
+Three modes. ``--staged`` files what ``fetch`` got into one account's
+``staging/``: one store, no routing, no account check, because a mailbox's own
+mail belongs to that mailbox. A local export (``--src``) has two, and the default
+is the safe one:
 
 - **Routed** (no account named): each *thread* goes to the account it was
   addressed to, resolved through the account-alias map and the stores that
@@ -36,9 +39,12 @@ from wicket.env import (
     load_account_aliases,
     resolve_account,
     resolve_archive_dir,
+    resolve_duplicates_dir,
+    resolve_staging_dir,
     resolve_store_dir,
 )
-from wicket.ingest.lib import AccountFor, Target, ingest_folder, ingest_routed
+from wicket.filing import AccountFor
+from wicket.ingest.lib import Target, ingest_folder, ingest_routed, ingest_staged
 
 __all__ = ["IngestOptions", "ingest"]
 
@@ -47,8 +53,10 @@ __all__ = ["IngestOptions", "ingest"]
 class IngestOptions:
     """How to run an ingest, independent of which account.
 
-    ``src`` is a flat folder of ``.eml``, or a single ``.eml`` (one message is a
-    folder of one; the worker treats them alike). ``source`` names the export
+    Exactly one source: ``src`` (a local export) or ``staged`` (what ``fetch`` got
+    into the account's staging dir); the invariant is enforced here. ``src`` is a
+    flat folder of ``.eml``, or a single ``.eml`` (one message is a folder of one;
+    the worker treats them alike). ``source`` names the export
     profile ("local" is the only one today: an Outlook / Apple Mail drag-export). With
     ``dry_run`` the worker parses and reports what it would do but writes nothing
     and trashes nothing. ``force`` overrides the account-mismatch refusal (single-
@@ -61,13 +69,18 @@ class IngestOptions:
     recorded as each new row's ``labels``. Both touch only mail filed this run.
     """
 
-    src: Path
+    src: Path | None = None
+    staged: bool = False
     source: str = "local"
     dry_run: bool = False
     force: bool = False
     to_trash: bool = False
     domain: str | None = None
     tags: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if (self.src is None) == (not self.staged):
+            raise ValueError("pass exactly one of src=... or staged=True")
 
 
 def _resolver() -> tuple[AccountFor, set[str]]:
@@ -105,9 +118,11 @@ def _target(account: str, accounts: set[str], options: IngestOptions) -> Target:
 
 
 def ingest(account: str | None = None, *, options: IngestOptions) -> dict[str, object]:
-    """File the new ``.eml`` under ``options.src``, routed or into one account.
+    """File the new ``.eml`` under ``options.src`` (routed or into one account), or staged.
 
-    Raises ``ValueError`` when ``options.domain`` is not a bare domain: it becomes
+    With ``options.staged``, ``account`` resolves as every verb resolves it
+    (`env.resolve_account`) and that one store's staged mail is filed. Raises
+    ``ValueError`` when ``options.domain`` is not a bare domain: it becomes
     an archive path segment, so a malformed one (or a path-traversal attempt) is
     refused here, at the boundary that accepts owner input, before the worker.
     """
@@ -117,9 +132,19 @@ def ingest(account: str | None = None, *, options: IngestOptions) -> dict[str, o
         )
     account_for, accounts = _resolver()
 
+    if options.staged:
+        resolved = resolve_account(account)
+        return ingest_staged(
+            target=_target(resolved, accounts, options),
+            staging_dir=resolve_staging_dir(resolved),
+            duplicates_dir=resolve_duplicates_dir(resolved),
+            dry_run=options.dry_run,
+        )
+    src = options.src
+    assert src is not None  # IngestOptions: exactly one of src / staged
     if account is None:
         return ingest_routed(
-            src=options.src,
+            src=src,
             targets={a: _target(a, accounts, options) for a in sorted(accounts)},
             account_for=account_for,
             route_for=_router(accounts),
@@ -129,7 +154,7 @@ def ingest(account: str | None = None, *, options: IngestOptions) -> dict[str, o
 
     resolved = resolve_account(account)
     return ingest_folder(
-        src=options.src,
+        src=src,
         target=_target(resolved, accounts, options),
         account_for=account_for,
         dry_run=options.dry_run,

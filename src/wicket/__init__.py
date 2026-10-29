@@ -9,6 +9,6 @@ here (this file holds no code):
     from wicket.report.api import report, senders, addresses, manifest
     from wicket.env import resolve_store_dir, resolve_archive_dir
 
-Every entry point takes ``account=`` (multi-user, n accounts); a single account
-under the mail root is the default.
+Every entry point takes ``account=`` (multi-user, n accounts); the only account
+folder in ``~/.config/wicket/accounts`` is the default.
 """

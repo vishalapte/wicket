@@ -1,10 +1,14 @@
 """The unified year-sharded message manifest (ADR 0002).
 
 One JSON Lines shard per UTC year at ``<store-dir>/<YYYY>.jsonl``, one row per
-message keyed by the provider-neutral ``id``. Both verbs write here: ``catalog``
-writes the observation fields and ``deleted``; ``fetch`` writes the settlement
-fields (``downloaded``, ``path``). A catalog rewrite of a shard refreshes
+message keyed by the provider-neutral ``id``. ``catalog`` writes the observation
+fields and ``deleted``; ``ingest`` writes the settlement fields (``downloaded``,
+``path``, ``filed``) as it files a body. A catalog rewrite of a shard refreshes
 observation and preserves settlement, so the two never clobber each other.
+
+Also the one home for the **staged** name: ``fetch`` gets a body into
+``<store>/staging/<thread_id>/<msgid>@<INTERNALDATE>.eml`` and ``ingest --staged``
+reads the Gmail ids back off that path, so writer and reader share one rule.
 
 Pure stdlib, operates on paths and dicts: it is the shared store below the
 verbs, fully testable without a mailbox.
@@ -18,10 +22,17 @@ from __future__ import annotations
 
 import json
 import os
+import re
+from collections.abc import Iterator
+from datetime import datetime, timezone
 from pathlib import Path
 
-# Settlement fields a catalog rewrite carries forward (fetch owns them).
-SETTLEMENT_FIELDS = ("downloaded", "path")
+# Settlement fields a catalog rewrite carries forward (filing owns them): whether
+# the body is archived, where, and which filing rule placed it (`wicket.filing`).
+SETTLEMENT_FIELDS = ("downloaded", "path", "filed")
+# Fields a catalog rewrite carries forward: settlement, and the owner's
+# ``excluded`` (a message on the mailbox deliberately not kept locally).
+CARRIED_FIELDS = (*SETTLEMENT_FIELDS, "excluded")
 
 Row = dict[str, object]
 Shard = dict[str, Row]  # keyed by `id`
@@ -42,6 +53,60 @@ def read_shard(path: Path) -> Shard:
             row = json.loads(line)
             rows[str(row["id"])] = row
     return rows
+
+
+# An archived message is never changed once written: its file is read-only.
+EML_MODE = 0o444
+
+
+def write_eml(path: Path, raw: bytes) -> None:
+    """Archive one message at ``path``, read-only (``-r--r--r--``), never overwriting.
+
+    The one way a verb writes an ``.eml``. It writes a temporary file beside the
+    target, makes it read-only, and renames it into place, so a crash leaves no
+    partial or writable ``.eml``; an existing file is never replaced
+    (``FileExistsError``), because an archived message is never mutated.
+    """
+    if path.exists():
+        raise FileExistsError(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_bytes(raw)
+    os.chmod(tmp, EML_MODE)
+    os.replace(tmp, path)
+
+
+# A staged body's path under ``<store>/staging/``: the Gmail thread id, the Gmail
+# msgid (hex) and the INTERNALDATE in UTC. Anything else under staging/ is not
+# filed: the msgid becomes an archive file name, so it must be exactly this shape.
+STAGED_RE = re.compile(r"^(\d+)/([0-9a-f]+)@(\d{8}T\d{6}Z)\.eml$")
+_STAGED_DATE = "%Y%m%dT%H%M%SZ"
+
+
+def staged_name(thread_id: str, msgid: str, internal_dt: datetime) -> str:
+    """The path, under ``staging/``, that ``fetch`` gets one Gmail message to."""
+    stamp = internal_dt.astimezone(timezone.utc).strftime(_STAGED_DATE)
+    return f"{thread_id}/{msgid}@{stamp}.eml"
+
+
+def parse_staged(rel: str) -> tuple[str, str, datetime] | None:
+    """``(thread_id, msgid, internal_dt)`` from a staged path, or None if it is not one."""
+    match = STAGED_RE.match(rel)
+    if match is None:
+        return None
+    try:
+        when = datetime.strptime(match.group(3), _STAGED_DATE)
+    except ValueError:
+        return None
+    return match.group(1), match.group(2), when.replace(tzinfo=timezone.utc)
+
+
+def staged_files(staging_dir: Path) -> Iterator[tuple[Path, str]]:
+    """Every file under ``staging_dir`` with its path relative to it (``/``-joined), sorted."""
+    if not staging_dir.exists():
+        return
+    for path in sorted(p for p in staging_dir.rglob("*") if p.is_file()):
+        yield path, path.relative_to(staging_dir).as_posix()
 
 
 def write_shard(path: Path, rows: Shard) -> None:
@@ -79,12 +144,23 @@ def load_store(store_dir: Path) -> Shard:
     return rows
 
 
+def eml_on_disk(row: Row, archive_dir: Path) -> bool:
+    """Whether a row's ``.eml`` is in the archive: the ground truth for ``downloaded``.
+
+    One home for the test, because three callers decide on it: ``reconcile``
+    resets ``downloaded`` from it, ``fetch`` links only a copy that passes it, and
+    ``ingest`` skips a message as archived only when its row passes it.
+    """
+    path = row.get("path")
+    return bool(path) and (archive_dir / str(path)).exists()
+
+
 def merge_settlement(prior: Shard, settlements: Shard) -> Shard:
     """Merge settlement fields into matching rows, adding rows that are new.
 
-    fetch owns ``downloaded`` / ``path`` and may run before catalog has observed
-    a message, so a settlement with no prior observation row becomes a new,
-    partial row (ADR 0002 progressive enrichment).
+    Filing owns ``downloaded`` / ``path`` / ``filed`` and may run before catalog
+    has observed a message, so a settlement with no prior observation row becomes
+    a new, partial row (ADR 0002 progressive enrichment).
     """
     merged = dict(prior)
     for id_, fields in settlements.items():
@@ -98,7 +174,8 @@ def merge_catalog(prior: Shard, observed: Shard, *, complete: bool) -> Shard:
     """Merge a fresh catalog of `observed` rows into a shard's `prior` rows.
 
     An observed row keeps its fresh observation fields and inherits the prior
-    row's settlement fields; its ``deleted`` is False (it is in the mailbox).
+    row's settlement fields and ``excluded``; its ``deleted`` is False (it is in
+    the mailbox).
 
     A prior row that was NOT re-observed is handled only when the catalog is
     ``complete`` (a full sweep of the shard's year, the sole basis on which
@@ -106,6 +183,9 @@ def merge_catalog(prior: Shard, observed: Shard, *, complete: bool) -> Shard:
 
     * if it was ``downloaded`` -> kept with ``deleted = True`` (the local
       ``.eml`` is now the only copy);
+    * if it is ``excluded`` -> kept with ``deleted = True``: the exclusion is the
+      owner's record, and one sweep not seeing a message (a parse skip, a copy
+      in Trash) must not erase it;
     * otherwise it is dropped (gone and never kept is no row, not a tombstone).
 
     On an incomplete catalog (incremental or ``--years`` subset) an unobserved
@@ -115,7 +195,7 @@ def merge_catalog(prior: Shard, observed: Shard, *, complete: bool) -> Shard:
     for id_, row in observed.items():
         new = dict(row)
         carried = prior.get(id_, {})
-        for field in SETTLEMENT_FIELDS:
+        for field in CARRIED_FIELDS:
             if field in carried:
                 new[field] = carried[field]
         new["deleted"] = False
@@ -125,7 +205,7 @@ def merge_catalog(prior: Shard, observed: Shard, *, complete: bool) -> Shard:
             continue
         if not complete:
             merged[id_] = row
-        elif row.get("downloaded"):
+        elif row.get("downloaded") or row.get("excluded"):
             gone = dict(row)
             gone["deleted"] = True
             merged[id_] = gone

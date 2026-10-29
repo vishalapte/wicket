@@ -8,9 +8,8 @@ bearing: record
 
 Personal mail tooling, no runtime dependencies (stdlib only). Four verbs: two
 read a mailbox over **IMAP with an app password** (no OAuth, no provider cloud
-project); the other two never touch a mailbox at all. A fifth, `config`, is not
-a verb but a noun (the three owner-authored maps), so it takes its own nested
-subparsers rather than sitting flat beside the four:
+project); the other two never touch a mailbox at all. Two nouns, each its own module,
+edit the three owner-authored maps, and a third operates the HALT:
 
 - **`wicket catalog`**: observe the mailbox (headers only, never bodies) into
   a year-sharded manifest, recording what exists.
@@ -22,9 +21,14 @@ subparsers rather than sitting flat beside the four:
   drag-export) or a single message — into the manifest + archive, routing each
   thread to the store it belongs to. Offline, for a mailbox IMAP cannot reach. Additive: an archived
   message is never deleted.
-- **`wicket config <account|domain> <aliases|routes> <verb>`**: CRUD over
-  `account-aliases.json` / `domain-aliases.json` / `domain-routes.json` instead
-  of hand-editing them; no IMAP.
+- **`python -m wicket.alias <list|create|update|delete>`**: edit
+  `domain-aliases.json`, which domains are really another; no IMAP.
+- **`python -m wicket.store <list|create|delete>`**: edit which store mail goes
+  to, a sender domain (`--from`, `domain-routes.json`) or one of your addresses
+  (`--to`, `account-aliases.json`); no IMAP.
+- **`python -m wicket.halt <list|set|clear>`**: list, set or clear an account's
+  HALT (`$XDG_STATE_HOME/wicket/halt/<account>`), each set and clear logged in
+  `log/<account>.log`; no IMAP.
 
 The two IMAP verbs are **read-only on the mailbox by design**: they `SELECT` it
 read-only and never send, delete, or modify mail. `ingest` reads no mailbox; it
@@ -45,14 +49,15 @@ key-by-key divergence table.
 ```
 src/wicket/
   __main__.py        python -m wicket <verb>  (Pattern 2: discovery + own CLI,
-                      four verb subcommands plus one noun subcommand, config)
+                      four verb subcommands; lists the alias and store nouns)
   auth.py            IMAP login + SELECT (app password)
   env.py             account / credential / store path resolution, IMAP host
   domains.py         sender-domain alias canonicalization
   message.py         provider-neutral key + field ownership
   manifest.py        the year-sharded store (read / write / merge shards)
   reconcile.py       offline downloaded/domain reconcile + the filing-domain rule
-  catalog/  fetch/  report/  ingest/  config/   each a vertical, lib -> api -> face:
+  maps.py            the owner-authored maps on disk: read, pure edits, whole-file write
+  catalog/  fetch/  report/  ingest/   each a vertical, lib -> api -> face:
     cli.py           the cli face (argparse, add_help=False; folded into the
                       root's subparser via parents=[...] — not a CLI entry on
                       its own, no __main__.py here)
@@ -71,8 +76,11 @@ to its mount point would leave mail in plaintext underneath it.
 1. Enable 2-Step Verification, then generate an app password at
    https://myaccount.google.com/apppasswords.
 2. `make install` from the repo root (editable-installs into `./.venv`).
-3. First run prompts for your address + app password and caches them at
-   `~/.config/gmail/<account>/imap.json` (mode `0600`):
+3. Make the account's folder and link its `imap.json`
+   (`python -m wicket.account create <account> --config <folder>`, or `mkdir` and
+   `ln -s <folder>/imap.json ~/.config/wicket/accounts/<account>/imap.json`); the first
+   run prompts for your address + app password and caches them at
+   `~/.config/wicket/accounts/<account>/imap.json`, through the link (mode `0600`):
 
    ```
    .venv/bin/python -m wicket catalog --dry-run
@@ -89,7 +97,7 @@ The cached app password is standing read access to the mailbox over IMAP.
 
 - IMAP `SELECT` is always read-only; the connection can never send, flag,
   label, or delete mail.
-- `imap.json` lives under `~/.config/gmail/<account>/` (dir `0700`, file `0600`),
+- `imap.json` lives under `~/.config/wicket/accounts/<account>/`, a link to its file (`0600`),
   never in the repo, never on the command line, covered by `.gitignore`.
 - An app password is account-scoped and revocable at
   https://myaccount.google.com/apppasswords, that is the kill switch.

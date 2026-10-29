@@ -6,7 +6,7 @@ generator:
 target:
   repo: wicket
   date: 2026-09-04
-  version: "0.5.0"
+  version: "0.6.0"
 bundle:
   - WICKET.md
   - WICKET-DOSSIER.md
@@ -206,31 +206,37 @@ directory, because **wicket never creates a store**. A route to a bucket that
 does not exist resolves to nothing and the mail stays put.
 
 **What it does NOT catch.** The maps are owner-authored, so they are only as
-right as the owner. `config` (below) guarantees a row is *parseable*; nothing
+right as the owner. `alias` and `store` (below) guarantee a row is *parseable*; nothing
 validates that a domain route reflects what you actually want, and nothing
 notices that an alias has gone stale.
 
-### config — editing the destination maps
+### alias and store — editing the destination maps
 
 **Why it exists.** The three maps above were hand-edited JSON before this: no
 validation, and a malformed row surfaced only the next time something tried to
 read it.
 
-**What it covers.** `list`/`create`/`update`/`delete` over each of the three
-maps, addressed as a noun (`wicket config <account|domain> <aliases|routes>
-<verb>`) rather than a fifth action — editing a map is not a mailbox operation
-the way catalog/fetch/ingest/report are, so it takes its own nested subparsers
-instead of sitting flat beside them.
+**What it covers.** Two nouns, each its own module rather than a fifth action:
+editing a map is not a mailbox operation the way catalog/fetch/ingest/report
+are. `python -m wicket.alias <list|create|update|delete>` edits the domain
+fold map. `python -m wicket.store <list|create|delete>` edits both maps that
+pick a store, one flag per map: `--from` a sender domain (the routes map),
+`--to` one of your addresses (the account-alias map).
+A third noun, `python -m wicket.halt <list|set|clear>`, is the owner's door to
+the HALT, the file that stops every IMAP connection to an account; each set and
+clear goes through `wicket.auth` and is logged.
 
-**Why that matters.** Every write validates the primary and its items with
-the same rules the read side already validates with — an address vs. a
-bucket, a domain vs. a `*.parent` wildcard — so a row this tool writes is
-guaranteed readable back. Each map's file can also be relocated
+**Why that matters.** Every write applies its edit in memory and checks the
+result with the read side's own rule before any file is replaced — an address
+vs. a bucket, a domain vs. a `*.parent` wildcard, and no domain or address sent
+to two places — so a file these write is guaranteed readable back. Each map's file can also be relocated
 independently of the mail root and of the other two, which the hand-edited
 era had no way to express.
 
-**What it catches.** A malformed address, an invalid bucket name, or a
-domain that doesn't parse — before it ever reaches disk.
+**What it catches.** A malformed address, an invalid bucket name, a domain
+that doesn't parse, or a domain or address already sent to another store —
+before it ever reaches disk. An exact entry beats a wildcard, so
+`*.delta.com` in one store and `t.delta.com` in another are both valid.
 
 **What it does NOT catch.** It validates *shape*, never *intent*: nothing
 stops an owner from routing a domain to the wrong bucket, or aliasing an
@@ -332,7 +338,7 @@ dispatcher and registered explicitly (a literal name, an entry in the verb
 table) — never discovered dynamically; a new provider is meant to plug in
 behind the interface Phase 2 extracts; and destination policy is data, not
 code — the three maps are how an owner changes routing without touching the
-package, and `config` is how that data is edited without hand-authoring JSON.
+package, and `alias` and `store` are how that data is edited without hand-authoring JSON.
 
 **Invariants.** Any change must preserve all of these, and each has a
 consequence attached:
