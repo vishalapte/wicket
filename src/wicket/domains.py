@@ -8,8 +8,8 @@ in the alias file, never inferred. An alias may be a literal domain or the
 wildcard ``*.parent.com``, which folds every subdomain of ``parent.com`` into
 the primary (an owner-authorized subdomain strip, scoped to that parent).
 
-Consumer: ``wicket.fetch`` (domain classification + search expansion). The
-module depends on
+Consumer: fetch, in ``wicket.root.api`` (domain classification + search
+expansion). The module depends on
 nothing above ``config``, so it sits in the shared layer below the tools.
 """
 

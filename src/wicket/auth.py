@@ -69,8 +69,8 @@ class Halted(AuthError):
 
     ``path`` is the HALT file, whose name is the account (``python -m wicket.halt clear
     --mail-account <account>`` clears it, after fixing its cause), and ``line`` says
-    why: the cause, in the run that set it, else when it was set. A face maps this to
-    exit 3.
+    why: the cause, in the run that set it, else when it was set. A face reports it as a
+    refusal, exit 2.
     """
 
     def __init__(self, path: Path, line: str) -> None:

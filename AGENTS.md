@@ -45,17 +45,19 @@ mailbox owns, and topical grouping of mailbox-owned mail is a *view*
   Never reintroduce a flat top-level package.
 - **Layering is the contract.** `[tool.importlinter]` in `pyproject.toml` is the
   source of truth: one `layers` contract, `wicket.__main__` (root face) →
-  per-verb `cli` (verb face) → per-verb `api` → per-verb worker → `reconcile` →
-  `filing` → shared (`auth`/`domains`/`message`/`manifest`) → `env`, downward only
-  (acyclic). The four verbs are independent siblings (no cross-imports). The
+  `wicket.root.api` (the four verbs' api) → each verb's worker under
+  `wicket.root.lib` → `reconcile` → `filing` → shared
+  (`auth`/`domains`/`message`/`manifest`) → `env`, downward only (acyclic). The
+  four workers are independent siblings (no cross-imports). The
   face → api → lib routing (a face reaches the engine through its api, not the
   worker/shared directly) is the recommended **convention**, reviewed not
   walled: the contract gates defects (cycles, direction); it does not forbid
   a defensible choice. Any package-structure change edits the contract in the
   **same change**; `lint-imports` must report `Contracts: 1 kept, 0 broken.`
-- Adding a new verb ⇒ give it a `cli.py` (no `__main__.py`), register it in
-  the root `__main__.py`'s `subcommands()` list and `_VERBS` dict, and add its
-  layer to `[tool.importlinter]` (explicit registration; no dynamic discovery).
+- Adding a new verb ⇒ declare it in the lexicon, then build it in the root
+  noun's form (`root/api.py`, `root/lib/`, a `p_<verb>` block in the root
+  `__main__.py`) and list its worker in `[tool.importlinter]` (explicit
+  registration; no dynamic discovery). `src/wicket/CLAUDE.md` names each piece.
 
 ## Conventions
 

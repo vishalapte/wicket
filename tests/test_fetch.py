@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
-import wicket.fetch.lib as fetch_lib
-from wicket.fetch.lib import (
+import wicket.root.lib.fetch as fetch_lib
+from wicket.filing import build_domain_query, compute_domain
+from wicket.manifest import Row, read_shard, shard_path, write_shard
+from wicket.root.lib.fetch import (
     ThreadContext,
     _held,
     _plan,
@@ -16,8 +19,6 @@ from wicket.fetch.lib import (
     _write_links,
     download,
 )
-from wicket.filing import build_domain_query, compute_domain
-from wicket.manifest import Row, read_shard, shard_path, write_shard
 
 ME = "you@gmail.com"
 
@@ -307,7 +308,7 @@ def test_download_links_instead_of_duplicating(
 
 
 def test_got_counts_every_got_match_when_max_caps_the_rest(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """10 matches, 7 not got, --max 2: got is 3, not 10 - 2."""
 
@@ -316,9 +317,10 @@ def test_got_counts_every_got_match_when_max_caps_the_rest(
 
     monkeypatch.setattr(fetch_lib, "_discover_records", discover)
     ctx = ThreadContext(dest=tmp_path, imap_email=ME, domain_aliases={}, dry_run=True)
+    caplog.set_level(logging.INFO)
     stats = download(query="q", ctx=ctx, credentials_path=tmp_path / "c", limit=2)
     assert (stats["got"], stats["candidates"]) == (3, 2)
-    assert "3 got, 2 to fetch (5 beyond --max)" in capsys.readouterr().out
+    assert "3 got, 2 to fetch (5 beyond --max)" in caplog.text
 
 
 # --- one row per Gmail message ---------------------------------------------

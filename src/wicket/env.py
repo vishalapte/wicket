@@ -82,7 +82,7 @@ WILDCARD_ADDRESS_RE = re.compile(r"^\*@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 # nothing that could climb out of MAIL_ROOT.
 BUCKET_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
-# Optional alias file consumed by `wicket.fetch`. Shape:
+# Optional alias file consumed by fetch (`wicket.root.api`). Shape:
 #   {"primary.com": ["alias1.com", "alias2.com"], ...}
 # When present, the archive tool treats aliases as the same logical entity
 # as the primary (search expands; the filing domain canonicalizes to primary).
@@ -472,9 +472,9 @@ def account_dirs() -> list[Path]:
 def resolve_store_dir(account: str) -> Path:
     """Per-store manifest dir (``<mail-root>/<store>/manifest``).
 
-    The one home for this path, shared by `wicket.catalog` (writes shards) and
-    `wicket.fetch` (reads + settles them, ADR 0002). The account is
-    canonicalized so `+tag` aliases resolve to the same directory.
+    The one home for this path, shared by `wicket.root.lib.catalog` (writes
+    shards) and `wicket.root.lib.fetch` (reads + settles them, ADR 0002). The
+    account is canonicalized so `+tag` aliases resolve to the same directory.
     """
     return MAIL_ROOT / normalize_account(account) / "manifest"
 
@@ -482,7 +482,7 @@ def resolve_store_dir(account: str) -> Path:
 def resolve_archive_dir(account: str) -> Path:
     """Per-store .eml archive root (``<mail-root>/<store>/archive``).
 
-    Holds the ``<domain>/YYYY-MM/<msgid>.eml`` tree `wicket.fetch`
+    Holds the ``<domain>/YYYY-MM/<msgid>.eml`` tree `wicket.root.lib.ingest`
     writes; sibling to the manifest store under one mail root.
     """
     return MAIL_ROOT / normalize_account(account) / "archive"
@@ -491,9 +491,10 @@ def resolve_archive_dir(account: str) -> Path:
 def resolve_staging_dir(account: str) -> Path:
     """Per-store staging dir (``<mail-root>/<store>/staging``), where `fetch` gets bodies.
 
-    The one home for this path: `wicket.fetch` writes
+    The one home for this path: `wicket.root.lib.fetch` writes
     ``<thread_id>/<msgid>@<INTERNALDATE>.eml`` here (`manifest.staged_name`) and
-    `wicket.ingest` files them from here into the archive. Never created here.
+    `wicket.root.lib.ingest` files them from here into the archive. Never created
+    here.
     """
     return MAIL_ROOT / normalize_account(account) / STAGING_DIRNAME
 
@@ -503,7 +504,8 @@ def resolve_duplicates_dir(account: str) -> Path:
 
     The one home for a body set aside as a copy of mail the store already archives,
     kept at the path it would have had (``<folder>/YYYY-MM/<msgid>.eml``), never
-    unlinked. `wicket.fetch` counts what is here as got. Never created here.
+    unlinked. `wicket.root.lib.fetch` counts what is here as got. Never created
+    here.
     """
     return MAIL_ROOT / DUPLICATES_DIRNAME / normalize_account(account)
 
@@ -564,7 +566,7 @@ def append_log(account: str, line: str) -> None:
 
 
 class StoreBusy(RuntimeError):
-    """Another process holds the store's lock. A face maps this to exit 75 (EX_TEMPFAIL)."""
+    """Another process holds the store's lock. A face reports it as a refusal, exit 2."""
 
     def __init__(self, manifest_dir: Path, pid: str) -> None:
         super().__init__(

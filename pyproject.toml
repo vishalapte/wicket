@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wicket"
-version = "0.6.0"
+version = "0.7.0"
 description = "Portable, read-only mail tooling over IMAP: catalog a mailbox into a year-sharded manifest, fetch matching .eml by counterparty domain, and report over the manifest. Gmail today, Fastmail planned."
 requires-python = ">=3.12"
 authors = [{ name = "Vishal Apte", email = "vishal@enine.com" }]
@@ -140,10 +140,12 @@ exclude_lines = [
 # Verify with `lint-imports` -> "Contracts: 1 kept, 0 broken."
 #
 # Layout: shared modules at the package root (`auth` / `domains` / `message` /
-# `manifest`, over `config`); three parallel verbs (`catalog`, `fetch`,
-# `report`) under sub-packages. Each verb co-locates three layers: a thin
-# __main__ face over its api over its worker, faces > api > worker > reconcile >
-# shared > config, downward only; the verbs are independent siblings (no
+# `manifest`, over `env`). The four root verbs (`catalog`, `fetch`, `ingest`,
+# `report`) are the root noun's: `wicket.__main__` is their face, `wicket.root.api`
+# their api, and each has its own worker under `wicket.root.lib`; the nouns
+# (`alias`, `store`, `halt`, `account`) each co-locate a thin __main__ face over
+# its api over its lib. faces > api > worker > results > reconcile > shared > env,
+# downward only; the workers and the nouns are independent siblings (no
 # cross-imports). The face -> api -> lib routing is convention; this contract
 # gates direction and acyclicity (defects), it does not wall the shape.
 [tool.importlinter]
@@ -154,9 +156,10 @@ name = "wicket layering (four verbs and four nouns over the shared store)"
 type = "layers"
 layers = [
   "wicket.__main__",
-  "wicket.catalog.cli | wicket.fetch.cli | wicket.report.cli | wicket.ingest.cli | wicket.alias.__main__ | wicket.store.__main__ | wicket.halt.__main__ | wicket.account.__main__",
-  "wicket.catalog.api | wicket.fetch.api | wicket.report.api | wicket.ingest.api | wicket.alias.api | wicket.store.api | wicket.halt.api | wicket.account.api",
-  "wicket.catalog.lib | wicket.fetch.lib | wicket.report.lib | wicket.ingest.lib | wicket.alias.lib | wicket.store.lib | wicket.halt.lib | wicket.account.lib",
+  "wicket.alias.__main__ | wicket.store.__main__ | wicket.halt.__main__ | wicket.account.__main__",
+  "wicket.root.api | wicket.alias.api | wicket.store.api | wicket.halt.api | wicket.account.api",
+  "wicket.root.lib.catalog | wicket.root.lib.fetch | wicket.root.lib.ingest | wicket.root.lib.report | wicket.root.lib.renderer | wicket.alias.lib | wicket.store.lib | wicket.halt.lib | wicket.account.lib",
+  "wicket.root.lib.results",
   "wicket.reconcile",
   "wicket.filing",
   "wicket.auth | wicket.domains | wicket.message | wicket.manifest | wicket.maps",

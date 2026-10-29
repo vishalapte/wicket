@@ -178,6 +178,7 @@ Idempotent, incremental by default.
 | `--threads N` | Concurrent year workers, one IMAP connection each. Default 4. |
 | `--dry-run` | Sweep and report per-year counts; write nothing. |
 | `--non-interactive` | Never prompt; fail loudly if `imap.json` is missing or rejected. |
+| `--json` | Print the result as JSON instead of text: `account_linked`, `dry_run`, `store_dir`, and the sweep's counts. |
 
 **`wicket fetch`** gets `.eml` for matching messages into
 `<mail-root>/<account>/staging/<thread-id>/<msgid>@<INTERNALDATE>.eml` and **files nothing**:
@@ -229,9 +230,10 @@ they write; a store another process holds is refused with its pid. `--dry-run` t
 | Exit | Meaning (`catalog`, `fetch`, `ingest`) |
 |---|---|
 | `0` | Done. |
-| `2` | Bad input, or credentials missing or unreadable. |
-| `3` | A HALT is in force, or this run wrote one: stderr names its cause (or when it was set), its file, and `python -m wicket.halt clear --mail-account <account>`. |
-| `75` | Another process holds a store's lock (its pid is named); re-run later. |
+| `2` | Refused: bad input; credentials missing or unreadable; a HALT is in force, or this run wrote one (stderr names its cause, or when it was set, its file, and `python -m wicket.halt clear --mail-account <account>`); or another process holds a store's lock (its pid is named; re-run later). |
+
+A `fetch` that did work before it halted, and a routed `ingest` that filed the rest and
+skipped a busy store, print their summary on stderr with the refusal.
 
 | Flag | Meaning |
 |---|---|
@@ -246,6 +248,7 @@ they write; a store another process holds is refused with its pid. `--dry-run` t
 | `--threads N` | Concurrent per-thread workers, one IMAP connection each. Default 4. |
 | `--dry-run` | Print the plan; download nothing; write nothing. |
 | `--non-interactive` | Never prompt; fail loudly if `imap.json` is missing or rejected. |
+| `--json` | Print the result as JSON instead of text: the run's counts, `passes` (one row per pass), and the HALT fields. |
 
 **`wicket report`** gives read-only summaries over the manifest (no IMAP, no credentials).
 With no flag, prints a one-screen summary.
@@ -256,6 +259,7 @@ With no flag, prints a one-screen summary.
 | `--addresses` | Every distinct address seen in From or To, sorted. |
 | `--bucket NAME` | Every message **any** store holds that this bucket claims (`travel`, `shopping`), grouped by store. A view, not a location; ignores `--mail-account`. |
 | `--mail-account ACCOUNT` | Scopes the manifest store. Default `$WICKET_ACCOUNT`, else the only account folder. |
+| `--json` | Print the result as JSON instead of text: `view` (`summary`, `senders`, `addresses`, `bucket`) and that view's data. |
 
 **`wicket ingest`** is the only verb that files: it moves a body into the archive and
 records `downloaded`, `path` and `filed` on its row. No IMAP, no credentials, no prompt.
@@ -284,7 +288,7 @@ file. `--dry-run` moves nothing.
 
 | Flag | Meaning |
 |---|---|
-| `--src PATH` | What to ingest: a folder of `.eml` (a flat drag-export; not recursive), or a single `.eml` file. Exactly one of `--src` / `--staged`. A routed run skips, and names, a destination store another process holds (exit 75); its source files stay. |
+| `--src PATH` | What to ingest: a folder of `.eml` (a flat drag-export; not recursive), or a single `.eml` file. Exactly one of `--src` / `--staged`. A routed run skips, and names, a destination store another process holds (exit 2); its source files stay. |
 | `--staged` | File what `wicket fetch` got into `<mail-root>/<account>/staging/` for one account (`--mail-account`, `$WICKET_ACCOUNT`, or the only account folder). No routing, no account check, nothing trashed. |
 | `--mail-account ACCOUNT` | Send **every** thread to this one store instead of routing each. A *destination, not a filter*: it does not select which messages are ingested, so naming the wrong one files the whole folder into the wrong store. Refused when the folder is plainly addressed elsewhere (see `--force`). Omit it to route. |
 | `--source {local}` | Export profile. Only `local` today (RFC822 `.eml` on disk); reserves the flag for future kinds. |
@@ -293,6 +297,7 @@ file. `--dry-run` moves nothing.
 | `--force` | Ingest anyway when `--mail-account` disagrees with the folder's recipients. |
 | `--no-delete` | Leave the source folder untouched (do not move archived `.eml` to `~/.Trash`). |
 | `--dry-run` | Parse and report what would be added; write nothing, trash nothing. |
+| `--json` | Print the result as JSON instead of text: `mode` (`staged`, `routed`, `single`), `dry_run`, `to_trash`, and that mode's stats. |
 
 The run summary lists each filed `.eml` grouped by its archive directory
 (`<domain>/YYYY-MM/`), so you can see exactly what landed where.
@@ -432,22 +437,22 @@ store can be reconstructed from mailbox + disk by re-running the verbs (ADR
 
 ## Using wicket as a library
 
-wicket is meant to be depended on, not copied. Each verb is a self-contained
-vertical: the library (`lib`) does the work over IMAP and the manifest, `api` owns
-orchestration (resolve the account, its paths, and credentials, then dispatch), and
-each face is a thin wrapper on `api` (the CLI today, an MCP server later). Import a
-verb from its vertical (`wicket.<verb>.api`); the package root is a namespace, not
-an API surface. Every entry point takes `account=`; the only account folder in
+wicket is meant to be depended on, not copied. The four verbs are the root noun's:
+each verb's library (`wicket.root.lib.<verb>`) does the work over IMAP and the
+manifest, `wicket.root.api` owns orchestration (resolve the account, its paths, and
+credentials, then dispatch), and each face is a thin wrapper on `api` (the CLI
+today, an MCP server later). Import a verb from `wicket.root.api`; the package root
+is a namespace, not an API surface. Every entry point takes `account=`; the only account folder in
 `~/.config/wicket/accounts` is the default. `ingest` is the exception: `account=None` means **route**, not
 "guess the default".
 
 ```python
 from pathlib import Path
 
-from wicket.catalog.api import catalog
-from wicket.fetch.api import fetch, FetchOptions, held_messages
-from wicket.report.api import report, manifest, bucket
-from wicket.ingest.api import ingest, IngestOptions
+from wicket.root.api import catalog
+from wicket.root.api import fetch, FetchOptions, held_messages
+from wicket.root.api import report, manifest, bucket_rows
+from wicket.root.api import ingest, IngestOptions
 from wicket.env import resolve_archive_dir
 
 # drive the verbs (each returns a stats dict; non-interactive by default)
@@ -463,7 +468,7 @@ ingest(                                             # file a local .eml export (
 )                                                   # account=None -> route per thread
 
 # a bucket is a view across every store, not a place (travel, shopping)
-for account, rows in bucket("travel").items():
+for account, rows in bucket_rows("travel").items():
     print(account, len(rows))
 
 # read the held mail and manifest (no IMAP, no credentials)

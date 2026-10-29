@@ -48,8 +48,9 @@ key-by-key divergence table.
 
 ```
 src/wicket/
-  __main__.py        python -m wicket <verb>  (Pattern 2: discovery + own CLI,
-                      four verb subcommands; lists the alias and store nouns)
+  __main__.py        python -m wicket <verb>  (the root noun's command line: four
+                      verbs, --json on each; lists the alias, store, halt and
+                      account nouns)
   auth.py            IMAP login + SELECT (app password)
   env.py             account / credential / store path resolution, IMAP host
   domains.py         sender-domain alias canonicalization
@@ -57,12 +58,12 @@ src/wicket/
   manifest.py        the year-sharded store (read / write / merge shards)
   reconcile.py       offline downloaded/domain reconcile + the filing-domain rule
   maps.py            the owner-authored maps on disk: read, pure edits, whole-file write
-  catalog/  fetch/  report/  ingest/   each a vertical, lib -> api -> face:
-    cli.py           the cli face (argparse, add_help=False; folded into the
-                      root's subparser via parents=[...] — not a CLI entry on
-                      its own, no __main__.py here)
-    api.py           orchestration: resolve account/paths/creds, then dispatch
-    lib.py           the worker (engine); faces reach it only through api
+  root/              the four verbs' code, lib -> api -> face (the face is __main__.py):
+    api.py           orchestration, and one request function per verb (VERBS)
+    lib/<verb>.py    the worker (engine): catalog, fetch, ingest, report;
+                      the face reaches it only through api
+    lib/results.py   each verb's result type
+    lib/renderer/plaintext.py   every line the verbs print
 ```
 
 Data lives under the **mail root** (`~/.delphi/mail`, or `$WICKET_MAIL_ROOT`), one

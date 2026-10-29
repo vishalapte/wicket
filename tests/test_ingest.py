@@ -7,21 +7,20 @@ files an entire export into the wrong mailbox, silently and additively.
 
 from __future__ import annotations
 
-from argparse import Namespace
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from wicket.env import Identities, account_of
-from wicket.ingest.cli import _render
-from wicket.ingest.lib import (
+from wicket.manifest import load_store, read_shard, shard_path, write_shard
+from wicket.root.lib.ingest import (
     Target,
     check_account_matches,
     ingest_folder,
     ingest_routed,
 )
-from wicket.manifest import load_store, read_shard, shard_path, write_shard
+from wicket.root.lib.renderer.plaintext import print_ingest
 
 ME = "you@gmail.com"
 WORK = "work@corp.com"
@@ -87,7 +86,7 @@ def _target(
 
 
 def _parsed(folder: Path) -> list[dict[str, object]]:
-    from wicket.ingest.lib import _dedup_folder
+    from wicket.root.lib.ingest import _dedup_folder
 
     messages, _, _ = _dedup_folder(sorted(folder.glob("*.eml")))
     return messages
@@ -766,25 +765,33 @@ def test_a_routed_re_run_aggregates_skipped_like_added(tmp_path: Path) -> None:
 def test_render_names_the_already_archived_share(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _render(
+    print_ingest(
         {
+            "mode": "routed",
+            "dry_run": False,
+            "to_trash": True,
             "files": 7,
             "unique": 7,
             "dup": 0,
             "unrouted": 0,
             "trashed": 7,
+            "added": 4,
+            "excluded": 0,
+            "filed": {},
             "accounts": [
                 {
                     "account": ME,
                     "added": 4,
                     "skipped": 3,
+                    "excluded": 0,
                     "unfiled": 0,
-                    "added_by_year": {2026: 4},
+                    "added_by_year": {"2026": 4},
+                    "top_domains": [],
+                    "by_rule": {},
                     "filed": {},
                 }
             ],
-        },
-        Namespace(dry_run=False, no_delete=False),
+        }
     )
     out = capsys.readouterr().out
     # 7 read, 4 added, 7 trashed only adds up once the 3 are named.

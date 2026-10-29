@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -9,15 +10,16 @@ import pytest
 
 import wicket.__main__ as root
 from wicket import env
-from wicket.catalog import api as catalog_api
-from wicket.catalog import cli as catalog_cli
-from wicket.fetch import api as fetch_api
-from wicket.fetch import cli as fetch_cli
-from wicket.fetch.api import held_messages
-from wicket.fetch.lib import ThreadContext
 from wicket.manifest import shard_path, write_shard
-from wicket.report import cli as report_cli
-from wicket.report.api import addresses, manifest, report, senders
+from wicket.root import api as root_api
+from wicket.root.api import (
+    all_addresses,
+    held_messages,
+    manifest,
+    report,
+    sender_counts,
+)
+from wicket.root.lib.fetch import ThreadContext
 
 
 def _seed(base: Path) -> Path:
@@ -89,7 +91,7 @@ def test_senders_ranked_by_count(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(env, "MAIL_ROOT", _seed(tmp_path))
-    got = dict(senders("you@gmail.com"))
+    got = dict(sender_counts("you@gmail.com"))
     assert got == {"fares@delta.com": 1, "sales@acme.com": 1, "news@delta.com": 1}
 
 
@@ -97,7 +99,7 @@ def test_addresses_distinct_and_sorted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(env, "MAIL_ROOT", _seed(tmp_path))
-    assert addresses("you@gmail.com") == [
+    assert all_addresses("you@gmail.com") == [
         "fares@delta.com",
         "news@delta.com",
         "sales@acme.com",
@@ -175,15 +177,11 @@ def test_resolve_account_no_longer_takes_the_only_store(
 
 @pytest.mark.parametrize("verb", ["report", "catalog", "fetch"])
 def test_a_verb_without_the_flag_exits_2_unless_one_folder_holds_imap_json(
-    verb: str, state: Path, capsys: pytest.CaptureFixture[str]
+    verb: str, state: Path, run_cli: Callable[..., tuple[int, str, str]]
 ) -> None:
     _account_folders(state, "a@x.com", "b@y.com")
     argv = [verb] if verb == "report" else [verb, "--non-interactive"]
-    args = root.parser().parse_args(argv)
-    code = {"report": report_cli, "catalog": catalog_cli, "fetch": fetch_cli}[
-        verb
-    ].dispatch(args)
-    out, err = capsys.readouterr()
+    code, out, err = run_cli(root.main, argv)
     assert (code, out) == (2, "")
     assert "no account: 2 folders in " in err and "pass --mail-account" in err
 
@@ -257,12 +255,10 @@ def test_catalog_resolves_paths_and_passes_dry_run(
         seen.update(kwargs)
         return {"messages": 0, "shards": 0, "removed": 0}
 
-    monkeypatch.setattr(catalog_api, "load_credentials", fake_load_credentials)
-    monkeypatch.setattr(catalog_api, "sweep", fake_sweep)
+    monkeypatch.setattr(root_api, "load_credentials", fake_load_credentials)
+    monkeypatch.setattr(root_api, "sweep", fake_sweep)
 
-    catalog_api.catalog(
-        "You@gmail.com", options=catalog_api.CatalogOptions(dry_run=True)
-    )
+    root_api.catalog("You@gmail.com", options=root_api.CatalogOptions(dry_run=True))
 
     assert seen["interactive"] is False  # default
     assert seen["dry_run"] is True
@@ -278,9 +274,9 @@ def test_fetch_options_take_at_most_one_of_domains_or_query() -> None:
     # The invariant lives in FetchOptions, so an ambiguous request cannot even
     # be constructed (no account, no IMAP, no monkeypatching needed). Neither is
     # a request too: every message not yet got, year by year (plan rule 1).
-    assert fetch_api.FetchOptions().query is None  # neither
+    assert root_api.FetchOptions().query is None  # neither
     with pytest.raises(ValueError, match="at most one"):
-        fetch_api.FetchOptions(domains="a.com", query="x")  # both
+        root_api.FetchOptions(domains="a.com", query="x")  # both
 
 
 def test_fetch_wires_query_and_paths(
@@ -303,12 +299,12 @@ def test_fetch_wires_query_and_paths(
         seen.update(kwargs)
         return {"downloaded": 0, "failed": 0, "got": 0}
 
-    monkeypatch.setattr(fetch_api, "load_credentials", fake_load_credentials)
-    monkeypatch.setattr(fetch_api, "download", fake_download)
+    monkeypatch.setattr(root_api, "load_credentials", fake_load_credentials)
+    monkeypatch.setattr(root_api, "download", fake_download)
 
-    fetch_api.fetch(
+    root_api.fetch(
         "You@gmail.com",
-        options=fetch_api.FetchOptions(domains="acme.com", dry_run=True),
+        options=root_api.FetchOptions(domains="acme.com", dry_run=True),
     )
 
     assert seen["interactive"] is False  # default
@@ -325,21 +321,17 @@ def test_fetch_wires_query_and_paths(
 def test_sweep_years_incremental_full_and_explicit(tmp_path: Path) -> None:
     store = tmp_path / "manifest"
     # first run (empty store) -> None, so lib.sweep derives the full range
-    assert catalog_api._sweep_years(store, catalog_api.CatalogOptions()) is None
+    assert root_api._sweep_years(store, root_api.CatalogOptions()) is None
 
     write_shard(shard_path(store, 2023), {"a@x": {"id": "a@x"}})
     write_shard(shard_path(store, 2025), {"b@x": {"id": "b@x"}})
     now = datetime.now(timezone.utc).year
 
     # incremental default: latest shard year through the current UTC year
-    assert catalog_api._sweep_years(store, catalog_api.CatalogOptions()) == list(
+    assert root_api._sweep_years(store, root_api.CatalogOptions()) == list(
         range(2025, now + 1)
     )
     # --full forces a complete sweep (None lets the worker derive the range)
-    assert (
-        catalog_api._sweep_years(store, catalog_api.CatalogOptions(full=True)) is None
-    )
+    assert root_api._sweep_years(store, root_api.CatalogOptions(full=True)) is None
     # explicit years win over both
-    assert catalog_api._sweep_years(
-        store, catalog_api.CatalogOptions(years=[2024])
-    ) == [2024]
+    assert root_api._sweep_years(store, root_api.CatalogOptions(years=[2024])) == [2024]

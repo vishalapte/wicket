@@ -6,7 +6,7 @@ generator:
 target:
   repo: wicket
   date: 2026-09-04
-  version: "0.6.0"
+  version: "0.7.0"
 bundle:
   - WICKET.md
   - WICKET-DOSSIER.md
@@ -151,25 +151,25 @@ external_surface:
     - verb: python -m wicket
       module: wicket.__main__
       args: none
-      behavior: Pattern 2 root — its own argparse with subparsers for the five verbs below, folded in via parents=[...]. No args prints subcommand help and exits 0.
+      behavior: The root noun's command line, in the form every noun uses (NounParser, one _cmd_<verb> per verb, --json on each). No args lists the nouns and the four verbs below and exits 0.
       exit: "0"
     - verb: wicket catalog
-      module: wicket.catalog.cli
+      module: wicket.__main__
       args: "--mail-account --store-dir --state-dir --mailbox --years --full --threads --dry-run --non-interactive"
       behavior: Sweep mailbox headers (never bodies) into the year-sharded manifest, recording what EXISTS. Read-only IMAP. Incremental by default; idempotent.
       exit: "0 ok, 2 on auth/config error"
     - verb: wicket fetch
-      module: wicket.fetch.cli
+      module: wicket.__main__
       args: "--domains | --query (at most one); --alias-file --max --mail-account --state-dir --threads --dry-run --non-interactive; --target is refused"
       behavior: Get full .eml for matching messages into <store>/staging/<thread>/<msgid>@<INTERNALDATE>.eml, filing nothing; ingest --staged files them. Read-only IMAP.
       exit: "0 ok, 2 on auth/config error"
     - verb: wicket report
-      module: wicket.report.cli
+      module: wicket.__main__
       args: "--senders | --addresses | --bucket NAME (mutually exclusive); --mail-account"
       behavior: Read-only summaries over the manifest. No IMAP, no credentials. --bucket reads across EVERY store and reports what a bucket claims and where it physically lives.
       exit: "0 ok, 2 on config error"
     - verb: wicket ingest
-      module: wicket.ingest.cli
+      module: wicket.__main__
       args: "--src | --staged (exactly one); --mail-account --source {local} --domain --tag --force --no-delete --dry-run"
       behavior: The only verb that files. --staged files what fetch got for one account (duplicates to <mail root>/.duplicates/<store>/). --src files local .eml (a folder, or one file); omit --mail-account to route each thread to the store it belongs to. No IMAP. Additive. Archived sources move to ~/.Trash unless --no-delete. A row marked excluded is skipped and counted.
       exit: "0 ok, 2 on mismatch / absent root / no .eml"
@@ -195,23 +195,23 @@ external_surface:
       exit: "0 ok or no-op, 2 when --config does not exist, imap.json has another target, or delete's new name is taken"
   library_exports:
     - name: catalog
-      module: wicket.catalog.api
+      module: wicket.root.api
       signature: "catalog(account: str | None = None, *, options: CatalogOptions) -> dict"
-      behavior: Observe a mailbox into its manifest. Re-exports AuthError so a face need not import auth.
+      behavior: Observe a mailbox into its manifest; the stats name the store dir it swept into.
     - name: fetch
-      module: wicket.fetch.api
+      module: wicket.root.api
       signature: "fetch(account: str | None = None, *, options: FetchOptions) -> dict"
       behavior: Get matching .eml into the store's staging dir. FetchOptions enforces at-most-one-of domains/query, and refuses dest, at construction.
     - name: held_messages
-      module: wicket.fetch.api
+      module: wicket.root.api
       signature: "held_messages(account=None, *, domains: set[str] | None = None) -> Iterator[tuple[Row, Path]]"
       behavior: The consumer-facing read — every downloaded message and the path to its .eml. No IMAP, no credentials. This is what factotum and meridian actually want.
     - name: ingest
-      module: wicket.ingest.api
+      module: wicket.root.api
       signature: "ingest(account: str | None = None, *, options: IngestOptions) -> dict"
       behavior: File staged mail (IngestOptions(staged=True)) or a local .eml export. For a local export, account=None means ROUTE, not "guess the default" — the one place that argument does not mean what it means elsewhere.
     - name: bucket
-      module: wicket.report.api
+      module: wicket.root.api
       signature: "bucket(name: str) -> dict[str, list[tuple[str, Row]]]"
       behavior: Every message ANY store holds that a bucket claims, keyed by store. The view that replaces relocation.
   scripts:
@@ -238,8 +238,8 @@ inventory:
         glob: src/wicket/*/__main__.py
         id_format: "python -m wicket.{parent}"
   - kind: verb-package
-    describes: One of the eight independent verticals under src/wicket/ (face + api + worker) -- the four verbs plus the alias, store, halt and account nouns.
-    members: [account, alias, catalog, fetch, halt, ingest, report, store]
+    describes: One package under src/wicket/ with its own api -- the root noun (the four root verbs' api) and the alias, store, halt and account nouns.
+    members: [account, alias, halt, root, store]
     sources:
       - match: path
         glob: src/wicket/*/api.py
@@ -296,10 +296,7 @@ It was lifted out of `factotum` (a personal kitchen-sink repo) because more than
 
 | Module | Purpose |
 |---|---|
-| `wicket/catalog/` | Observe the mailbox (headers only) into the manifest. Records **what exists**. IMAP. |
-| `wicket/fetch/` | Get full `.eml` for matching messages into the store's `staging/`. Files nothing. IMAP. |
-| `wicket/report/` | Read-only summaries over the manifest: top senders, every address, a bucket across every store. No IMAP. |
-| `wicket/ingest/` | The only filer: staged mail (`--staged`), or a local `.eml` drag-export routed per thread. No IMAP. |
+| `wicket/root/` | The root noun: each root verb's api and request function (`root/api.py`), its worker (`root/lib/<verb>.py`), its result type (`root/lib/results.py`) and its text (`root/lib/renderer/plaintext.py`). `catalog` is here: observe the mailbox (headers only) into the manifest, recording **what exists** (IMAP). So is `fetch`: get full `.eml` for matching messages into the store's `staging/`, filing nothing (IMAP). So is `report`: read-only summaries over the manifest (top senders, every address, a bucket across every store; no IMAP). So is `ingest`, the only filer: staged mail (`--staged`), or a local `.eml` drag-export routed per thread (no IMAP). |
 | `wicket/env.py` | The environment layer: the mail root, the destination rules (who is *me*, which stores exist), the alias-file rule. Imports nothing above itself. |
 | `wicket/filing.py` | The one home for where mail is filed: the domain, thread, self and sent rules, the rank, `filed`, and the router. |
 | `wicket/reconcile.py` | The offline `downloaded`/`domain` reconcile. |
@@ -308,7 +305,7 @@ It was lifted out of `factotum` (a personal kitchen-sink repo) because more than
 | `wicket/message.py` | The provider-neutral `message_key` and field ownership. |
 | `wicket/auth.py` | IMAP login and read-only `SELECT`; app-password load/prompt. |
 
-Each verb is a self-contained vertical: `lib` (the worker) → `api` (orchestration) → `cli` (the CLI face, folded into the root `__main__.py` as a subcommand).
+Each root verb runs `root/lib/<verb>.py` (the worker) → `root/api.py` (orchestration and its request function) → the root `__main__.py` (the CLI face, one `_cmd_<verb>`).
 
 ### §1.3 Vendors
 
@@ -325,9 +322,9 @@ One runtime: a **CLI, and the library beneath it**. There is no server, no daemo
 | Entry point | Form |
 |---|---|
 | `wicket` | one console script (`[project.scripts]`); `wicket <verb> ...` |
-| `python -m wicket <verb>` | equivalent module invocation — the same Pattern-2 root dispatches both |
+| `python -m wicket <verb>` | equivalent module invocation — the same root `main()` runs both |
 | `python -m wicket` | no args: prints subcommand help and exits 0 |
-| `from wicket.<verb>.api import ...` | the library surface; the package root is a namespace, not an API |
+| `from wicket.root.api import ...` | the library surface; the package root is a namespace, not an API |
 
 **State lives entirely on disk**, in two places that never mix. The **mail root** (`~/.delphi/mail`, override `$WICKET_MAIL_ROOT`) holds every Store and the three maps. `~/.config/wicket/accounts/<account>/imap.json`, a link to the provider's file, holds credentials. Secrets are never inside the data tree, never in the repo, and never on a command line.
 
@@ -391,7 +388,7 @@ The load-bearing detail:
 - **The manifest row** (`wicket.manifest.Row`). Producer: `catalog` (observation), `ingest` (settlement, and observation for a message catalog never saw); `fetch` writes only a link (a Gmail msgid onto a row ingest filed). Consumer: `report`, `reconcile`, and **delphi**, which reads it as a data contract to map Message-ID → archive path and never imports wicket (`docs/adr/ADR-MAIL.md`). This is the one cross-repo wire shape: renaming a row field breaks a sibling repo silently. A row the owner marks `excluded` (`"duplicate of <row id>"`) is a Gmail copy fetch never downloads, ingest skips and counts, and the report views skip; a catalog carries it forward. `filed` records which filing rule placed a row (`rule`, `forced`, `self`, `sent`, `fallback`, `unfiled`); a catalog carries it too.
 - **`message_key`** (`wicket.message`). The provider-neutral identity: a normalized RFC `Message-ID`, or `<provider>:<native-id>` when a message has none. Producer: all three writing verbs. This is what makes a Gmail-harvested message and an Outlook-exported message the *same* message. A row is keyed per Gmail message (`gmail_key`): the first message with a Message-ID keeps the bare key, and a later, different message reusing it gets `<key>|gmail:<gmail id>`, so a reader must not assume one row per Message-ID.
 - **`AccountFor`** (`wicket.filing`). A `Callable[[str], str | None]` resolving an address to the store that owns it. The api binds it from `env.account_of` plus the stores that exist, so the worker reads no config file and lists no directory of its own. The counterparty router has the same shape.
-- **`Target`** (`wicket.ingest.lib`). Where an ingest writes and who the owner is there: store dir, archive dir, account, Identities, DomainAliases. The five travel together because the filing rule cannot say who the counterparty is without knowing who *you* are.
+- **`Target`** (`wicket.root.lib.ingest`). Where an ingest writes and who the owner is there: store dir, archive dir, account, Identities, DomainAliases. The five travel together because the filing rule cannot say who the counterparty is without knowing who *you* are.
 - **The `uchg` immutable flag** (designed, not built — `ADR-MAIL.md`). The pin delphi sets on a wicket-owned `.eml` it references; wicket's prune must skip `UF_IMMUTABLE` files. A filesystem flag rather than a manifest bit, so neither repo writes the other's state.
 
 ### §2.6 Configuration
@@ -414,7 +411,7 @@ All three maps are optional, and **nothing in them is inferred** — an entry ex
 
 1. **catalog.** Resolve the account and its store → load credentials (prompt unless `--non-interactive`) → open the mailbox read-only → per year, in parallel workers each with its own IMAP connection, fetch headers and build rows → merge into the year shard: an observed message is added or updated, and a message the sweep *should* have seen but did not is marked `deleted` (only when the sweep was complete for that year). **Idempotent**: re-running with nothing new changes nothing. **Failure**: a rejected app password exits non-zero and loudly — there is no silent fallback, because cron depends on the noise.
 
-2. **fetch.** Resolve account, store, staging dir, duplicates dir and the fold map → build the search (from `--domains`, expanded through the fold map, or a raw `--query`) → reconcile offline first, ground-truthing `downloaded` against disk → drop every message already **got** (filed, staged, excluded, or set aside as a duplicate) → download the rest into `<store>/staging/<thread>/<msgid>@<INTERNALDATE>.eml`, filing nothing and settling no row. **Idempotent**: a got message is skipped by the dedup, not re-downloaded. **With no filter** it runs that pass year by year (this year, last year, then the rest oldest first), repeating a year while the got count grows, until Gmail throttles. **Failure**: the first throttle (a rejected or timed-out command, a failed month, a short body) writes the account's HALT, `~/.local/state/wicket/halt/<account>`, logs it in `log/<account>.log`, stops every worker, and exits 3; no IMAP connection opens past a HALT, and a store another process holds exits 75. `ingest --staged` files what fetch got: lock, reconcile, key each body as catalog did, write the row, then move the body into `archive/` by `wicket.filing`'s rank; a body archived under another name goes to `<mail root>/.duplicates/<store>/`.
+2. **fetch.** Resolve account, store, staging dir, duplicates dir and the fold map → build the search (from `--domains`, expanded through the fold map, or a raw `--query`) → reconcile offline first, ground-truthing `downloaded` against disk → drop every message already **got** (filed, staged, excluded, or set aside as a duplicate) → download the rest into `<store>/staging/<thread>/<msgid>@<INTERNALDATE>.eml`, filing nothing and settling no row. **Idempotent**: a got message is skipped by the dedup, not re-downloaded. **With no filter** it runs that pass year by year (this year, last year, then the rest oldest first), repeating a year while the got count grows, until Gmail throttles. **Failure**: the first throttle (a rejected or timed-out command, a failed month, a short body) writes the account's HALT, `~/.local/state/wicket/halt/<account>`, logs it in `log/<account>.log`, stops every worker, and exits 2; no IMAP connection opens past a HALT, and a store another process holds exits 2. `ingest --staged` files what fetch got: lock, reconcile, key each body as catalog did, write the row, then move the body into `archive/` by `wicket.filing`'s rank; a body archived under another name goes to `<mail root>/.duplicates/<store>/`.
 
 3. **ingest.** Parse every `.eml` in `--src` — a folder (non-recursive) or a single file — and dedup by `message_key` → reconstruct threads from headers → **route each thread**: the mailbox that took part wins; failing that, a counterparty route; failing that, the thread is *unrouted* and left entirely alone → per destination, place each thread by `wicket.filing`'s rank (archived anchor, `--domain`, self, sent, counterparty domain, fallback, `_unfiled`) read from its opener, skip messages already archived or `excluded`, write the new bodies, and union the new rows into the year shards → move the source `.eml` of every durably-archived message to `~/.Trash`. **Idempotent**: a second run adds 0. The run summary counts the already-archived share separately (`; N already archived`), because a run that trashes every source file while adding fewer rows than it read is otherwise indistinguishable from one that lost mail. **Failures**: an absent mail root fails closed (§2.11); a `--mail-account` that disagrees with the source is refused; a source with no `.eml` errors.
 
@@ -422,9 +419,9 @@ All three maps are optional, and **nothing in them is inferred** — an entry ex
 
 ### §2.8 Seams
 
-- **Provider seam (planned, not built).** Gmail's `X-GM-RAW` / `X-GM-MSGID` / `X-GM-THRID` / `X-GM-LABELS` are used directly inside `catalog/lib.py` and `fetch/lib.py` today. Phase 2 extracts them behind a `MailProvider` interface (`provider.py`); phase 3 adds Fastmail and `--source {gmail|fastmail}`. Do not add a second provider's quirks ad hoc before the seam lands — that is what the seam is for.
+- **Provider seam (planned, not built).** Gmail's `X-GM-RAW` / `X-GM-MSGID` / `X-GM-THRID` / `X-GM-LABELS` are used directly inside `root/lib/catalog.py` and `root/lib/fetch.py` today. Phase 2 extracts them behind a `MailProvider` interface (`provider.py`); phase 3 adds Fastmail and `--source {gmail|fastmail}`. Do not add a second provider's quirks ad hoc before the seam lands — that is what the seam is for.
 - **Export-profile seam.** `ingest --source {local}` is a one-value enum today, reserving the flag for other export shapes (mbox, an Apple Mail package) without a breaking change.
-- **Resolver seam (live).** `ingest/lib.py` takes `AccountFor` callables rather than reading config itself, so routing policy can change entirely in the api with no worker change. Recent example: the counterparty router was added as a second resolver argument to `route_threads` (`src/wicket/filing.py`) without touching the filing code.
+- **Resolver seam (live).** `root/lib/ingest.py` takes `AccountFor` callables rather than reading config itself, so routing policy can change entirely in the api with no worker change. Recent example: the counterparty router was added as a second resolver argument to `route_threads` (`src/wicket/filing.py`) without touching the filing code.
 - **Verb registration.** A new verb gets a `cli.py` (no `__main__.py`) and is added to the root `__main__.py`'s `subcommands()` list and `_VERBS` dict. Explicit registration, no dynamic discovery.
 
 ### §2.9 Design decisions
@@ -471,7 +468,7 @@ All three maps are optional, and **nothing in them is inferred** — an entry ex
 
 | Env | Base URL | Region | Access | Credentials source |
 |---|---|---|---|---|
-| local | n/a — library | n/a | `python -m wicket <verb>` (or the `wicket <verb>` console script), or `from wicket.<verb>.api import ...` | none needed for `report` or `ingest` |
+| local | n/a — library | n/a | `python -m wicket <verb>` (or the `wicket <verb>` console script), or `from wicket.root.api import ...` | none needed for `report` or `ingest` |
 | Gmail IMAP (upstream) | `imap.gmail.com:993` (implicit TLS) | Google-managed | stdlib `imaplib.IMAP4_SSL`, 60s timeout | `~/.config/wicket/accounts/<account>/imap.json` (`0600`) |
 | Fastmail (planned) | not implemented | — | — | — |
 

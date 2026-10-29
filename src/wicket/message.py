@@ -16,7 +16,7 @@ One home (ADR 0002) for the things the unified manifest needs:
     a file, by which an ingest row is recognized.
 
 Pure stdlib, no wicket imports: this sits in the shared layer below the verbs
-and is imported by ``catalog.lib``, ``fetch.lib`` and ``ingest.lib``.
+and is imported by ``root.lib.catalog``, ``root.lib.fetch`` and ``root.lib.ingest``.
 """
 
 from __future__ import annotations

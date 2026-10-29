@@ -9,61 +9,62 @@ from __future__ import annotations
 
 import pytest
 
-from wicket.catalog import cli as catalog_cli
-from wicket.fetch import cli as fetch_cli
-from wicket.ingest import cli as ingest_cli
-from wicket.report import cli as report_cli
+import wicket.__main__ as root
 
 _BASE_ARGV = {
-    catalog_cli: [],
-    report_cli: [],
-    fetch_cli: ["--domains", "acme.com"],
-    ingest_cli: ["--src", "x"],
+    "catalog": [],
+    "report": [],
+    "fetch": ["--domains", "acme.com"],
+    "ingest": ["--src", "x"],
 }
 
 
 @pytest.mark.parametrize(
-    "cli",
-    [catalog_cli, fetch_cli, report_cli, ingest_cli],
+    "verb",
+    ["catalog", "fetch", "report", "ingest"],
 )
-def test_mail_account_flag_resolves_on_every_verb(cli) -> None:  # type: ignore[no-untyped-def]
-    args = cli.parser().parse_args(
-        [*_BASE_ARGV[cli], "--mail-account", "you@example.com"]
+def test_mail_account_flag_resolves_on_every_verb(verb: str) -> None:
+    args = root.parser().parse_args(
+        [verb, *_BASE_ARGV[verb], "--mail-account", "you@example.com"]
     )
     assert args.mail_account == "you@example.com"
 
 
 @pytest.mark.parametrize(
-    "cli",
-    [catalog_cli, fetch_cli, report_cli, ingest_cli],
+    "verb",
+    ["catalog", "fetch", "report", "ingest"],
 )
-def test_bare_account_flag_no_longer_exists(cli) -> None:  # type: ignore[no-untyped-def]
+def test_bare_account_flag_no_longer_exists(verb: str) -> None:
     with pytest.raises(SystemExit):
-        cli.parser().parse_args([*_BASE_ARGV[cli], "--account", "you@example.com"])
+        root.parser().parse_args(
+            [verb, *_BASE_ARGV[verb], "--account", "you@example.com"]
+        )
 
 
 def test_tag_is_repeatable_not_comma_separated() -> None:
-    args = ingest_cli.parser().parse_args(
-        ["--src", "x", "--tag", "receipts", "--tag", "2026"]
+    args = root.parser().parse_args(
+        ["ingest", "--src", "x", "--tag", "receipts", "--tag", "2026"]
     )
     assert args.tag == ["receipts", "2026"]
 
 
 def test_tag_defaults_to_empty_list() -> None:
-    args = ingest_cli.parser().parse_args(["--src", "x"])
+    args = root.parser().parse_args(["ingest", "--src", "x"])
     assert args.tag == []
 
 
 def test_bare_tags_flag_no_longer_exists() -> None:
     with pytest.raises(SystemExit):
-        ingest_cli.parser().parse_args(["--src", "x", "--tags", "a,b"])
+        root.parser().parse_args(["ingest", "--src", "x", "--tags", "a,b"])
 
 
 def test_fetch_target_flag_resolves() -> None:
-    args = fetch_cli.parser().parse_args(["--domains", "acme.com", "--target", "out"])
+    args = root.parser().parse_args(
+        ["fetch", "--domains", "acme.com", "--target", "out"]
+    )
     assert str(args.target) == "out"
 
 
 def test_fetch_bare_dest_flag_no_longer_exists() -> None:
     with pytest.raises(SystemExit):
-        fetch_cli.parser().parse_args(["--domains", "acme.com", "--dest", "out"])
+        root.parser().parse_args(["fetch", "--domains", "acme.com", "--dest", "out"])

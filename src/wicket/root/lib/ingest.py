@@ -23,8 +23,8 @@ rank won as ``filed``. Only an archived member anchors: when a thread already ha
 one, new members join its folder so a reply never splits from its thread. A
 message whose row the owner marked ``excluded`` is skipped and counted.
 
-No argparse, no CLI, no network: the CLI layer (`wicket.ingest.cli`) parses
-argv and the api resolves paths; this worker computes and writes. A store is
+No argparse, no CLI, no network: the CLI (`wicket.__main__`) parses argv and
+the api (`wicket.root.api`) resolves paths; this worker computes and writes. A store is
 written only under its lock (`env.store_lock`), taken here because only the worker
 knows which stores a routed run writes: a single-target run raises `env.StoreBusy`
 when its store is locked; a routed run takes each destination's lock in name order

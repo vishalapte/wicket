@@ -14,10 +14,10 @@ from pathlib import Path
 
 import pytest
 
-import wicket.ingest.lib as ingest_lib
+import wicket.root.lib.ingest as ingest_lib
 from wicket.env import Identities
-from wicket.ingest.lib import Target, ingest_folder
 from wicket.manifest import Row, load_store, merge_catalog, shard_path, write_shard
+from wicket.root.lib.ingest import Target, ingest_folder
 
 ME = "you@gmail.com"
 WORK = "work@corp.com"

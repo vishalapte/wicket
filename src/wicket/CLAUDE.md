@@ -10,8 +10,10 @@ duplicate it here. Bound by the racecar standards (resolver:
 - **src layout.** Code is under `src/wicket/`, import-only when installed.
   Never reintroduce a flat top-level package.
 - **Module roles** (racecar §1/§3):
-  - `wicket/__main__.py`: Pattern 2, discovery plus its own CLI.
-    catalog/fetch/report/ingest are argparse **subcommands** on this one node
+  - `wicket/__main__.py`: the root noun's command line, in the form every noun
+    uses (`NounParser`, `verbs(subcommands())`, one `_cmd_<verb>` per verb bound
+    with `set_defaults(func=...)`, the `--json` loop, `main(argv)` =
+    `lib.cli.run`). catalog/fetch/report/ingest are its **verbs**
     (`python -m wicket <verb> ...`), never separate `wicket.<verb>` dotted CLI
     entries — a dotted path reads as a noun/sub-noun, and none of these four are
     things you address, they are actions. The owner-authored maps are nouns,
@@ -19,31 +21,25 @@ duplicate it here. Bound by the racecar standards (resolver:
     and so are the HALT (`wicket/halt/__main__.py`) and the account
     (`wicket/account/__main__.py`), all listed by `commands()`;
     a bare `python -m wicket` prints the nouns and
-    verbs (`_print_commands`). `parser()` builds the root parser and folds
-    each verb's own `cli.parser()` in via `parents=[...]`; `main()` dispatches
-    to the resolved verb's `cli.dispatch(args)`.
-  - `wicket/{catalog,fetch,report,ingest}/cli.py`: the thin CLI face per
-    verb —
-    a `parser()` factory (`add_help=False`; it is always used as a `parents=`
-    component of the root's subparser, never standalone) and a `dispatch(args)`
-    that calls into its sibling `api.py`. **Not a CLI entry**: no `__main__.py`
-    lives in these packages, on purpose — `python -m wicket.catalog` is refused
-    by the interpreter itself (`'wicket.catalog' is a package and cannot be
-    directly executed`), and `python -m wicket catalog` is the only way in. By
-    convention a face reaches the engine through its sibling api, importing only
-    `api`, `env` (env-layer constants/defaults), and stdlib; it maps the
-    api's exceptions to exit codes and renders the human summary. Reaching past
-    api into the worker/shared is a convention-deviation caught in review, not a
-    build error.
-  - `wicket/{catalog,fetch,report,ingest}/api.py`: the orchestration home
-    for each verb (lib seam). Resolves the account (`env.resolve_account`), the
-    per-account paths and credentials, seeds credentials (gated on
-    `interactive`), dispatches into the sibling worker, and returns the worker's
-    stats dict. `catalog.api` and `fetch.api` re-export `AuthError` and
-    `Halted` (they import `auth`) so the face can map them without importing
-    `auth`. `report.api` is
-    read-only (no IMAP, no credentials). The read helpers `held_messages`
-    (`fetch.api`) and `manifest` (`report.api`) live here too.
+    verbs (`_print_commands`). Each `_cmd_<verb>` calls one `root/api.py`
+    request function and hands its result to `json_renderer.show`, which prints
+    it as JSON under `--json` and through `root/lib/renderer/plaintext.py`
+    otherwise; `lib.cli.run` prints an `ApiError` on stderr and returns its
+    `exit_code`. A face decides nothing and prints nothing itself; it computes
+    `interactive` (is a tty present), a capability of the face, not the request.
+  - `wicket/root/`: the root noun's code, racecar's layout for the package's own
+    verbs. `root/api.py` holds each verb's orchestration (resolve the account,
+    the per-account paths and credentials, seed credentials gated on
+    `interactive`, dispatch into the worker, return its stats dict) and one
+    request function per verb (`<verb>_root`, bound in `VERBS`) that the face
+    calls: it takes the command line's arguments, says every refusal as an
+    `ApiError` (a HALT, a busy store and a bad request exit 2, an IMAP error 1),
+    and returns the verb's TypedDict (`root/lib/results.py`). The read helpers
+    `held_messages` and `manifest` live there too. Each worker is
+    `root/lib/<verb>.py`; every line the verbs print is in
+    `root/lib/renderer/plaintext.py`, and the api calls the same formatters for
+    a run that halts or skips a busy store partway, so its summary is said once.
+    `report` is read-only (no IMAP, no credentials).
   - `wicket/{alias,store}/`: racecar CLI nouns (`__main__.py` face → `api.py`
     → `lib/`, results in `lib/results.py`, text in `lib/renderer/plaintext.py`).
     Their api reads the maps (`maps.read_map`), applies the edit in memory
@@ -87,14 +83,14 @@ duplicate it here. Bound by the racecar standards (resolver:
     recipient's domain — that is the bug the split prevents. `wicket.alias` and
     `wicket.store` are how you WRITE to them; `env`/`domains` only ever read them,
     through the `parse_*` rules the writers also apply.
-  - `catalog/lib.py`, `fetch/lib.py`, `ingest/lib.py`: per-verb
+  - `root/lib/catalog.py`, `root/lib/fetch.py`, `root/lib/ingest.py`: per-verb
     worker modules. **`fetch` files nothing**: it gets bodies into
     `<store>/staging/` (`env.resolve_staging_dir`) and writes no `downloaded` or
     `path`; `ingest` is the only filer, and `ingest --staged` files what fetch
     got. Duplicates have one home, `<mail root>/.duplicates/<store>/`
     (`env.resolve_duplicates_dir`). **No argparse, no `if __name__ == "__main__"`, no CLI.**
     Strictly non-interactive; the IMAP workers parallelize with a per-worker
-    connection (imaplib is not thread-safe across commands). `ingest/lib.py`
+    connection (imaplib is not thread-safe across commands). `root/lib/ingest.py`
     touches no IMAP at all: it parses `.eml` on disk, threads them, routes each
     thread, and files. It takes its resolvers (`AccountFor`) and maps from the
     api as arguments, so the worker reads no config file and no directory
@@ -102,10 +98,12 @@ duplicate it here. Bound by the racecar standards (resolver:
     `{primary: [items]}` engine serves all three maps, since they share that
     shape; validation is the readers' `parse_*` rules, not here.
 - **Import direction** is checked by `[tool.importlinter]` in `pyproject.toml`:
-  one `layers` contract, `wicket.__main__` (root face) → per-verb `cli` (verb
-  face) → per-verb `api` → per-verb worker → `reconcile` → `filing` → shared
+  one `layers` contract, `wicket.__main__` (root face) → each noun's
+  `__main__` → `wicket.root.api` and each noun's `api` → each root verb's
+  worker (`wicket.root.lib.<verb>`), the root renderer and each noun's `lib` →
+  `wicket.root.lib.results` → `reconcile` → `filing` → shared
   (`auth`/`domains`/`message`/`manifest`) → `env`, downward only (acyclic).
-  The verbs and nouns are independent siblings (no cross-imports). The face → api →
+  The workers and nouns are independent siblings (no cross-imports). The face → api →
   lib routing is convention, not a wall: the contract gates direction and
   acyclicity (defects); a face that bypasses its api is a reviewed
   convention-deviation, for the owner to judge. Top-level imports only; no
@@ -113,9 +111,12 @@ duplicate it here. Bound by the racecar standards (resolver:
 - The import-linter contract is **source of truth**. Any package-structure
   change requires editing `[tool.importlinter]` in the **same change**, then
   `lint-imports` must report `Contracts: 1 kept, 0 broken.`
-- Adding a new verb ⇒ give it a `cli.py` (no `__main__.py`), register it in the
-  root `__main__.py`'s `subcommands()` list and `_VERBS` dict, and add its
-  layer to `[tool.importlinter]` (explicit registration; no dynamic discovery).
+- Adding a new verb ⇒ declare it in the lexicon (`docs/lexicon/<verb>.md`), give
+  it a `p_<verb>` block bound to a `_cmd_<verb>` in the root `__main__.py` and an
+  entry in its `subcommands()` list, a request function in `root/api.py`'s
+  `VERBS`, a result type in `root/lib/results.py`, a `print_<verb>` in
+  `root/lib/renderer/plaintext.py`, and a worker `root/lib/<verb>.py` listed in
+  `[tool.importlinter]` (explicit registration; no dynamic discovery).
 
 ## Security invariants (hard rules)
 

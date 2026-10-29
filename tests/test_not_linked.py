@@ -16,11 +16,8 @@ import pytest
 
 import wicket.__main__ as root
 from wicket import auth, env
-from wicket.catalog import cli as catalog_cli
-from wicket.fetch import cli as fetch_cli
 
 ME = "you@gmail.com"
-DISPATCH = {"fetch": fetch_cli.dispatch, "catalog": catalog_cli.dispatch}
 
 
 @pytest.fixture(autouse=True)
@@ -39,20 +36,18 @@ def _no_link(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.parametrize(
-    ("dispatch", "argv"),
+    "argv",
     [
-        (fetch_cli.dispatch, ["fetch", "--mail-account", ME, "--non-interactive"]),
-        (catalog_cli.dispatch, ["catalog", "--mail-account", ME, "--non-interactive"]),
+        ["fetch", "--mail-account", ME, "--non-interactive"],
+        ["catalog", "--mail-account", ME, "--non-interactive"],
     ],
 )
 def test_a_missing_link_exits_0_and_prints_nothing(
-    dispatch: object,
     argv: list[str],
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    assert callable(dispatch)
-    code = dispatch(root.parser().parse_args(argv))
+    code = root.main(argv)
     out, err = capsys.readouterr()
     assert (code, out, err) == (0, "", "")
     assert list((tmp_path / "wicket").iterdir()) == []  # no folder made in its place
@@ -65,8 +60,7 @@ def test_a_folder_without_imap_json_refuses_non_interactively(
 ) -> None:
     folder = tmp_path / "wicket" / "accounts" / ME
     folder.mkdir(parents=True)
-    argv = [verb, "--mail-account", ME, "--non-interactive"]
-    code = DISPATCH[verb](root.parser().parse_args(argv))
+    code = root.main([verb, "--mail-account", ME, "--non-interactive"])
     out, err = capsys.readouterr()
     assert (code, out) == (2, "")
     assert err.startswith(f"auth error: No credentials at {folder / 'imap.json'} ")
@@ -89,6 +83,6 @@ def test_a_folder_without_imap_json_prompts_interactively(
 
     monkeypatch.setattr(auth, "_prompt_for_secret", prompt)
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
-    code = DISPATCH[verb](root.parser().parse_args([verb, "--mail-account", ME]))
+    code = root.main([verb, "--mail-account", ME])
     assert code == 2 and asked == [folder / "imap.json"]
     assert "aborted" in capsys.readouterr().err

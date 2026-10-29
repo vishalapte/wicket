@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from wicket.manifest import shard_path, write_shard
-from wicket.report.lib import (
+from wicket.root.lib.report import (
     addresses,
     all_addresses,
     bucket_rows,

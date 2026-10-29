@@ -5,9 +5,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from wicket.catalog.lib import _fetch_rows_batch, _finalize_record, _merge_observed
 from wicket.manifest import Row, read_shard, shard_path, write_shard
 from wicket.message import local_msgid
+from wicket.root.lib.catalog import _fetch_rows_batch, _finalize_record, _merge_observed
 
 
 def _meta(*, labels: bytes = b'X-GM-LABELS ("Receipts")') -> bytes:
@@ -54,7 +54,7 @@ def test_finalize_record_skips_unparseable_metadata() -> None:
 
 def test_header_block_reads_a_colon_message_id_whole() -> None:
     # policy.default read this as "<urn", so every urn: message shared one row.
-    from wicket.catalog.lib import _parse_header_block
+    from wicket.root.lib.catalog import _parse_header_block
 
     block = (
         b"From: Amazon <ship@amazon.com>\r\nTo: you@gmail.com\r\nSubject: order\r\n"

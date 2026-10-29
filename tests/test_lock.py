@@ -1,7 +1,7 @@
 """One writer per store (plan rule 9).
 
 `env.store_lock` holds ``<manifest dir>/.lock`` with a non-blocking ``flock``; a held
-lock is `env.StoreBusy` naming the holder's pid, which a face maps to exit 75. No test
+lock is `env.StoreBusy` naming the holder's pid, which a face reports as a refusal, exit 2. No test
 here reaches the network: `imaplib.IMAP4_SSL` refuses in every test.
 """
 
@@ -15,10 +15,8 @@ import pytest
 
 import wicket.__main__ as root
 from wicket import env
-from wicket.catalog import api as catalog_api
-from wicket.fetch import cli as fetch_cli
-from wicket.ingest import cli as ingest_cli
-from wicket.ingest.lib import Target, ingest_folder, ingest_routed
+from wicket.root import api as root_api
+from wicket.root.lib.ingest import Target, ingest_folder, ingest_routed
 
 ME = "you@gmail.com"
 WORK = "work@corp.com"
@@ -63,15 +61,15 @@ def test_a_second_take_in_one_process_is_busy_and_names_the_pid(tmp_path: Path) 
 
 
 def _fetch(argv: list[str]) -> int:
-    return fetch_cli.dispatch(root.parser().parse_args(["fetch", *argv]))
+    return root.main(["fetch", *argv])
 
 
-def test_fetch_on_a_locked_store_exits_75(
+def test_fetch_on_a_locked_store_exits_2(
     mail: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     with env.store_lock(mail / ME / "manifest"):
         code = _fetch(["--mail-account", ME, "--query", "x", "--non-interactive"])
-    assert code == 75
+    assert code == 2
     assert f"pid {os.getpid()}" in capsys.readouterr().err
 
 
@@ -89,16 +87,16 @@ def test_a_dry_run_fetch_takes_no_lock(
 def test_catalog_on_a_locked_store_is_busy(mail: Path) -> None:
     with env.store_lock(mail / ME / "manifest"):
         with pytest.raises(env.StoreBusy):
-            catalog_api.catalog(ME, options=catalog_api.CatalogOptions(years=[2026]))
+            root_api.catalog(ME, options=root_api.CatalogOptions(years=[2026]))
 
 
 def test_catalog_locks_the_store_dir_it_writes(mail: Path, tmp_path: Path) -> None:
     other = tmp_path / "elsewhere" / "manifest"
     with env.store_lock(other):
         with pytest.raises(env.StoreBusy):
-            catalog_api.catalog(
+            root_api.catalog(
                 ME,
-                options=catalog_api.CatalogOptions(store_dir=other, years=[2026]),
+                options=root_api.CatalogOptions(store_dir=other, years=[2026]),
             )
 
 
@@ -155,15 +153,13 @@ def test_routed_ingest_skips_and_names_a_busy_store_and_files_the_rest(
     assert not (mail / WORK / "archive").exists()
 
 
-def test_the_ingest_face_names_a_busy_store_and_exits_75(
+def test_the_ingest_face_names_a_busy_store_and_exits_2(
     mail: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _eml(tmp_path / "src", "b", frm="them@acme.com", to=WORK)
-    args = root.parser().parse_args(
-        ["ingest", "--src", str(tmp_path / "src"), "--no-delete"]
-    )
+    argv = ["ingest", "--src", str(tmp_path / "src"), "--no-delete"]
     with env.store_lock(mail / WORK / "manifest"):
-        code = ingest_cli.dispatch(args)
-    assert code == 75
+        code = root.main(argv)
+    assert code == 2
     err = capsys.readouterr().err
     assert f"busy: {WORK} is locked by pid {os.getpid()}" in err

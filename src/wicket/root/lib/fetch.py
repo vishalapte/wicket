@@ -27,8 +27,8 @@ a failed month, a short body), which writes the account's HALT
 3. Retrieve (``threads`` worker connections, one whole month each): batched body
    FETCH, write each ``.eml`` into staging. No row is settled.
 
-Read-only on the mailbox (``SELECT`` is read-only). No CLI; the CLI layer
-(``wicket.fetch.cli``) seeds credentials and calls ``download()``.
+Read-only on the mailbox (``SELECT`` is read-only). No CLI; the api
+(``wicket.root.api``) seeds credentials and calls ``download()``.
 """
 
 from __future__ import annotations
@@ -36,6 +36,7 @@ from __future__ import annotations
 import email
 import email.policy
 import imaplib
+import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -80,6 +81,8 @@ _MSGID_RE = re.compile(rb"X-GM-MSGID\s+(\d+)")
 _THRID_RE = re.compile(rb"X-GM-THRID\s+(\d+)")
 _INTERNALDATE_RE = re.compile(rb'INTERNALDATE\s+"([^"]+)"')
 _SIZE_RE = re.compile(rb"RFC822\.SIZE\s+(\d+)")
+# Progress, one line per step; the CLI's `main()` shows it on stderr.
+logger = logging.getLogger(__name__)
 
 
 # A message's planning headers: (msgid, thrid, internal_dt_utc, from, to,
@@ -596,7 +599,7 @@ def _retrieve_months(
                 msg += f", {failed} failed"
             if skipped:
                 msg += f", {skipped} skipped (halted)"
-            print(msg, flush=True)
+            logger.info(msg)
     finally:
         for thread in pool:
             thread.join()
@@ -652,10 +655,12 @@ def _pass(
         return counts, throttle_halt(credentials_path, "discovery", exc)
     got = total - unheld
     candidates = unheld if limit is None else min(unheld, limit)
-    print(
-        f"[search] {total} matched: {got} got, {candidates} to fetch"
-        + (f" ({unheld - candidates} beyond --max)" if unheld > candidates else ""),
-        flush=True,
+    logger.info(
+        "[search] %s matched: %s got, %s to fetch%s",
+        total,
+        got,
+        candidates,
+        f" ({unheld - candidates} beyond --max)" if unheld > candidates else "",
     )
     pending, linked = _split_linked(_plan(records, ctx, rows), rows)
     counts.update(
@@ -677,9 +682,8 @@ def _pass(
         by_month: dict[str, list[Row]] = {}
         for entry in pending:
             by_month.setdefault(str(entry["month"]), []).append(entry)
-        print(
-            f"[fetch] {len(pending)} to download across {len(by_month)} month(s)",
-            flush=True,
+        logger.info(
+            "[fetch] %s to download across %s month(s)", len(pending), len(by_month)
         )
         written, counts["failed"], halt = _retrieve_months(
             credentials_path=credentials_path,

@@ -15,10 +15,9 @@ import pytest
 
 import wicket.__main__ as root
 from wicket import env, manifest
-from wicket.fetch import api as fetch_api
-from wicket.ingest import api as ingest_api
 from wicket.manifest import Row, load_store, read_shard, shard_path, write_shard
 from wicket.message import local_msgid
+from wicket.root import api as root_api
 
 ME = "you@gmail.com"
 JUL = "20260706T090004Z"  # INTERNALDATE of every staged body below
@@ -26,9 +25,8 @@ Run = Callable[..., tuple[int, str, str]]
 
 
 def _main(argv: list[str] | None) -> int:
-    """The root CLI on ``argv``: parse, then the resolved verb's dispatch."""
-    args = root.parser().parse_args(argv)
-    return int(root._VERBS[args.verb].dispatch(args))
+    """The root CLI on ``argv``."""
+    return root.main(argv)
 
 
 @pytest.fixture(name="mail")
@@ -56,8 +54,8 @@ def _stage(  # pylint: disable=too-many-arguments
 
 
 def _ingest(domain: str | None = None, dry_run: bool = False) -> dict[str, object]:
-    options = ingest_api.IngestOptions(staged=True, domain=domain, dry_run=dry_run)
-    return ingest_api.ingest(ME, options=options)
+    options = root_api.IngestOptions(staged=True, domain=domain, dry_run=dry_run)
+    return root_api.ingest(ME, options=options)
 
 
 def _rows(mail: Path) -> dict[str, dict[str, object]]:
@@ -281,9 +279,9 @@ def test_a_dry_run_writes_nothing(mail: Path) -> None:
 
 def test_the_options_take_exactly_one_source() -> None:
     with pytest.raises(ValueError, match="exactly one"):
-        ingest_api.IngestOptions()
+        root_api.IngestOptions()
     with pytest.raises(ValueError, match="exactly one"):
-        ingest_api.IngestOptions(src=Path("x"), staged=True)
+        root_api.IngestOptions(src=Path("x"), staged=True)
 
 
 def test_the_face_files_staged_mail_and_refuses_both_sources(
@@ -302,7 +300,7 @@ def test_the_face_files_staged_mail_and_refuses_both_sources(
 @pytest.mark.usefixtures("mail")
 def test_fetch_refuses_a_destination_and_names_the_split(run_cli: Run) -> None:
     with pytest.raises(ValueError, match="ingest --staged"):
-        fetch_api.FetchOptions(dest=Path("/somewhere"))
+        root_api.FetchOptions(dest=Path("/somewhere"))
     code, _out, err = run_cli(_main, ["fetch", "--target", "/x", "--mail-account", ME])
     assert code == 2 and "ingest --staged" in err
 

@@ -1,6 +1,6 @@
 """fetch until throttled (plan rules 1-3 and 5 as fetch applies them).
 
-The year loop is tested with the pass stubbed (`fetch.lib._pass`) and the store's
+The year loop is tested with the pass stubbed (`root.lib.fetch._pass`) and the store's
 downloaded count simulated; the month workers and body checks with a fake connection.
 No test reaches the network: `imaplib.IMAP4_SSL` refuses in every test.
 """
@@ -8,6 +8,7 @@ No test reaches the network: `imaplib.IMAP4_SSL` refuses in every test.
 from __future__ import annotations
 
 import imaplib
+import json
 import os
 from collections.abc import Callable, Sequence
 from datetime import datetime
@@ -18,11 +19,11 @@ from typing import cast
 import pytest
 
 import wicket.__main__ as root
-import wicket.fetch.lib as fetch_lib
+import wicket.root.lib.fetch as fetch_lib
 from wicket import auth, env
-from wicket.fetch import api as fetch_api
-from wicket.fetch import cli as fetch_cli
+from wicket.errors import ApiError
 from wicket.manifest import Row
+from wicket.root import api as root_api
 
 ME = "you@gmail.com"
 
@@ -335,7 +336,7 @@ def test_the_api_runs_years_with_no_filter_and_logs_counts_only(
 ) -> None:
     this = datetime.now().year  # the api runs on the real clock
     years = Years(monkeypatch, {this: [3]})
-    stats = fetch_api.fetch(ME, options=fetch_api.FetchOptions())
+    stats = root_api.fetch(ME, options=root_api.FetchOptions())
     assert years.years() == [this, this - 1, *range(2022, this - 1)]  # one pass a year
     state = Path(os.environ["XDG_STATE_HOME"]) / "wicket"
     log = (state / "log" / f"{ME}.log").read_text()
@@ -346,9 +347,9 @@ def test_the_api_runs_years_with_no_filter_and_logs_counts_only(
 
 
 def test_the_options_take_no_filter_but_not_two() -> None:
-    assert fetch_api.FetchOptions().domains is None
+    assert root_api.FetchOptions().domains is None
     with pytest.raises(ValueError, match="at most one"):
-        fetch_api.FetchOptions(domains="a.com", query="x")
+        root_api.FetchOptions(domains="a.com", query="x")
 
 
 def test_the_face_accepts_no_filter() -> None:
@@ -356,25 +357,25 @@ def test_the_face_accepts_no_filter() -> None:
     assert args.domains is None and args.query is None
 
 
-def _fetched(monkeypatch: pytest.MonkeyPatch) -> list[fetch_api.FetchOptions]:
-    """Every FetchOptions the face runs with, the run itself replaced by empty counts."""
-    seen: list[fetch_api.FetchOptions] = []
+def _fetched(monkeypatch: pytest.MonkeyPatch) -> list[root_api.FetchOptions]:
+    """Every FetchOptions the api runs with, the run itself replaced by empty counts."""
+    seen: list[root_api.FetchOptions] = []
 
-    def fake(*_a: object, options: fetch_api.FetchOptions, **_k: object) -> object:
+    def fake(*_a: object, options: root_api.FetchOptions, **_k: object) -> object:
         seen.append(options)
         return {**fetch_lib._counts(), "passes": [], "halted": False}
 
-    monkeypatch.setattr(fetch_cli, "fetch", fake)
+    monkeypatch.setattr(root_api, "fetch", fake)
     return seen
 
 
 @pytest.mark.parametrize("last", ["2d", "3m", "10y"])
 def test_last_runs_gmail_newer_than_as_one_filtered_pass(
-    monkeypatch: pytest.MonkeyPatch, last: str
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], last: str
 ) -> None:
     seen = _fetched(monkeypatch)
-    args = root.parser().parse_args(["fetch", "--mail-account", ME, "--last", last])
-    assert fetch_cli.dispatch(args) == 0
+    code = root.main(["fetch", "--mail-account", ME, "--last", last, "--json"])
+    assert code == 0 and json.loads(capsys.readouterr().out)["filtered"] is True
     assert [(o.query, o.domains) for o in seen] == [(f"newer_than:{last}", None)]
 
 
@@ -383,12 +384,16 @@ def test_last_runs_gmail_newer_than_as_one_filtered_pass(
     [["--domains", "a.com"], ["--query", "x"], ["--domains", "a.com", "--query", "x"]],
 )
 def test_last_refuses_another_filter(
-    capsys: pytest.CaptureFixture[str], other: list[str]
+    monkeypatch: pytest.MonkeyPatch,
+    run_cli: Callable[..., tuple[int, str, str]],
+    other: list[str],
 ) -> None:
-    with pytest.raises(SystemExit) as refused:
-        root.parser().parse_args(["fetch", "--last", "2d", *other])
-    assert refused.value.code == 2
-    assert "not allowed with argument" in capsys.readouterr().err
+    seen = _fetched(monkeypatch)
+    code, _, err = run_cli(root.main, ["fetch", "--last", "2d", *other])
+    assert code == 2 and "not allowed with argument" in err
+    assert seen == []
+    with pytest.raises(ApiError, match="at most one of --domains, --query or --last"):
+        root_api.fetch_root(mail_account=ME, last="2d", domains="a.com", query="x")
 
 
 @pytest.mark.parametrize("bad", ["2h", "2w", "0d", "2x", "02d", "2D", "2dd", "d", "2"])
@@ -396,58 +401,59 @@ def test_last_refuses_anything_but_n_days_months_or_years(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], bad: str
 ) -> None:
     seen = _fetched(monkeypatch)
-    args = root.parser().parse_args(["fetch", "--mail-account", ME, "--last", bad])
-    assert fetch_cli.dispatch(args) == 2
-    assert "--last takes N then d, m or y" in capsys.readouterr().err
+    code = root.main(["fetch", "--mail-account", ME, "--last", bad])
+    assert code == 2 and "--last takes N then d, m or y" in capsys.readouterr().err
     assert seen == []
 
 
-def test_the_face_exits_3_on_a_halt_and_names_the_file(
+def test_the_face_exits_2_on_a_halt_and_names_the_file(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    halted = {
-        **{k: 0 for k in ("matched", "got", "pending", "linked")},
+    counts = {
+        **{k: 0 for k in ("matched", "got", "candidates", "pending", "linked")},
         "downloaded": 4,
         "failed": 1,
-        "passes": [{"year": 2026}],
+    }
+    halted = {
+        **counts,
+        "passes": [{"year": 2026, "pass": 1, **counts}],
         "halted": True,
         "halt": "throttle 2026-10-27T08:00:00Z month 2026-03: abort",
         "halt_file": "/state/wicket/halt/you@gmail.com",
     }
-    monkeypatch.setattr(fetch_cli, "fetch", lambda *_a, **_k: halted)
-    code = fetch_cli.dispatch(root.parser().parse_args(["fetch", "--query", "x"]))
-    out, err = capsys.readouterr()
-    assert code == 3
-    assert "done: 4 downloaded, 1 failed" in out
+    monkeypatch.setattr(root_api, "fetch", lambda *_a, **_k: halted)
+    code = root.main(["fetch", "--query", "x"])
+    err = capsys.readouterr().err
+    assert code == 2
+    assert "done: 4 downloaded, 1 failed" in err
     assert "halted: throttle 2026-10-27T08:00:00Z" in err
     assert "HALT at /state/wicket/halt/you@gmail.com" in err
     assert "python -m wicket.halt clear --mail-account you@gmail.com" in err
     assert "aside" not in err
 
 
-def test_the_face_exits_3_when_the_api_raises_halted(
+def test_the_face_exits_2_when_the_api_raises_halted(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     def refused(*_a: object, **_k: object) -> None:
-        raise fetch_api.Halted(
+        raise auth.Halted(
             Path("/s/halt/you@gmail.com"), "auth 2026-10-27T08:00:00Z rejected"
         )
 
-    monkeypatch.setattr(fetch_cli, "fetch", refused)
-    code = fetch_cli.dispatch(root.parser().parse_args(["fetch", "--query", "x"]))
+    monkeypatch.setattr(root_api, "fetch", refused)
+    code = root.main(["fetch", "--query", "x"])
     err = capsys.readouterr().err
-    assert code == 3 and "HALT at /s/halt/you@gmail.com" in err
+    assert code == 2 and "HALT at /s/halt/you@gmail.com" in err
     assert "python -m wicket.halt clear --mail-account you@gmail.com" in err
 
 
-def test_catalog_maps_a_timeout_to_a_throttle_halt_and_exits_3(
+def test_catalog_maps_a_timeout_to_a_throttle_halt_and_exits_2(
     account: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import wicket.catalog.lib as catalog_lib
-    from wicket.catalog import cli as catalog_cli
+    import wicket.root.lib.catalog as catalog_lib
 
     def times_out(*_args: object) -> tuple[str, list[object]]:
         raise TimeoutError("timed out")
@@ -455,12 +461,10 @@ def test_catalog_maps_a_timeout_to_a_throttle_halt_and_exits_3(
     monkeypatch.setattr(
         catalog_lib, "open_mailbox", lambda *_a, **_k: FakeConn(times_out)
     )
-    code = catalog_cli.dispatch(
-        root.parser().parse_args(
-            ["catalog", "--mail-account", ME, "--years", "2024", "--non-interactive"]
-        )
+    code = root.main(
+        ["catalog", "--mail-account", ME, "--years", "2024", "--non-interactive"]
     )
-    assert code == 3
+    assert code == 2
     assert _halt_file().read_text() == ""
     assert "HALT set catalog 2024: TimeoutError" in _log()
     err = capsys.readouterr().err
@@ -469,9 +473,8 @@ def test_catalog_maps_a_timeout_to_a_throttle_halt_and_exits_3(
 
 
 def test_catalog_opens_no_year_past_the_stop(account: Path, tmp_path: Path) -> None:
-    from wicket.catalog import api as catalog_api
 
     auth.write_halt(_creds(tmp_path), "an earlier year")
     # Refused, not "could not reach": the autouse fake would raise OSError on connect.
     with pytest.raises(auth.Halted):
-        catalog_api.catalog(ME, options=catalog_api.CatalogOptions(years=[2023, 2024]))
+        root_api.catalog(ME, options=root_api.CatalogOptions(years=[2023, 2024]))

@@ -36,7 +36,7 @@ merged there without dropping anything. (Removing stale year shards on a full sw
 not yet implemented.)
 
 Utility module: no CLI, no argparse, no main guard. The verb's api
-(`wicket.catalog.api`) dispatches into `sweep()`.
+(`wicket.root.api`) dispatches into `sweep()`.
 """
 
 from __future__ import annotations
@@ -45,6 +45,7 @@ import email
 import email.policy
 import email.utils
 import imaplib
+import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -78,6 +79,8 @@ _SIZE_RE = re.compile(rb"RFC822\.SIZE\s+(\d+)")
 _INTERNALDATE_RE = re.compile(rb'INTERNALDATE\s+"([^"]+)"')
 _HEADER_LITERAL_MARKER = b"BODY[HEADER.FIELDS (FROM TO SUBJECT MESSAGE-ID DATE)]"
 _SHARD_RE = re.compile(r"^\d{4}\.jsonl$")
+# Progress, one line per step; the CLI's `main()` shows it on stderr.
+logger = logging.getLogger(__name__)
 
 
 # --- IMAP plumbing -------------------------------------------------------
@@ -392,14 +395,17 @@ def _merge_observed(
     for year in touched:
         observed_year = by_year.get(year, {})
         if dry_run:
-            print(f"[dry-run] {year}: {len(observed_year)} row(s)")
+            logger.info("[dry-run] %s: %s row(s)", year, len(observed_year))
             continue
         merged = merge_catalog(
             prior.get(year, {}), observed_year, complete=year in swept
         )
         write_shard(shard_path(store_dir, year), merged)
-        print(
-            f"[catalog] {year}: {len(observed_year)} observed, {len(merged)} in shard"
+        logger.info(
+            "[catalog] %s: %s observed, %s in shard",
+            year,
+            len(observed_year),
+            len(merged),
         )
     return len(touched)
 
@@ -448,7 +454,7 @@ def sweep(  # pylint: disable=too-many-arguments
         finally:
             _logout_quietly(conn)
         if first is None:
-            print("[discover] mailbox is empty")
+            logger.info("[discover] mailbox is empty")
             return {
                 "messages": 0,
                 "shards": 0,
@@ -460,9 +466,12 @@ def sweep(  # pylint: disable=too-many-arguments
         targets = list(range(first, datetime.now(timezone.utc).year + 1))
 
     workers = max(1, min(threads, len(targets)))
-    print(
-        f"[plan] {len(targets)} year(s) {targets[0]}..{targets[-1]}, "
-        f"{workers} thread(s)"
+    logger.info(
+        "[plan] %s year(s) %s..%s, %s thread(s)",
+        len(targets),
+        targets[0],
+        targets[-1],
+        workers,
     )
 
     per_year: list[dict[str, int]] = []

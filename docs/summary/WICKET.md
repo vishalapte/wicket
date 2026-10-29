@@ -6,7 +6,7 @@ generator:
 target:
   repo: wicket
   date: 2026-09-04
-  version: "0.6.0"
+  version: "0.7.0"
 bundle:
   - WICKET.md
   - WICKET-DOSSIER.md
@@ -392,7 +392,7 @@ consequence attached:
 - The bucket-view claim that it reads across *every* store is sourced from the
   report layer's own description; the exact set of stores it walks (all
   directories under the mail root, versus those a map names) was not re-derived
-  from the code for this revision. Verify against `src/wicket/report/lib.py`.
+  from the code for this revision. Verify against `src/wicket/root/lib/report.py`.
 - Two enumerated kinds in the dossier are declared-only and covered by no
   extractor: the domain entities and the library exports. Their member lists are
   stated and corroborated by nothing, because nothing in the tree enumerates the

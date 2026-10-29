@@ -1,13 +1,17 @@
 """CLI entry: python -m wicket
 
-Pattern 2: discovery plus its own CLI. Four verbs -- catalog, fetch, report,
-ingest -- are argparse subcommands on this one node (`python -m wicket <verb>
-...`) rather than separate `wicket.<verb>` dotted CLI entries: a dotted path
-would read as a noun/sub-noun, and none of these are things you address, they
-are actions. Their argument definitions live in their own (non-entry)
-`cli.py`; there is no `__main__.py` under catalog/fetch/report/ingest, so
-`python -m wicket.catalog` is refused by the interpreter itself, and
-`python -m wicket catalog` is the only way in.
+Portable, read-only mail tooling over IMAP: catalog a mailbox, fetch matching .eml,
+report over the manifest, or ingest a local export.
+
+The package's own command line: it lists the nouns this package composes in ``commands()``
+and runs the verbs declared on the package itself, ``catalog``, ``fetch``, ``report`` and
+``ingest`` (`python -m wicket <verb> ...`). Their code is ``wicket.root``, so a root verb
+is addressed like any other noun's, from ``api`` to its renderer.
+
+A thin surface over ``api``: each verb is one ``_cmd_<verb>`` that calls one api function
+and hands its result to a renderer. It decides nothing and prints nothing itself. Every
+verb takes ``--json``: the api result as JSON, the shape ``output()`` publishes, instead of
+the text view.
 
 The owner-authored maps are nouns, each its own node: `python -m wicket.alias`
 (domain-aliases.json) and `python -m wicket.store` (domain-routes.json and
@@ -15,33 +19,25 @@ account-aliases.json). So is the HALT, `python -m wicket.halt`, the one door tha
 and clears it (each logged), and the account, `python -m wicket.account`, a folder in
 ~/.config/wicket/accounts holding an imap.json link. This node lists the four in
 `commands()` beside its verbs; a bare `python -m wicket` prints them, runnable as printed.
+``main()`` is ``lib.cli.run``: an ``ApiError`` the api raises is printed on stderr and its
+``exit_code`` returned.
 """
 
+from __future__ import annotations
+
 import argparse
+import logging
 import signal
 import sys
-from typing import Protocol
+from pathlib import Path
 
-from wicket.catalog import cli as catalog_cli
-from wicket.fetch import cli as fetch_cli
-from wicket.ingest import cli as ingest_cli
-from wicket.lib.cli import print_commands
-from wicket.report import cli as report_cli
-
-
-class _VerbCLI(Protocol):
-    """The shape every verb's `cli.py` exposes: `parser()` + `dispatch(args)`."""
-
-    def parser(self) -> argparse.ArgumentParser: ...
-    def dispatch(self, args: argparse.Namespace) -> int: ...
-
-
-_VERBS: dict[str, _VerbCLI] = {
-    "catalog": catalog_cli,
-    "fetch": fetch_cli,
-    "report": report_cli,
-    "ingest": ingest_cli,
-}
+from wicket.env import ACCOUNT_ENV_VAR, ALL_MAIL_MAILBOX, DEFAULT_THREADS
+from wicket.errors import ApiError
+from wicket.lib.cli import NounParser, print_commands, run
+from wicket.lib.renderer import json as json_renderer
+from wicket.root import api
+from wicket.root.lib.renderer import plaintext
+from wicket.schema import returns
 
 
 def commands() -> list[tuple[str, str]]:
@@ -84,6 +80,63 @@ def _print_commands() -> None:
     print_commands(__package__ or "wicket", commands(), subcommands())
 
 
+def _cmd_catalog(args: argparse.Namespace) -> int:
+    result = api.catalog_root(
+        mail_account=args.mail_account,
+        years=args.years,
+        full=args.full,
+        mailbox=args.mailbox,
+        store_dir=args.store_dir,
+        state_dir=args.state_dir,
+        threads=args.threads,
+        interactive=(not args.non_interactive) and sys.stdin.isatty(),
+        dry_run=args.dry_run,
+    )
+    return json_renderer.show(args, result, plaintext.print_catalog)
+
+
+def _cmd_fetch(args: argparse.Namespace) -> int:
+    result = api.fetch_root(
+        mail_account=args.mail_account,
+        query=args.query,
+        domains=args.domains,
+        last=args.last,
+        limit=args.limit,
+        target=args.target,
+        alias_file=args.alias_file,
+        state_dir=args.state_dir,
+        threads=args.threads,
+        interactive=(not args.non_interactive) and sys.stdin.isatty(),
+        dry_run=args.dry_run,
+    )
+    return json_renderer.show(args, result, plaintext.print_fetch)
+
+
+def _cmd_report(args: argparse.Namespace) -> int:
+    result = api.report_root(
+        mail_account=args.mail_account,
+        senders=args.senders,
+        addresses=args.addresses,
+        bucket=args.bucket,
+    )
+    return json_renderer.show(args, result, plaintext.print_report)
+
+
+def _cmd_ingest(args: argparse.Namespace) -> int:
+    result = api.ingest_root(
+        mail_account=args.mail_account,
+        src=args.src,
+        staged=args.staged,
+        source=args.source,
+        domain=args.domain,
+        tags=args.tag,
+        no_delete=args.no_delete,
+        force=args.force,
+        dry_run=args.dry_run,
+    )
+    return json_renderer.show(args, result, plaintext.print_ingest)
+
+
 def subcommands() -> list[tuple[str, str]]:
     return [
         ("catalog", "Observe the mailbox into the year-sharded manifest"),
@@ -94,64 +147,327 @@ def subcommands() -> list[tuple[str, str]]:
 
 
 def parser() -> argparse.ArgumentParser:
-    """Build the CLI parser (factory contract: introspectable by tooling)."""
-    build = argparse.ArgumentParser(
-        prog=f"python -m {__package__}",
+    """Build the parser without parsing: the audit and --help both read this."""
+    p = NounParser(
+        prog="python -m wicket",
         description=(
             "Portable, read-only mail tooling over IMAP: catalog a mailbox, "
             "fetch matching .eml, report over the manifest, or ingest a local "
             "export. Append --help to any verb for its options."
         ),
-        epilog="nouns: "
-        + ", ".join(f"python -m {__package__}.{name}" for name, _ in commands()),
+        nodes=commands(),
     )
-    sub = build.add_subparsers(dest="verb", required=True)
-    help_by_verb = dict(subcommands())
-    # One literal add_parser() call per verb, not a loop over subcommands():
-    # check_cli_commands.py statically audits that every registered name is a
-    # string literal, so it can cross-check subcommands() against the tree
-    # without running it. A dynamic name would be unauditable.
-    sub.add_parser(
+    sub = p.verbs(subcommands(), dest="phase")
+
+    p_catalog = sub.add_parser(
         "catalog",
-        parents=[catalog_cli.parser()],
-        help=help_by_verb["catalog"],
-        description=catalog_cli.parser().description,
+        description=(
+            "Sweep mailbox headers (never bodies) into the year-sharded "
+            "manifest at <mail-root>/<account>/manifest/YYYY.jsonl, one row per "
+            "message (the observation fields and the `deleted` flag). Merges "
+            "with settlement already in the store; re-running is idempotent."
+        ),
     )
-    sub.add_parser(
+    p_catalog.add_argument(
+        "--mail-account",
+        default=None,
+        help="Account address; scopes the manifest store. "
+        "Gmail `+tag` aliases are normalized automatically. "
+        f"Default: ${ACCOUNT_ENV_VAR}, else the only account folder.",
+    )
+    p_catalog.add_argument(
+        "--store-dir",
+        type=Path,
+        default=None,
+        help="Override the manifest store dir. Default: <mail-root>/<account>/manifest/.",
+    )
+    p_catalog.add_argument(
+        "--state-dir",
+        type=Path,
+        default=None,
+        help="The base holding accounts/<account>/imap.json (email + app password) "
+        "(default: ~/.config/wicket; shared with the other tools).",
+    )
+    p_catalog.add_argument(
+        "--mailbox",
+        default=ALL_MAIL_MAILBOX,
+        help='IMAP mailbox to sweep (default: "[Gmail]/All Mail"). '
+        "Sweeping any other mailbox into the default store dir would "
+        "make shards lie about what exists, pass --store-dir too.",
+    )
+    p_catalog.add_argument(
+        "--years",
+        default=None,
+        help="Comma-separated INTERNALDATE years, e.g. 2025,2026. Only these "
+        "years' shards are replaced. Omit to sweep incrementally from the "
+        "latest year in the manifest; pass --full for a complete re-sweep.",
+    )
+    p_catalog.add_argument(
+        "--threads",
+        type=int,
+        default=DEFAULT_THREADS,
+        help="Concurrent year workers, one IMAP connection each (default: 4; "
+        "Gmail caps simultaneous IMAP connections, stay well under ~15).",
+    )
+    p_catalog.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Sweep and report per-year counts; write nothing.",
+    )
+    p_catalog.add_argument(
+        "--full",
+        action="store_true",
+        help="Re-sweep every year from the oldest message through now, not just "
+        "from the latest year in the manifest. The incremental default assumes "
+        "the past does not change; use --full to rebuild or after deleting old "
+        "mail.",
+    )
+    p_catalog.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="Never prompt for credentials; fail loudly if imap.json is "
+        "missing or rejected (for cron/launchd).",
+    )
+    p_catalog.set_defaults(func=_cmd_catalog)
+
+    p_fetch = sub.add_parser(
         "fetch",
-        parents=[fetch_cli.parser()],
-        help=help_by_verb["fetch"],
-        description=fetch_cli.parser().description,
+        description=(
+            "Get full .eml for every matching Gmail message into the store's "
+            "staging dir (<mail-root>/<account>/staging/<thread>/<msgid>@<date>.eml). "
+            "fetch files nothing: `wicket ingest --staged` files staged mail into "
+            "the archive, and until then it is not in report or the manifest's "
+            "downloaded rows. With no --domains, --query or --last, gets every "
+            "message not yet got and not excluded, this year, last year, then "
+            "older years oldest first, until Gmail throttles: the first throttle "
+            "writes the account's HALT and exits 2, and no IMAP connection opens "
+            "past a HALT. Exits 2 when another process holds the store's lock."
+        ),
     )
-    sub.add_parser(
+    filter_group = p_fetch.add_mutually_exclusive_group()
+    filter_group.add_argument(
+        "--domains",
+        help='Comma-separated list, e.g. "acme.com,globex.com". '
+        "Tool builds the Gmail search expression for messages from/to "
+        "any of these domains. Omit every filter to fetch everything.",
+    )
+    filter_group.add_argument(
+        "--query",
+        help="Raw Gmail search expression (escape hatch). Use this for "
+        "anything --domains can't express.",
+    )
+    filter_group.add_argument(
+        "--last",
+        metavar="AGE",
+        help="Messages newer than AGE: N then d, m or y (2d, 3m, 1y), Gmail's "
+        "newer_than:AGE. Anything else exits 2.",
+    )
+    p_fetch.add_argument(
+        "--target",
+        type=Path,
+        default=None,
+        help="Refused: fetch no longer files mail, so it takes no destination. "
+        "Bodies go to <mail-root>/<account>/staging/; `wicket ingest --staged` "
+        "files them.",
+    )
+    p_fetch.add_argument(
+        "--state-dir",
+        type=Path,
+        default=None,
+        help="The base holding accounts/<account>/imap.json (email + app password) "
+        "(default: ~/.config/wicket; shared with wicket.catalog).",
+    )
+    p_fetch.add_argument(
+        "--mail-account",
+        default=None,
+        help="Account that scopes the staging dir and the manifest store "
+        "(<mail-root>/<account>/). Gmail `+tag` aliases are normalized "
+        "automatically. Default: $WICKET_ACCOUNT, else the only account folder.",
+    )
+    p_fetch.add_argument(
+        "--alias-file",
+        type=Path,
+        default=None,
+        help="JSON file of domain aliases, shape "
+        '{"primary.com": ["alias1.com", "alias2.com"]}. '
+        "Search expands to include aliases; the filing domain canonicalizes "
+        "to primary. Default: <state-dir>/domain-aliases.json (silently "
+        "skipped if absent).",
+    )
+    p_fetch.add_argument(
+        "--max",
+        type=int,
+        default=None,
+        dest="limit",
+        metavar="N",
+        help="Stop after N new messages this run (after the store dedup), "
+        "across every year of an unfiltered run.",
+    )
+    p_fetch.add_argument(
+        "--threads",
+        type=int,
+        default=DEFAULT_THREADS,
+        help="Concurrent thread-processing workers, one IMAP connection "
+        "each (default: 4; Gmail caps simultaneous connections at ~15).",
+    )
+    p_fetch.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the plan; download nothing; write nothing.",
+    )
+    p_fetch.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="Never prompt for credentials; fail loudly if imap.json is "
+        "missing or rejected (for cron/launchd).",
+    )
+    p_fetch.set_defaults(func=_cmd_fetch)
+
+    p_report = sub.add_parser(
         "report",
-        parents=[report_cli.parser()],
-        help=help_by_verb["report"],
-        description=report_cli.parser().description,
+        description=(
+            "Read-only reports over the year-sharded manifest (no IMAP). With "
+            "no flag, prints a one-screen summary; otherwise one record per line."
+        ),
     )
-    sub.add_parser(
+    view = p_report.add_mutually_exclusive_group()
+    view.add_argument(
+        "--senders",
+        action="store_true",
+        help="Every From address with its message count, descending "
+        "(tab-separated `count<TAB>address`).",
+    )
+    view.add_argument(
+        "--addresses",
+        action="store_true",
+        help="Every distinct address seen in From or To, sorted.",
+    )
+    view.add_argument(
+        "--bucket",
+        metavar="NAME",
+        help="Every message ANY store holds that this bucket claims (travel, "
+        "shopping), grouped by store. A view, not a location: mail owned by a "
+        "mailbox stays in that mailbox's store. Ignores --mail-account.",
+    )
+    p_report.add_argument(
+        "--mail-account",
+        default=None,
+        help="Account address; scopes the manifest store. Gmail `+tag` aliases "
+        f"are normalized. Default: ${ACCOUNT_ENV_VAR}, else the only account folder.",
+    )
+    p_report.set_defaults(func=_cmd_report)
+
+    p_ingest = sub.add_parser(
         "ingest",
-        parents=[ingest_cli.parser()],
-        help=help_by_verb["ingest"],
-        description=ingest_cli.parser().description,
+        description=(
+            "Ingest local .eml (a folder — an Outlook / Apple Mail drag-export — "
+            "or a single message) "
+            "into the year-sharded manifest + archive, for a mailbox wicket "
+            "cannot reach over IMAP. Additive: a message already archived is left "
+            "untouched, only new ones are filed, and no archived message is ever "
+            "deleted. Re-running is idempotent. With no --mail-account, each thread is "
+            "routed to the account it was addressed to and mail nobody claims is "
+            "left alone. With --staged instead of --src, files what `wicket fetch` "
+            "got into one account's staging dir. A message whose row is excluded "
+            "is skipped and counted."
+        ),
     )
-    return build
+    source = p_ingest.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        "--src",
+        type=Path,
+        help="What to ingest: a folder of .eml (flat drag-export, not recursive) "
+        "or a single .eml file.",
+    )
+    source.add_argument(
+        "--staged",
+        action="store_true",
+        help="File what `wicket fetch` got into <mail-root>/<account>/staging/ "
+        "for one account (--mail-account, $WICKET_ACCOUNT, or the only account "
+        "folder): "
+        "no routing, no account check, nothing to trash. A body the store already "
+        "archives under another name goes to <mail-root>/.duplicates/<account>/.",
+    )
+    p_ingest.add_argument(
+        "--mail-account",
+        default=None,
+        help="Send every thread to this one account, instead of routing each to "
+        "the account it was addressed to. A destination, NOT a filter: it does "
+        "not select which messages are ingested, so naming the wrong one files "
+        "the whole folder into the wrong store (refused unless --force). Omit it "
+        "to route.",
+    )
+    p_ingest.add_argument(
+        "--source",
+        default="local",
+        choices=["local"],
+        help="Export profile (only 'local' today: RFC822 .eml on disk).",
+    )
+    p_ingest.add_argument(
+        "--domain",
+        default=None,
+        help="File every newly-added message under this one domain folder "
+        "(<domain>/YYYY-MM/), overriding the self, sent and counterparty rules. "
+        "A destination, NOT a filter: it does not select which messages are "
+        "ingested; with --staged it applies to every staged message of the "
+        "account. A bare domain like acme.com. A reply that joins an "
+        "already-archived thread still files with its thread, so this only "
+        "redirects mail that has no archived home yet.",
+    )
+    p_ingest.add_argument(
+        "--tag",
+        action="append",
+        default=[],
+        help="A tag recorded in the manifest `labels` for every newly-added "
+        "message (a flat .eml export carries no provider labels); repeatable "
+        "(--tag a --tag b). Applied only to messages filed this run; "
+        "already-archived rows are left untouched.",
+    )
+    p_ingest.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Parse and report what would be added; write nothing.",
+    )
+    p_ingest.add_argument(
+        "--force",
+        action="store_true",
+        help="Ingest even when the source is addressed to a different account "
+        "than --mail-account. Refused by default: --mail-account names the "
+        "destination store, it does not filter the source.",
+    )
+    p_ingest.add_argument(
+        "--no-delete",
+        action="store_true",
+        help="Leave the source files untouched. By default an ingested .eml is "
+        "moved to ~/.Trash once it is durably archived (filed now, or already in "
+        "the store), because the archive is the record and the source is a "
+        "volatile inbox. A message whose thread could not be routed always keeps "
+        "its file, and nothing is ever unlinked: the Trash is the undo.",
+    )
+    p_ingest.set_defaults(func=_cmd_ingest)
+
+    for verb_parser in sub.choices.values():
+        json_renderer.add_flag(verb_parser)
+    return p
 
 
-def main() -> int:
-    """Hold the parser, describe on a bare invocation, else dispatch to the resolved verb."""
+def main(argv: list[str] | None = None) -> int:
+    """Run one verb; with none, list the nouns and the verbs."""
     # Streaming output (`report`, in particular) should let a closed downstream
     # pipe (`| head`) end the process quietly via SIGPIPE rather than raising a
     # BrokenPipeError traceback.
     if hasattr(signal, "SIGPIPE"):
         signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    # The workers' progress goes through `logging`; this shows it on stderr, as printed.
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    return run(
+        parser(), argv, refusal=ApiError, error=plaintext.error, listing=_print_commands
+    )
 
-    built = parser()
-    if not sys.argv[1:]:
-        _print_commands()
-        return 0
-    args = built.parse_args()
-    return _VERBS[args.verb].dispatch(args)
+
+def output() -> list[tuple[dict[str, object], dict[str, object]]]:
+    """(params, schema) per verb, generated from each api function's return type."""
+    return [({"phase": verb}, returns(fn)) for verb, fn in sorted(api.VERBS.items())]
 
 
 def example_output() -> list[tuple[str, str, str, int]]:
@@ -235,4 +551,4 @@ def example_output() -> list[tuple[str, str, str, int]]:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
