@@ -14,9 +14,10 @@ from pathlib import Path
 import pytest
 
 import wicket.__main__ as root
-from wicket import env, manifest
+from wicket import env
 from wicket.manifest import Row, load_store, read_shard, shard_path, write_shard
 from wicket.message import local_msgid
+from wicket.provider import GMAIL, parse_staged
 from wicket.root import api as root_api
 
 ME = "you@gmail.com"
@@ -307,6 +308,7 @@ def test_fetch_refuses_a_destination_and_names_the_split(run_cli: Run) -> None:
 
 def test_staged_paths_are_got_by_the_writer_and_read_by_the_reader() -> None:
     """One home for the staged name: what fetch writes, ingest parses back."""
-    staged = manifest.parse_staged("1765/18f2@20260706T090004Z.eml")
-    assert staged is not None and staged[:2] == ("1765", "18f2")
-    assert staged[2].isoformat() == "2026-07-06T09:00:04+00:00"
+    staged = parse_staged("1765/18f2@20260706T090004Z.eml")
+    assert staged is not None and staged.provider is GMAIL
+    assert (staged.thread_id, staged.msgid) == ("1765", "18f2")
+    assert staged.internal_dt.isoformat() == "2026-07-06T09:00:04+00:00"

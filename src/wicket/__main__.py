@@ -31,7 +31,7 @@ import signal
 import sys
 from pathlib import Path
 
-from wicket.env import ACCOUNT_ENV_VAR, ALL_MAIL_MAILBOX, DEFAULT_THREADS
+from wicket.env import ACCOUNT_ENV_VAR, DEFAULT_THREADS
 from wicket.errors import ApiError
 from wicket.lib.cli import NounParser, print_commands, run
 from wicket.lib.renderer import json as json_renderer
@@ -172,7 +172,7 @@ def parser() -> argparse.ArgumentParser:
         "--mail-account",
         default=None,
         help="Account address; scopes the manifest store. "
-        "Gmail `+tag` aliases are normalized automatically. "
+        "`+tag` aliases (you+x@...) are normalized automatically. "
         f"Default: ${ACCOUNT_ENV_VAR}, else the only account folder.",
     )
     p_catalog.add_argument(
@@ -190,10 +190,11 @@ def parser() -> argparse.ArgumentParser:
     )
     p_catalog.add_argument(
         "--mailbox",
-        default=ALL_MAIL_MAILBOX,
-        help='IMAP mailbox to sweep (default: "[Gmail]/All Mail"). '
-        "Sweeping any other mailbox into the default store dir would "
-        "make shards lie about what exists, pass --store-dir too.",
+        default=None,
+        help="IMAP mailbox to sweep (default: the provider's all-mail folder, "
+        'Gmail\'s "[Gmail]/All Mail"; Fastmail has none, walks every folder and '
+        "refuses --mailbox, exit 2). Sweeping any other mailbox into the default "
+        "store dir would make shards lie about what exists, pass --store-dir too.",
     )
     p_catalog.add_argument(
         "--years",
@@ -207,7 +208,7 @@ def parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_THREADS,
         help="Concurrent year workers, one IMAP connection each (default: 4; "
-        "Gmail caps simultaneous IMAP connections, stay well under ~15).",
+        "providers cap simultaneous IMAP connections; Gmail's is ~15).",
     )
     p_catalog.add_argument(
         "--dry-run",
@@ -233,13 +234,15 @@ def parser() -> argparse.ArgumentParser:
     p_fetch = sub.add_parser(
         "fetch",
         description=(
-            "Get full .eml for every matching Gmail message into the store's "
-            "staging dir (<mail-root>/<account>/staging/<thread>/<msgid>@<date>.eml). "
+            "Get full .eml for every matching message into the store's staging dir "
+            "(<mail-root>/<account>/staging/; Gmail's <thread>/<msgid>@<date>.eml, "
+            "Fastmail's under fastmail/). The provider is where the account's "
+            "imap.json links: ~/.config/gmail/ or ~/.config/fastmail/. "
             "fetch files nothing: `wicket ingest --staged` files staged mail into "
             "the archive, and until then it is not in report or the manifest's "
             "downloaded rows. With no --domains, --query or --last, gets every "
             "message not yet got and not excluded, this year, last year, then "
-            "older years oldest first, until Gmail throttles: the first throttle "
+            "older years oldest first, until the provider throttles: the first throttle "
             "writes the account's HALT and exits 2, and no IMAP connection opens "
             "past a HALT. Exits 2 when another process holds the store's lock."
         ),
@@ -249,18 +252,19 @@ def parser() -> argparse.ArgumentParser:
         "--domains",
         help='Comma-separated list, e.g. "acme.com,globex.com". '
         "Tool builds the Gmail search expression for messages from/to "
-        "any of these domains. Omit every filter to fetch everything.",
+        "any of these domains; Fastmail refuses it, exit 2. Omit every filter "
+        "to fetch everything.",
     )
     filter_group.add_argument(
         "--query",
         help="Raw Gmail search expression (escape hatch). Use this for "
-        "anything --domains can't express.",
+        "anything --domains can't express. Fastmail refuses it, exit 2.",
     )
     filter_group.add_argument(
         "--last",
         metavar="AGE",
-        help="Messages newer than AGE: N then d, m or y (2d, 3m, 1y), Gmail's "
-        "newer_than:AGE. Anything else exits 2.",
+        help="Messages newer than AGE: N then d, m or y (2d, 3m, 1y): Gmail's "
+        "newer_than:AGE, Fastmail's SINCE that date. Anything else exits 2.",
     )
     p_fetch.add_argument(
         "--target",
@@ -281,7 +285,7 @@ def parser() -> argparse.ArgumentParser:
         "--mail-account",
         default=None,
         help="Account that scopes the staging dir and the manifest store "
-        "(<mail-root>/<account>/). Gmail `+tag` aliases are normalized "
+        "(<mail-root>/<account>/). `+tag` aliases are normalized "
         "automatically. Default: $WICKET_ACCOUNT, else the only account folder.",
     )
     p_fetch.add_argument(
@@ -308,7 +312,7 @@ def parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_THREADS,
         help="Concurrent thread-processing workers, one IMAP connection "
-        "each (default: 4; Gmail caps simultaneous connections at ~15).",
+        "each (default: 4; providers cap simultaneous connections, Gmail's at ~15).",
     )
     p_fetch.add_argument(
         "--dry-run",
@@ -352,7 +356,7 @@ def parser() -> argparse.ArgumentParser:
     p_report.add_argument(
         "--mail-account",
         default=None,
-        help="Account address; scopes the manifest store. Gmail `+tag` aliases "
+        help="Account address; scopes the manifest store. `+tag` aliases "
         f"are normalized. Default: ${ACCOUNT_ENV_VAR}, else the only account folder.",
     )
     p_report.set_defaults(func=_cmd_report)
@@ -508,7 +512,7 @@ def example_output() -> list[tuple[str, str, str, int]]:
             "manifest: ~/.delphi/mail/you@example.com/manifest\n"
             "  messages               3241\n"
             "  downloaded             2987  (held locally)\n"
-            "    gone from Gmail        41  (only copy)\n"
+            "    gone from mailbox      41  (only copy)\n"
             "    still in mailbox     2946\n"
             "  observed only            254  (not held)\n"
             "  distinct senders         318\n"

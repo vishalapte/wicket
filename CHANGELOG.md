@@ -12,6 +12,18 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+## 0.8.0 - 2026-10-29
+
+### Added
+- **Breaking: `catalog` and `fetch` read Fastmail.** An account's provider is where its `imap.json` links: `~/.config/gmail/<login>/` is Gmail, `~/.config/fastmail/<login>/` is Fastmail (`imap.fastmail.com`, which must announce `OBJECTID`), and anything else, a real file included, is refused before any login. The account folder's name is the store, so a Fastmail login files into a store of another name (`accounts/vishal@enine.com/imap.json` links to `fastmail/vishalapte@fastmail.com/`). A Fastmail pass walks every folder but Trash, Spam, Scheduled, Memos, Notes and Templates; a message in two folders is one row, its `labels` both folders. `msgid` and `thread_id` are its `EMAILID` and `THREADID`; its archived file is named by a lowercase digest of the mixed-case `EMAILID`, and its staged body sits under `staging/fastmail/`. `--last` becomes `SINCE <date>`; `--domains`, `--query` and `catalog --mailbox` are refused, exit 2, until ADR 0001's compiler exists. `manifest.staged_name` and `parse_staged` move to `wicket.provider`, and `report` says "gone from mailbox".
+
+### Changed
+- **ingest's header threading lives in `wicket.message`** (`assign_threads`, `referenced_ids`, `conversation_key`), beside the message key; behaviour unchanged.
+- **Breaking: Gmail's IMAP dialect has one home, `wicket.provider`.** Its host, All Mail folder, `X-GM-*` items, `X-GM-RAW` search, id order and file name are `wicket.provider.GMAIL`'s; `auth.open_mailbox` takes a `provider`, and catalog, fetch and ingest --staged key every mailbox message with `message.mailbox_keys`. Every Gmail command, row, key and file name is byte-identical. `wicket.env.IMAP_HOST`, `IMAP_PORT`, `ALL_MAIL_MAILBOX`, `wicket.auth.APP_PASSWORDS_URL`, `wicket.message.gmail_key` and `GmailRow` are gone.
+
+### Fixed
+- **`fetch` reconciles as the account, as `ingest --staged` does, not as the login email.** No change for an account whose folder is named for its login; `ThreadContext.imap_email` is now `ThreadContext.account`.
+
 ## 0.7.0 - 2026-10-29
 
 ### Added

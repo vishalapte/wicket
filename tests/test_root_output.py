@@ -86,7 +86,7 @@ def _halt_text(path: Path) -> str:
     return (
         f"halted: {HALT_LINE}\n"
         f"HALT at {path}; clear it with `python -m wicket.halt clear --mail-account "
-        f"{path.name}` (if Gmail rejected the app password, re-seed it first)\n"
+        f"{path.name}` (if the provider rejected the app password, re-seed it first)\n"
     )
 
 
@@ -257,10 +257,10 @@ def test_catalog_progress_goes_to_stderr(tmp_path: Path) -> None:
     """
     home, mail = tmp_path / "home", tmp_path / "mail"
     (mail / ME).mkdir(parents=True)
-    (tmp_path / "creds" / ME).mkdir(parents=True)
+    (tmp_path / "gmail" / ME).mkdir(parents=True)
     (home / ".config" / "wicket" / "accounts" / ME).mkdir(parents=True)
     (home / ".config" / "wicket" / "accounts" / ME / "imap.json").symlink_to(
-        tmp_path / "creds" / ME / "imap.json"
+        tmp_path / "gmail" / ME / "imap.json"
     )
     environ = {k: v for k, v in os.environ.items() if not k.startswith("WICKET_")}
     environ.update(
@@ -745,7 +745,7 @@ def test_report_summary(mail: Path, run: Run, monkeypatch: pytest.MonkeyPatch) -
         f"manifest: {mail / ME / 'manifest'}\n"
         "  messages               3241\n"
         "  downloaded             2987  (held locally)\n"
-        "    gone from Gmail        41  (only copy)\n"
+        "    gone from mailbox      41  (only copy)\n"
         "    still in mailbox     2946\n"
         "  observed only           254  (not held)\n"
         "  excluded                  7  (duplicates not kept)\n"

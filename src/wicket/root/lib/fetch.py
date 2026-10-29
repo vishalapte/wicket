@@ -1,24 +1,26 @@
 """Get .eml for matching messages into the store's staging dir; file nothing.
 
-fetch only gets mail. Each body lands at
-``<store>/staging/<thread_id>/<msgid>@<INTERNALDATE>.eml`` (`manifest.staged_name`),
+fetch only gets mail. Each body lands at its provider's staged name under
+``<store>/staging/`` (`Provider.staged_name`; Gmail's
+``<thread_id>/<msgid>@<INTERNALDATE>.eml``),
 and ``ingest --staged`` is the separate command that files it into the archive by
 `wicket.filing`'s rules (plan rule 6). Staged mail is not in ``report`` or
 ``held_messages`` until it is filed.
 
-Two entry points. `download` is one pass over a Gmail search (the ``--domains`` /
-``--query`` filter). `download_years` gets every message in All Mail not got and
-not excluded: this year, last year, then each older year from All Mail's first,
-oldest first; each year repeats passes while the count of got messages grows,
-and the run stops at the first throttle (a rejected, timed-out or aborted command,
-a failed month, a short body), which writes the account's HALT
-(`wicket.auth.write_halt`). A pass:
+Two entry points. `download` is one pass over a provider search (``--domains``,
+``--query`` or ``--last``). `download_years` gets every message the provider's
+whole-mailbox pass walks (Gmail's All Mail; every Fastmail folder `auth.folders` walks),
+not got and not excluded: this year, last year, then each older year from the first,
+oldest first, one pass each, and the run stops at the first throttle (a rejected,
+timed-out or aborted command, a failed month, a short body), which writes the account's
+HALT (`wicket.auth.write_halt`). A pass:
 
-1. Discover (one connection): run the Gmail search; cheap ``X-GM-MSGID`` FETCH;
+1. Discover (one connection): run the search in each folder; cheap native-id FETCH
+   (a message in two folders is one, found in the first);
    drop msgids already **got** (a downloaded or excluded row's, a staged body's,
    a duplicate's under ``<mail root>/.duplicates/<store>/``); header FETCH (msgid,
    thrid, date, From/To, Message-ID, Date) for the rest.
-2. Plan: key each message by ``message.gmail_key``, so two Gmail messages sharing
+2. Plan: key each message by ``message.mailbox_key``, so two Gmail messages sharing
    a Message-ID get two rows, and give it its staged path. No domain is computed
    and no thread is dropped: a fetch gets anything not excluded. A message the
    store already holds under another name (ingest filed it: same ``id``, same send
@@ -52,9 +54,11 @@ from wicket.auth import (
     Halted,
     current_halt,
     first_year,
+    folders,
     halt_path,
     open_mailbox,
     parse_internaldate,
+    select_folder,
     throttle_halt,
     write_halt,
 )
@@ -63,22 +67,26 @@ from wicket.manifest import (
     Row,
     eml_on_disk,
     merge_settlement,
-    parse_staged,
     read_shard,
     shard_path,
     staged_files,
-    staged_name,
     store_shards,
     write_eml,
     write_shard,
 )
-from wicket.message import GmailRow, gmail_key, message_id_of, message_key, sent_date
+from wicket.message import (
+    KeyRequest,
+    MailRow,
+    mailbox_keys,
+    message_id_of,
+    message_key,
+    sent_date,
+)
+from wicket.provider import GMAIL, Provider, Search, parse_staged
 from wicket.reconcile import reconcile
 
 BATCH_SIZE = 500  # UIDs per IMAP FETCH; bounds memory + command size.
 _UID_RE = re.compile(rb"\bUID\s+(\d+)")
-_MSGID_RE = re.compile(rb"X-GM-MSGID\s+(\d+)")
-_THRID_RE = re.compile(rb"X-GM-THRID\s+(\d+)")
 _INTERNALDATE_RE = re.compile(rb'INTERNALDATE\s+"([^"]+)"')
 _SIZE_RE = re.compile(rb"RFC822\.SIZE\s+(\d+)")
 # Progress, one line per step; the CLI's `main()` shows it on stderr.
@@ -88,16 +96,11 @@ logger = logging.getLogger(__name__)
 # A message's planning headers: (msgid, thrid, internal_dt_utc, from, to,
 # message_id, sent_utc), where sent_utc is the parsed Date header or None.
 Meta = tuple[str, str, datetime, str, str, str, datetime | None]
-# A discovery record: (uid, *Meta).
-Record = tuple[bytes, str, str, datetime, str, str, str, datetime | None]
+# A discovery record: (uid, *Meta, folder): a UID means something only in its folder.
+Record = tuple[bytes, str, str, datetime, str, str, str, datetime | None, str]
 
 
 # --- IMAP plumbing -------------------------------------------------------
-
-
-def _imap_quote(value: str) -> str:
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'
 
 
 def _logout_quietly(conn: imaplib.IMAP4_SSL) -> None:
@@ -117,9 +120,9 @@ def _require_ok(typ: str, what: str) -> None:
         raise imaplib.IMAP4.error(f"{what} answered {typ}")
 
 
-def _search_uids(conn: imaplib.IMAP4_SSL, query: str) -> list[bytes]:
-    """Return UIDs matching the Gmail search expression, via X-GM-RAW."""
-    typ, data = conn.uid("SEARCH", "CHARSET", "UTF-8", "X-GM-RAW", _imap_quote(query))
+def _search_uids(conn: imaplib.IMAP4_SSL, search: Search) -> list[bytes]:
+    """Return UIDs matching ``search``, a provider's search (`provider.Search`)."""
+    typ, data = conn.uid("SEARCH", *search)
     _require_ok(typ, "UID SEARCH")
     if not data or not data[0]:
         return []
@@ -127,29 +130,31 @@ def _search_uids(conn: imaplib.IMAP4_SSL, query: str) -> list[bytes]:
     return uids
 
 
-def _fetch_msgids_batch(conn: imaplib.IMAP4_SSL, uids: list[bytes]) -> dict[bytes, str]:
-    """Cheap batched FETCH of just X-GM-MSGID. Returns ``{uid: msgid_hex}``."""
+def _fetch_msgids_batch(
+    conn: imaplib.IMAP4_SSL, uids: list[bytes], provider: Provider = GMAIL
+) -> dict[bytes, str]:
+    """Cheap batched FETCH of just the native id. Returns ``{uid: msgid}``."""
     if not uids:
         return {}
     uid_set = b",".join(uids).decode("ascii")
-    typ, data = conn.uid("FETCH", uid_set, "(X-GM-MSGID)")
-    _require_ok(typ, "UID FETCH X-GM-MSGID")
+    typ, data = conn.uid("FETCH", uid_set, f"({provider.id_item})")
+    _require_ok(typ, f"UID FETCH {provider.id_item}")
     out: dict[bytes, str] = {}
     for entry in data:
         chunk = entry if isinstance(entry, bytes) else entry[0]
         uid_match = _UID_RE.search(chunk)
-        msgid_match = _MSGID_RE.search(chunk)
-        if uid_match and msgid_match:
-            out[uid_match.group(1)] = f"{int(msgid_match.group(1)):x}"
+        msgid = provider.parse_id(chunk)
+        if uid_match and msgid:
+            out[uid_match.group(1)] = msgid
     return out
 
 
 def _fetch_plan_metadata_batch(
-    conn: imaplib.IMAP4_SSL, uids: list[bytes]
+    conn: imaplib.IMAP4_SSL, uids: list[bytes], provider: Provider = GMAIL
 ) -> dict[bytes, Meta]:
     """Batched header FETCH of msgid + thrid + date + From/To + Message-ID + Date.
 
-    Returns ``{uid: (msgid_hex, thrid, internal_dt_utc, from, to, message_id,
+    Returns ``{uid: (msgid, thrid, internal_dt_utc, from, to, message_id,
     sent_utc)}``. Headers only (no bodies); used to plan domains, month buckets,
     the key, and the send date that links a copy the store already holds.
     """
@@ -159,7 +164,7 @@ def _fetch_plan_metadata_batch(
     typ, data = conn.uid(
         "FETCH",
         uid_set,
-        "(X-GM-MSGID X-GM-THRID INTERNALDATE "
+        f"({provider.id_item} {provider.thread_item} INTERNALDATE "
         "BODY.PEEK[HEADER.FIELDS (FROM TO MESSAGE-ID DATE)])",
     )
     _require_ok(typ, "UID FETCH headers")
@@ -169,18 +174,18 @@ def _fetch_plan_metadata_batch(
             continue
         header, body = entry
         uid_match = _UID_RE.search(header)
-        msgid_match = _MSGID_RE.search(header)
-        thrid_match = _THRID_RE.search(header)
+        msgid = provider.parse_id(header)
+        thrid = provider.parse_thread(header)
         date_match = _INTERNALDATE_RE.search(header)
-        if not (uid_match and msgid_match and thrid_match and date_match):
+        if not (uid_match and msgid and thrid and date_match):
             continue
         internal_dt = parse_internaldate(date_match.group(1))
         if internal_dt is None:
             continue
         parsed = email.message_from_bytes(body, policy=email.policy.default)
         out[uid_match.group(1)] = (
-            f"{int(msgid_match.group(1)):x}",
-            thrid_match.group(1).decode("ascii"),
+            msgid,
+            thrid,
             internal_dt.astimezone(timezone.utc),
             str(parsed.get("From", "") or ""),
             str(parsed.get("To", "") or ""),
@@ -230,16 +235,21 @@ class ThreadContext:
 
     ``dest`` is the archive (reconcile checks ``downloaded`` against it, and a link
     needs its copy there); ``staging_dir`` is where bodies are written;
-    ``duplicates_dir`` holds copies set aside, which count as got.
+    ``duplicates_dir`` holds copies set aside, which count as got; ``provider`` is
+    the account's mail provider (`wicket.provider`). ``account`` is who is *you*
+    when reconcile derives a domain: the account, as ingest --staged reconciles
+    with, never the login (they differ when an account's folder is named for its
+    store).
     """
 
     dest: Path
-    imap_email: str
+    account: str
     domain_aliases: dict[str, str]
     dry_run: bool
     store_dir: Path | None = None
     staging_dir: Path | None = None
     duplicates_dir: Path | None = None
+    provider: Provider = GMAIL
 
 
 # --- Discovery + planning ------------------------------------------------
@@ -272,46 +282,67 @@ def _held(store_dir: Path | None) -> tuple[set[str], dict[str, Held]]:
     return msgids, by_id
 
 
-def _staged_msgids(staging_dir: Path | None) -> set[str]:
-    """Gmail msgids already staged, read off their paths (`manifest.parse_staged`)."""
+def _staged_msgids(staging_dir: Path | None, provider: Provider) -> set[str]:
+    """The provider's msgids already staged, read off their paths (`provider.parse_staged`)."""
     if staging_dir is None:
         return set()
     return {
-        parsed[1]
+        staged.msgid
         for _path, rel in staged_files(staging_dir)
-        if (parsed := parse_staged(rel)) is not None
+        if (staged := parse_staged(rel)) is not None and staged.provider is provider
     }
 
 
-def _duplicate_msgids(duplicates_dir: Path | None) -> set[str]:
-    """Gmail msgids set aside as duplicates: each file there is ``<msgid>.eml``."""
+def _duplicate_stems(duplicates_dir: Path | None) -> set[str]:
+    """The file stems set aside as duplicates: each file there is ``<stem>.eml``."""
     if duplicates_dir is None or not duplicates_dir.exists():
         return set()
     return {p.stem for p in duplicates_dir.rglob("*.eml") if _is_hex(p.stem)}
+
+
+@dataclass(frozen=True)
+class Got:
+    """What a run must not get again: ``msgid in got`` asks it.
+
+    A downloaded or excluded row's msgid, a staged body's, or a duplicate's, whose file
+    is named by its provider's `Provider.file_stem` (Gmail's is the msgid itself).
+    """
+
+    msgids: set[str]
+    stems: set[str]
+    provider: Provider = GMAIL
+
+    def __contains__(self, msgid: object) -> bool:
+        return isinstance(msgid, str) and (
+            msgid in self.msgids or self.provider.file_stem(msgid) in self.stems
+        )
+
+    def __len__(self) -> int:
+        return len(self.msgids | self.stems)
 
 
 def _is_hex(text: str) -> bool:
     return bool(text) and all(c in "0123456789abcdef" for c in text)
 
 
-def _got(ctx: ThreadContext) -> tuple[set[str], dict[str, Held]]:
-    """What the run must not get again, and the store's rows (see `_held`).
+def _got(ctx: ThreadContext) -> tuple[Got, dict[str, Held]]:
+    """What the run must not get again (`Got`), and the store's rows (see `_held`).
 
-    Got is a downloaded or excluded row's msgid, a staged body's, or a duplicate's:
-    staged mail has no row field (a catalog merge would drop one), so the disk says.
+    Staged mail has no row field (a catalog merge would drop one), so the disk says.
     """
     msgids, rows = _held(ctx.store_dir)
-    msgids |= _staged_msgids(ctx.staging_dir)
-    msgids |= _duplicate_msgids(ctx.duplicates_dir)
-    return msgids, rows
+    msgids |= _staged_msgids(ctx.staging_dir, ctx.provider)
+    return Got(msgids, _duplicate_stems(ctx.duplicates_dir), ctx.provider), rows
 
 
-def _discover_records(
+def _discover_records(  # pylint: disable=too-many-arguments,too-many-locals
     credentials_path: Path,
-    query: str,
-    done: set[str],
+    search: Search,
+    done: Got | set[str],
     limit: int | None,
+    *,
     conn: imaplib.IMAP4_SSL | None = None,
+    provider: Provider = GMAIL,
 ) -> tuple[list[Record], int, int]:
     """One-connection discovery into raw per-message records.
 
@@ -319,56 +350,75 @@ def _discover_records(
     whose msgid the store does not already hold or exclude, up to ``limit``,
     and how many such matches there were before ``limit`` cut them. Uses ``conn``
     when given (a no-filter run keeps one discovery connection), else opens its own
-    and logs it out.
+    and logs it out. A provider with no all-mail folder is searched folder by folder
+    (`auth.folders`), each selected read-only; a message in two folders is one match,
+    found in the first.
     """
     own = conn is None
     if conn is None:
-        conn = open_mailbox(credentials_path, interactive=False)
+        conn = open_mailbox(credentials_path, interactive=False, provider=provider)
+    walk = provider.all_mail is None
     try:
-        search_uids = _search_uids(conn, query)
-        total = len(search_uids)
-        uid_msgid: dict[bytes, str] = {}
-        for chunk in _chunked(search_uids, BATCH_SIZE):
-            uid_msgid.update(_fetch_msgids_batch(conn, chunk))
-        new_uids = [u for u, m in uid_msgid.items() if m not in done]
-        unheld = len(new_uids)
+        total = 0
+        located: dict[str, tuple[str, bytes]] = {}  # msgid -> (folder, uid)
+        for folder in folders(conn, provider):
+            if walk:
+                select_folder(conn, folder)
+            search_uids = _search_uids(conn, search)
+            total += len(search_uids)
+            for chunk in _chunked(search_uids, BATCH_SIZE):
+                for uid, msgid in _fetch_msgids_batch(conn, chunk, provider).items():
+                    if msgid in located:
+                        total -= 1  # a copy in a second folder: one message
+                    else:
+                        located[msgid] = (folder, uid)
+        new = [where for m, where in located.items() if m not in done]
+        unheld = len(new)
         if limit is not None:
-            new_uids = new_uids[:limit]
-        meta: dict[bytes, Meta] = {}
-        for chunk in _chunked(new_uids, BATCH_SIZE):
-            meta.update(_fetch_plan_metadata_batch(conn, chunk))
+            new = new[:limit]
+        meta: dict[tuple[str, bytes], Meta] = {}
+        for folder in dict.fromkeys(f for f, _uid in new):
+            if walk:
+                select_folder(conn, folder)
+            uids = [uid for f, uid in new if f == folder]
+            for chunk in _chunked(uids, BATCH_SIZE):
+                for uid, row in _fetch_plan_metadata_batch(
+                    conn, chunk, provider
+                ).items():
+                    meta[(folder, uid)] = row
     finally:
         if own:
             _logout_quietly(conn)
-    records: list[Record] = [(uid, *meta[uid]) for uid in new_uids if uid in meta]
+    records: list[Record] = [
+        (uid, *meta[(f, uid)], f) for f, uid in new if (f, uid) in meta
+    ]
     return records, total, unheld
 
 
-def _gmail_keys(
-    records: list[Record], rows: dict[str, Held], dest: Path
+def _mailbox_keys(
+    records: list[Record], rows: dict[str, Held], dest: Path, provider: Provider
 ) -> dict[str, str]:
-    """Each record's manifest key, by Gmail msgid (``message.gmail_key``).
+    """Each record's manifest key, by native msgid (``message.mailbox_key``).
 
-    Keyed in Gmail-id order (Gmail's arrival order) against a working copy of
-    the store's rows that each keying updates, so two messages with one
+    Keyed in the provider's order (Gmail's: its arrival order) against a working copy
+    of the store's rows that each keying updates, so two messages with one
     Message-ID in one run get two keys, the first to arrive keeping the bare one.
     """
-    work: dict[str, GmailRow] = {id_: row for id_, (row, _year) in rows.items()}
+    work: dict[str, MailRow] = {id_: row for id_, (row, _year) in rows.items()}
 
-    def held(row: GmailRow) -> bool:
+    def held(row: MailRow) -> bool:
         return bool(row.get("downloaded")) and eml_on_disk(row, dest)
 
-    keys: dict[str, str] = {}
-    for rec in sorted(records, key=lambda r: int(r[1], 16)):
-        msgid, message_id, sent = rec[1], rec[6], rec[7]
-        keys[msgid] = gmail_key(
-            key=message_key(message_id=message_id, provider="gmail", native_id=msgid),
-            gmail_id=msgid,
-            sent=sent,
-            rows=work,
-            held=held,
+    requests = [
+        KeyRequest(
+            message_key(message_id=r[6], provider=provider.name, native_id=r[1]),
+            r[1],
+            r[3].isoformat(),
+            r[7],
         )
-    return keys
+        for r in records
+    ]
+    return mailbox_keys(requests, provider=provider, rows=work, held=held)
 
 
 def _plan(
@@ -385,9 +435,9 @@ def _plan(
     """
     if rows is None:
         rows = _held(ctx.store_dir)[1]
-    keys = _gmail_keys(records, rows, ctx.dest)
+    keys = _mailbox_keys(records, rows, ctx.dest, ctx.provider)
     pending: list[Row] = []
-    for uid, msgid, thrid, dt, _from, _to, _message_id, _sent in sorted(
+    for uid, msgid, thrid, dt, _from, _to, _message_id, _sent, folder in sorted(
         records, key=lambda r: r[3]
     ):
         id_ = keys[msgid]
@@ -396,13 +446,14 @@ def _plan(
             continue
         entry: Row = {
             "uid": uid,
+            "folder": folder,
             "month": dt.strftime("%Y-%m"),
             "year": dt.year,
             "id": id_,
             "msgid": msgid,
             "thread_id": thrid,
             "date": dt.isoformat(),
-            "path": staged_name(thrid, msgid, dt),
+            "path": ctx.provider.staged_name(thrid, msgid, dt),
         }
         if held is not None:
             entry["shard_year"] = held[1]
@@ -415,7 +466,7 @@ def _split_linked(
 ) -> tuple[list[Row], list[Row]]:
     """Split planned entries into (to_settle, linked).
 
-    ``gmail_key`` keys a message to a row carrying another msgid only when that
+    ``mailbox_key`` keys a message to a row carrying another msgid only when that
     row is the copy ingest filed (no Gmail id, file on disk, same send time), so
     such an entry is a link: its msgid is recorded on that row and nothing is
     downloaded. Every other entry is downloaded into staging.
@@ -471,20 +522,27 @@ def _write_month(
     ctx: ThreadContext,
     credentials_path: Path,
 ) -> _Month:
-    """Fetch a month's pending bodies in one batched FETCH and stage each .eml.
+    """Fetch a month's pending bodies, one batched FETCH per folder, and stage each .eml.
 
-    A month of automated mail is ~100-200 messages, so the whole month is one
-    BODY.PEEK[] round-trip. A body that is empty or shorter than its RFC822.SIZE is
+    A month of automated mail is ~100-200 messages, so a month of one folder is one
+    BODY.PEEK[] round-trip; a provider with no all-mail folder selects each folder
+    (read-only) first. A body that is empty or shorter than its RFC822.SIZE is
     never written (a staged ``.eml`` is filed as it is, so a truncated one would be
     archived truncated) and writes a HALT. A message the response omits has
     left the mailbox since discovery and is simply not written.
     """
     staging = cast(Path, ctx.staging_dir)  # `_prepare` refused a run without one
-    bodies = _fetch_bodies_batch(conn, [cast(bytes, e["uid"]) for e in pending])
+    bodies: dict[tuple[str, bytes], tuple[int | None, bytes]] = {}
+    for folder in dict.fromkeys(str(e["folder"]) for e in pending):
+        if ctx.provider.all_mail is None:
+            select_folder(conn, folder)
+        uids = [cast(bytes, e["uid"]) for e in pending if e["folder"] == folder]
+        for uid, body in _fetch_bodies_batch(conn, uids).items():
+            bodies[(folder, uid)] = body
     written: list[Row] = []
     short = 0
     for entry in pending:
-        got = bodies.get(cast(bytes, entry["uid"]))
+        got = bodies.get((str(entry["folder"]), cast(bytes, entry["uid"])))
         if got is None:
             continue
         size, raw = got
@@ -521,7 +579,7 @@ def _month_worker(
     """
     conn: imaplib.IMAP4_SSL | None = None
     try:
-        conn = open_mailbox(credentials_path, interactive=False)
+        conn = open_mailbox(credentials_path, interactive=False, provider=ctx.provider)
     except Halted:
         pass
     except AuthError as exc:
@@ -630,7 +688,7 @@ def _counts() -> dict[str, int]:
 def _pass(
     *,
     conn: imaplib.IMAP4_SSL | None,
-    query: str,
+    search: Search,
     ctx: ThreadContext,
     credentials_path: Path,
     limit: int | None,
@@ -647,7 +705,7 @@ def _pass(
     done, rows = _got(ctx)
     try:
         records, total, unheld = _discover_records(
-            credentials_path, query, done, limit, conn
+            credentials_path, search, done, limit, conn=conn, provider=ctx.provider
         )
     except Halted as refused:
         return counts, refused
@@ -723,18 +781,18 @@ def _prepare(ctx: ThreadContext) -> None:
         raise ValueError("fetch needs a staging dir to write into")
     ctx.dest.mkdir(parents=True, exist_ok=True)
     if ctx.store_dir is not None and not ctx.dry_run:
-        reconcile(ctx.store_dir, ctx.dest, ctx.imap_email, ctx.domain_aliases)
+        reconcile(ctx.store_dir, ctx.dest, ctx.account, ctx.domain_aliases)
 
 
 def download(
     *,
-    query: str,
+    search: Search,
     ctx: ThreadContext,
     credentials_path: Path,
     limit: int | None,
     threads: int = DEFAULT_THREADS,
 ) -> dict[str, object]:
-    """Run one fetch pass over ``query`` (the ``--domains`` / ``--query`` filter).
+    """Run one fetch pass over ``search`` (``--domains``, ``--query`` or ``--last``).
 
     Credential prompting is the CLI layer's concern; everything here runs strictly
     non-interactive. A throttle in the pass writes the HALT and returns
@@ -743,7 +801,7 @@ def download(
     _prepare(ctx)
     counts, halt = _pass(
         conn=None,
-        query=query,
+        search=search,
         ctx=ctx,
         credentials_path=credentials_path,
         limit=limit,
@@ -795,10 +853,6 @@ def _year_order(first: int, this_year: int) -> list[int]:
     return recent + list(range(first, this_year - 1))
 
 
-def _year_query(year: int) -> str:
-    return f"after:{year}/01/01 before:{year + 1}/01/01"
-
-
 def _got_count(ctx: ThreadContext) -> int:
     """How many Gmail messages are got (`_got`), recorded after each year's pass.
 
@@ -829,7 +883,7 @@ def _year(job: _YearJob, year: int, run: _Run) -> Halted | None:
         return current_halt(cp)
     counts, halt = _pass(
         conn=job.conn,
-        query=_year_query(year),
+        search=job.ctx.provider.year_search(year),
         ctx=job.ctx,
         credentials_path=cp,
         limit=run.budget,
@@ -866,13 +920,13 @@ def download_years(
     _prepare(ctx)
     run = _Run(totals=_counts(), passes=[], budget=limit)
     try:
-        conn = open_mailbox(credentials_path, interactive=False)
+        conn = open_mailbox(credentials_path, interactive=False, provider=ctx.provider)
     except Halted as refused:
         return _result(run.totals, run.passes, refused)
     halt: Halted | None = None
     try:
         try:
-            first = first_year(conn)
+            first = first_year(conn, ctx.provider)
         except IMAP_FAILURES as exc:
             first, halt = None, throttle_halt(credentials_path, "first year", exc)
         years = [] if first is None else _year_order(first, hooks.this_year())

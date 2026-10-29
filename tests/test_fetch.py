@@ -11,6 +11,7 @@ import pytest
 import wicket.root.lib.fetch as fetch_lib
 from wicket.filing import build_domain_query, compute_domain
 from wicket.manifest import Row, read_shard, shard_path, write_shard
+from wicket.provider import GMAIL
 from wicket.root.lib.fetch import (
     ThreadContext,
     _held,
@@ -76,14 +77,14 @@ def _rec(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     to: str,
     mid: str,
     sent: datetime | None = None,
-) -> tuple[bytes, str, str, datetime, str, str, str, datetime | None]:
-    return (uid, msgid, thr, dt, frm, to, mid, sent)
+) -> tuple[bytes, str, str, datetime, str, str, str, datetime | None, str]:
+    return (uid, msgid, thr, dt, frm, to, mid, sent, GMAIL.all_mail or "")
 
 
 def test_plan_stages_every_message_and_computes_no_domain(tmp_path: Path) -> None:
     """Plan rule 6: fetch files nothing, so a thread no rule resolves is still got."""
     ctx = ThreadContext(
-        dest=tmp_path, imap_email=ME, domain_aliases={}, dry_run=False, store_dir=None
+        dest=tmp_path, account=ME, domain_aliases={}, dry_run=False, store_dir=None
     )
     dt = datetime(2024, 3, 1, 9, 30, tzinfo=timezone.utc)
     records = [
@@ -107,7 +108,7 @@ def test_download_stages_the_body_and_writes_no_row(
     dt = datetime(2024, 3, 1, 9, 30, tzinfo=timezone.utc)
     rec = _rec(b"1", "18f2", "77", dt, "billing@acme.com", ME, "<a@acme>", dt)
 
-    def discover(*_args: object) -> tuple[list[object], int, int]:
+    def discover(*_args: object, **_kw: object) -> tuple[list[object], int, int]:
         return [rec], 1, 1
 
     def retrieve(**kw: object) -> tuple[list[Row], int, None]:
@@ -124,13 +125,18 @@ def test_download_stages_the_body_and_writes_no_row(
     store = tmp_path / "manifest"
     ctx = ThreadContext(
         dest=tmp_path / "archive",
-        imap_email=ME,
+        account=ME,
         domain_aliases={},
         dry_run=False,
         store_dir=store,
         staging_dir=tmp_path / "staging",
     )
-    stats = download(query="q", ctx=ctx, credentials_path=tmp_path / "c", limit=None)
+    stats = download(
+        search=GMAIL.raw_search("q"),
+        ctx=ctx,
+        credentials_path=tmp_path / "c",
+        limit=None,
+    )
     assert stats["downloaded"] == 1
     assert (tmp_path / "staging" / "77" / "18f2@20240301T093000Z.eml").exists()
     assert not list((tmp_path / "archive").rglob("*.eml"))
@@ -155,21 +161,27 @@ def test_got_is_staged_filed_excluded_and_duplicate(tmp_path: Path) -> None:
     (dups / "acme.com" / "2024-03" / "e5.eml").write_bytes(b"x")
     ctx = ThreadContext(
         dest=tmp_path / "archive",
-        imap_email=ME,
+        account=ME,
         domain_aliases={},
         dry_run=True,
         store_dir=store,
         staging_dir=staging,
         duplicates_dir=dups,
     )
-    assert fetch_lib._got(ctx)[0] == {"a1", "b2", "d4", "e5"}
+    got = fetch_lib._got(ctx)[0]
+    assert len(got) == 4 and all(m in got for m in ("a1", "b2", "d4", "e5"))
     assert fetch_lib._got_count(ctx) == 4
 
 
 def test_a_real_run_needs_a_staging_dir(tmp_path: Path) -> None:
-    ctx = ThreadContext(dest=tmp_path, imap_email=ME, domain_aliases={}, dry_run=False)
+    ctx = ThreadContext(dest=tmp_path, account=ME, domain_aliases={}, dry_run=False)
     with pytest.raises(ValueError, match="staging dir"):
-        download(query="q", ctx=ctx, credentials_path=tmp_path / "c", limit=None)
+        download(
+            search=GMAIL.raw_search("q"),
+            ctx=ctx,
+            credentials_path=tmp_path / "c",
+            limit=None,
+        )
 
 
 # --- Linking a copy ingest already filed ---------------------------------
@@ -200,7 +212,7 @@ def _ingested_store(tmp_path: Path, *, date: datetime = SENT) -> tuple[Path, Pat
 def _gmail_copy(dest: Path, store: Path, sent: datetime | None = SENT) -> list[Row]:
     """The same message as fetch plans it from Gmail (INTERNALDATE a few s later)."""
     ctx = ThreadContext(
-        dest=dest, imap_email=ME, domain_aliases={}, dry_run=True, store_dir=store
+        dest=dest, account=ME, domain_aliases={}, dry_run=True, store_dir=store
     )
     internal = datetime(2024, 3, 1, 9, 0, 4, tzinfo=timezone.utc)
     rec = _rec(
@@ -283,7 +295,7 @@ def test_download_links_instead_of_duplicating(
         SENT,
     )
 
-    def discover(*_args: object) -> tuple[list[object], int, int]:
+    def discover(*_args: object, **_kw: object) -> tuple[list[object], int, int]:
         return [rec], 1, 1
 
     def no_retrieve(**_kwargs: object) -> None:
@@ -293,13 +305,18 @@ def test_download_links_instead_of_duplicating(
     monkeypatch.setattr(fetch_lib, "_retrieve_months", no_retrieve)
     ctx = ThreadContext(
         dest=dest,
-        imap_email=ME,
+        account=ME,
         domain_aliases={},
         dry_run=False,
         store_dir=store,
         staging_dir=tmp_path / "staging",
     )
-    stats = download(query="q", ctx=ctx, credentials_path=tmp_path / "c", limit=None)
+    stats = download(
+        search=GMAIL.raw_search("q"),
+        ctx=ctx,
+        credentials_path=tmp_path / "c",
+        limit=None,
+    )
     assert stats["linked"] == 1 and stats["downloaded"] == 0
     assert sorted(p.name for p in dest.rglob("*.eml")) == ["068d2a33a1af5856.eml"]
     row = read_shard(shard_path(store, 2024))["a@acme"]
@@ -312,13 +329,15 @@ def test_got_counts_every_got_match_when_max_caps_the_rest(
 ) -> None:
     """10 matches, 7 not got, --max 2: got is 3, not 10 - 2."""
 
-    def discover(*_args: object) -> tuple[list[object], int, int]:
+    def discover(*_args: object, **_kw: object) -> tuple[list[object], int, int]:
         return [], 10, 7
 
     monkeypatch.setattr(fetch_lib, "_discover_records", discover)
-    ctx = ThreadContext(dest=tmp_path, imap_email=ME, domain_aliases={}, dry_run=True)
+    ctx = ThreadContext(dest=tmp_path, account=ME, domain_aliases={}, dry_run=True)
     caplog.set_level(logging.INFO)
-    stats = download(query="q", ctx=ctx, credentials_path=tmp_path / "c", limit=2)
+    stats = download(
+        search=GMAIL.raw_search("q"), ctx=ctx, credentials_path=tmp_path / "c", limit=2
+    )
     assert (stats["got"], stats["candidates"]) == (3, 2)
     assert "3 got, 2 to fetch (5 beyond --max)" in caplog.text
 
@@ -331,7 +350,7 @@ MAR = datetime(2024, 3, 1, 9, 0, tzinfo=timezone.utc)
 def _ctx(dest: Path, store: Path | None) -> ThreadContext:
     return ThreadContext(
         dest=dest,
-        imap_email=ME,
+        account=ME,
         domain_aliases={},
         dry_run=False,
         store_dir=store,
@@ -340,7 +359,7 @@ def _ctx(dest: Path, store: Path | None) -> ThreadContext:
 
 
 def _two_reusing_one_message_id() -> (
-    list[tuple[bytes, str, str, datetime, str, str, str, datetime | None]]
+    list[tuple[bytes, str, str, datetime, str, str, str, datetime | None, str]]
 ):
     """Two distinct Gmail messages a sender gave one Message-ID (as BA did in 2011)."""
     later = datetime(2024, 3, 2, 9, 0, tzinfo=timezone.utc)

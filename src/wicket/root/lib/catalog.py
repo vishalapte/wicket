@@ -1,10 +1,11 @@
 """Mailbox inventory sweep — worker logic, headers only.
 
-For every message in the mailbox (optionally restricted to INTERNALDATE
-years), fetch X-GM-MSGID, X-GM-THRID, RFC822.SIZE, INTERNALDATE,
-X-GM-LABELS, and the ``From:``, ``To:``, ``Subject:``, ``Message-ID:`` and
-``Date:`` headers — never bodies — and write one JSON Lines row per message,
-sharded by INTERNALDATE year (UTC):
+For every message in the mailbox (optionally restricted to INTERNALDATE years), fetch
+the provider's native id and thread (Gmail's X-GM-MSGID and X-GM-THRID, Fastmail's
+EMAILID and THREADID), RFC822.SIZE, INTERNALDATE, the labels (Gmail's X-GM-LABELS; on
+Fastmail the folders holding it), and the ``From:``, ``To:``, ``Subject:``,
+``Message-ID:`` and ``Date:`` headers — never bodies — and write one JSON Lines row per
+message, sharded by INTERNALDATE year (UTC):
 
     <inventory-dir>/<YYYY>.jsonl
 
@@ -20,7 +21,7 @@ Row shape (one JSON object per line, ADR 0002 unified schema)::
 ``subject`` is RFC 2047-decoded to plain Unicode ('' when absent). ``id`` is
 the provider-neutral key (normalized Message-ID, else ``gmail:<msgid>``)
 shared with the archive manifest so the two faces join; a second Gmail message
-with the same Message-ID is keyed ``<key>|gmail:<msgid>`` (``message.gmail_key``).
+with the same Message-ID is keyed ``<key>|gmail:<msgid>`` (``message.mailbox_key``).
 The workers only observe: the main thread keys every observation against the
 whole store, then merges each into the year shard its row already lives in. These are the
 observation-owned fields; the archive manifest owns the settlement fields
@@ -55,8 +56,10 @@ from typing import Iterator, cast
 from wicket.auth import (
     IMAP_FAILURES,
     first_year,
+    folders,
     open_mailbox,
     parse_internaldate,
+    select_folder,
     throttle_halt,
 )
 from wicket.env import DEFAULT_THREADS
@@ -69,12 +72,17 @@ from wicket.manifest import (
     store_shards,
     write_shard,
 )
-from wicket.message import GmailRow, gmail_key, message_id_of, message_key, sent_date
+from wicket.message import (
+    KeyRequest,
+    MailRow,
+    mailbox_keys,
+    message_id_of,
+    message_key,
+    sent_date,
+)
+from wicket.provider import GMAIL, Provider
 
 BATCH_SIZE = 1000  # UIDs per IMAP FETCH; headers only, so larger than archive's.
-_UID_RE = re.compile(rb"\bUID\s+(\d+)")
-_MSGID_RE = re.compile(rb"X-GM-MSGID\s+(\d+)")
-_THRID_RE = re.compile(rb"X-GM-THRID\s+(\d+)")
 _SIZE_RE = re.compile(rb"RFC822\.SIZE\s+(\d+)")
 _INTERNALDATE_RE = re.compile(rb'INTERNALDATE\s+"([^"]+)"')
 _HEADER_LITERAL_MARKER = b"BODY[HEADER.FIELDS (FROM TO SUBJECT MESSAGE-ID DATE)]"
@@ -144,17 +152,18 @@ def _tokenize_labels(inner: bytes) -> list[str]:
     return labels
 
 
-def _parse_labels(meta: bytes) -> list[str] | None:
-    """Extract the label list from FETCH metadata bytes.
+def _parse_labels(meta: bytes, item: str) -> list[str] | None:
+    """Extract the label list (FETCH item ``item``) from FETCH metadata bytes.
 
     Returns None when the list cannot be recovered (e.g. a label was
     transmitted as an IMAP literal, which splits the response): the row
     then records ``labels: null`` — an honest gap, never a guess.
     """
-    start = meta.find(b"X-GM-LABELS (")
+    opening = f"{item} (".encode("ascii")
+    start = meta.find(opening)
     if start == -1:
         return None
-    i = start + len(b"X-GM-LABELS (")
+    i = start + len(opening)
     depth = 1
     in_quote = False
     escaped = False
@@ -208,41 +217,52 @@ def _parse_header_block(
     return from_addr.strip().lower(), to_addrs, subject, message_id, sent
 
 
-def _finalize_record(meta: bytes, header_block: bytes) -> dict[str, object] | None:
+def _finalize_record(
+    meta: bytes, header_block: bytes, provider: Provider = GMAIL
+) -> dict[str, object] | None:
     """Turn accumulated FETCH bytes for one message into an inventory row.
 
     ``id`` is the message's ``message_key``; the planning-only ``_sent`` (its
-    Date) lets the main thread key it with ``gmail_key`` and is never stored.
+    Date) lets the main thread key it with ``mailbox_key`` and is never stored.
     """
-    msgid_match = _MSGID_RE.search(meta)
-    thrid_match = _THRID_RE.search(meta)
+    msgid = provider.parse_id(meta)
+    thread_id = provider.parse_thread(meta)
     size_match = _SIZE_RE.search(meta)
     date_match = _INTERNALDATE_RE.search(meta)
-    if not (msgid_match and thrid_match and size_match and date_match):
+    if not (msgid and thread_id and size_match and date_match):
         return None
     internal_dt = parse_internaldate(date_match.group(1))
     if internal_dt is None:
         return None
     from_addr, to_addrs, subject, message_id, sent = _parse_header_block(header_block)
-    gmail_msgid = f"{int(msgid_match.group(1)):x}"
+    labels_item = provider.labels_item
     return {
         "id": message_key(
-            message_id=message_id, provider="gmail", native_id=gmail_msgid
+            message_id=message_id, provider=provider.name, native_id=msgid
         ),
-        "msgid": gmail_msgid,
-        "thread_id": thrid_match.group(1).decode("ascii"),
+        "msgid": msgid,
+        "thread_id": thread_id,
         "date": internal_dt.astimezone(timezone.utc).isoformat(),
         "size": int(size_match.group(1)),
         "from": from_addr,
         "to": to_addrs,
         "subject": subject,
-        "labels": _parse_labels(meta),
+        "labels": _parse_labels(meta, labels_item) if labels_item else None,
         "_sent": sent,
     }
 
 
+def _fetch_items(provider: Provider) -> str:
+    """The header-only FETCH items: native id, thread, size, date, labels, headers."""
+    labels = f" {provider.labels_item}" if provider.labels_item else ""
+    return (
+        f"({provider.id_item} {provider.thread_item} RFC822.SIZE INTERNALDATE"
+        f"{labels} BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT MESSAGE-ID DATE)])"
+    )
+
+
 def _fetch_rows_batch(
-    conn: imaplib.IMAP4_SSL, uids: list[bytes]
+    conn: imaplib.IMAP4_SSL, uids: list[bytes], provider: Provider = GMAIL
 ) -> tuple[list[dict[str, object]], int]:
     """Batched header-only FETCH. Returns ``(rows, parse_skips)``.
 
@@ -256,10 +276,7 @@ def _fetch_rows_batch(
     if not uids:
         return [], 0
     typ, data = conn.uid(
-        "FETCH",
-        b",".join(uids).decode("ascii"),
-        "(X-GM-MSGID X-GM-THRID RFC822.SIZE INTERNALDATE X-GM-LABELS "
-        "BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT MESSAGE-ID DATE)])",
+        "FETCH", b",".join(uids).decode("ascii"), _fetch_items(provider)
     )
     if typ != "OK":
         raise imaplib.IMAP4.error(f"UID FETCH headers answered {typ}")
@@ -275,7 +292,7 @@ def _fetch_rows_batch(
         elif isinstance(item, bytes):
             meta += item
             if item.endswith(b")"):
-                row = _finalize_record(bytes(meta), header_block)
+                row = _finalize_record(bytes(meta), header_block, provider)
                 if row is None:
                     skips += 1
                 else:
@@ -298,8 +315,9 @@ def _logout_quietly(conn: imaplib.IMAP4_SSL) -> None:
 def _sweep_year(
     *,
     credentials_path: Path,
-    mailbox: str,
+    mailbox: str | None,
     year: int,
+    provider: Provider = GMAIL,
 ) -> tuple[list[dict[str, object]], dict[str, int]]:
     """Sweep one year on its own IMAP connection; return its rows and stats.
 
@@ -307,29 +325,45 @@ def _sweep_year(
     widened search window (see `_search_year_uids`) means boundary
     messages surface in two adjacent workers, and this filter is what
     guarantees each lands in exactly one worker. Writes nothing: the main
-    thread keys and merges every year's rows (`_merge_observed`).
+    thread keys and merges every year's rows (`_merge_observed`). A provider with no
+    all-mail folder is swept folder by folder (`auth.folders`), each selected
+    read-only; a message in two folders is one row whose labels are both folders, and
+    the year is complete only when every folder was swept.
 
     Opening the connection is the worker's stop check: `open_mailbox` refuses with
     `Halted` once any HALT is in force. A command that is rejected, times out or
     aborts writes a HALT and raises `Halted`, so no later year opens.
     """
-    conn = open_mailbox(credentials_path, interactive=False, mailbox=mailbox)
+    conn = open_mailbox(
+        credentials_path, interactive=False, provider=provider, mailbox=mailbox
+    )
     rows_for_year: list[dict[str, object]] = []
+    by_msgid: dict[str, dict[str, object]] = {}
     parse_skips = 0
     label_misses = 0
     boundary_drops = 0
+    walk = provider.all_mail is None
     try:
-        uids = _search_year_uids(conn, year)
-        for chunk in _chunked(uids, BATCH_SIZE):
-            rows, skips = _fetch_rows_batch(conn, chunk)
-            parse_skips += skips
-            for row in rows:
-                if datetime.fromisoformat(str(row["date"])).year != year:
-                    boundary_drops += 1
-                    continue
-                if row["labels"] is None:
-                    label_misses += 1
-                rows_for_year.append(row)
+        for folder in folders(conn, provider) if walk else [mailbox or ""]:
+            if walk:
+                select_folder(conn, folder)
+            for chunk in _chunked(_search_year_uids(conn, year), BATCH_SIZE):
+                rows, skips = _fetch_rows_batch(conn, chunk, provider)
+                parse_skips += skips
+                for row in rows:
+                    if datetime.fromisoformat(str(row["date"])).year != year:
+                        boundary_drops += 1
+                        continue
+                    if walk:  # its labels are the folders holding it
+                        row["labels"] = [folder]
+                    seen = by_msgid.get(str(row["msgid"]))
+                    if seen is not None:  # one message in a second folder
+                        seen["labels"] = sorted({*seen["labels"], folder})  # type: ignore[misc]
+                        continue
+                    if row["labels"] is None:
+                        label_misses += 1
+                    by_msgid[str(row["msgid"])] = row
+                    rows_for_year.append(row)
     except IMAP_FAILURES as exc:
         raise throttle_halt(credentials_path, f"catalog {year}", exc) from exc
     finally:
@@ -342,17 +376,18 @@ def _sweep_year(
     }
 
 
-def _merge_observed(
+def _merge_observed(  # pylint: disable=too-many-arguments
     *,
     store_dir: Path,
     archive_dir: Path | None,
     observed: list[dict[str, object]],
     swept: set[int],
     dry_run: bool,
+    provider: Provider = GMAIL,
 ) -> int:
     """Key every observed row against the whole store, then merge and write.
 
-    Rows are keyed in Gmail-id order with ``gmail_key``, so a message already
+    Rows are keyed in the provider's order with ``mailbox_key``, so a message already
     recorded keeps its row and a second message sharing its Message-ID gets its
     own. Each row merges into the shard its key already lives in, else its own
     INTERNALDATE year. A swept year's shard merges as a complete catalog (absence
@@ -363,31 +398,33 @@ def _merge_observed(
     prior: dict[int, Shard] = {
         int(p.stem): read_shard(p) for p in store_shards(store_dir) if p.stem.isdigit()
     }
-    rows: dict[str, GmailRow] = {}
+    rows: dict[str, MailRow] = {}
     year_of: dict[str, int] = {}
     for year in sorted(prior):  # a later shard wins an id seen twice
         for id_, row in prior[year].items():
             rows[id_] = row
             year_of[id_] = year
 
-    def held(row: GmailRow) -> bool:
+    def held(row: MailRow) -> bool:
         return (
             bool(row.get("downloaded"))
             and archive_dir is not None
             and eml_on_disk(row, archive_dir)
         )
 
-    by_year: dict[int, Shard] = {}
-    for row in sorted(observed, key=lambda r: int(str(r["msgid"]), 16)):
-        sent = cast(datetime | None, row.pop("_sent", None))
-        key = gmail_key(
-            key=str(row["id"]),
-            gmail_id=str(row["msgid"]),
-            sent=sent,
-            rows=rows,
-            held=held,
+    requests = [
+        KeyRequest(
+            str(row["id"]),
+            str(row["msgid"]),
+            str(row["date"]),
+            cast(datetime | None, row.pop("_sent", None)),
         )
-        row["id"] = key
+        for row in observed
+    ]
+    keys = mailbox_keys(requests, provider=provider, rows=rows, held=held)
+    by_year: dict[int, Shard] = {}
+    for row in observed:
+        key = row["id"] = keys[str(row["msgid"])]
         year = year_of.get(key, datetime.fromisoformat(str(row["date"])).year)
         by_year.setdefault(year, {})[key] = row
 
@@ -417,11 +454,12 @@ def sweep(  # pylint: disable=too-many-arguments
     *,
     store_dir: Path,
     credentials_path: Path,
-    mailbox: str,
+    mailbox: str | None,
     years: list[int] | None,
     dry_run: bool,
     threads: int = DEFAULT_THREADS,
     archive_dir: Path | None = None,
+    provider: Provider = GMAIL,
 ) -> dict[str, int]:
     """Run one inventory sweep, one worker (and IMAP connection) per year.
 
@@ -441,14 +479,17 @@ def sweep(  # pylint: disable=too-many-arguments
     the year range from the oldest message's UTC year through the current
     UTC year (stale-shard removal outside that range is not yet implemented).
     ``archive_dir`` lets keying tell a held ingest row (its ``.eml`` on disk),
-    which a Gmail copy links to; without it no row counts as held.
+    which a mailbox copy links to; without it no row counts as held. ``mailbox`` None
+    is the provider's all-mail folder.
     """
     if years:
         targets = sorted(set(years))
     else:
-        conn = open_mailbox(credentials_path, interactive=False, mailbox=mailbox)
+        conn = open_mailbox(
+            credentials_path, interactive=False, provider=provider, mailbox=mailbox
+        )
         try:
-            first = first_year(conn)
+            first = first_year(conn, provider)
         except IMAP_FAILURES as exc:
             raise throttle_halt(credentials_path, "catalog first year", exc) from exc
         finally:
@@ -485,6 +526,7 @@ def sweep(  # pylint: disable=too-many-arguments
                 credentials_path=credentials_path,
                 mailbox=mailbox,
                 year=year,
+                provider=provider,
             ): year
             for year in targets
         }
@@ -505,6 +547,7 @@ def sweep(  # pylint: disable=too-many-arguments
         observed=observed,
         swept=swept,
         dry_run=dry_run,
+        provider=provider,
     )
     if failure is not None:
         raise failure

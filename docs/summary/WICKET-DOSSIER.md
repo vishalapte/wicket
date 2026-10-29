@@ -6,12 +6,11 @@ generator:
 target:
   repo: wicket
   date: 2026-09-04
-  version: "0.7.0"
+  version: "0.8.0"
 bundle:
   - WICKET.md
   - WICKET-DOSSIER.md
 external_paths:
-  - provider.py                          # Phase 2; the MailProvider seam does not exist yet
   - imap.json                            # the credential file, outside the tree under the state dir
   - myaccount.google.com/apppasswords    # where a Gmail app password is minted
 
@@ -302,14 +301,15 @@ It was lifted out of `factotum` (a personal kitchen-sink repo) because more than
 | `wicket/reconcile.py` | The offline `downloaded`/`domain` reconcile. |
 | `wicket/domains.py` | Subdomain folding and counterparty routing — the two domain maps. |
 | `wicket/manifest.py` | The year-sharded store: read, write, and merge shards, deterministically. |
-| `wicket/message.py` | The provider-neutral `message_key` and field ownership. |
+| `wicket/message.py` | The provider-neutral `message_key`, the per-mailbox `mailbox_key`, field ownership, and a local export's header threads. |
+| `wicket/provider.py` | Each mail provider's host, folder, FETCH items, search, id order and file name (`GMAIL`). |
 | `wicket/auth.py` | IMAP login and read-only `SELECT`; app-password load/prompt. |
 
 Each root verb runs `root/lib/<verb>.py` (the worker) → `root/api.py` (orchestration and its request function) → the root `__main__.py` (the CLI face, one `_cmd_<verb>`).
 
 ### §1.3 Vendors
 
-None, in the paid sense. wicket has **zero runtime dependencies** (`dependencies = []` in `pyproject.toml`) and speaks to Google's IMAP endpoint (`imap.gmail.com:993`) with an app password over stdlib `imaplib`. No SaaS, no cloud platform, no billing relationship, no provider cloud project. Fastmail is a planned second provider (ADR 0001), not a current one.
+None, in the paid sense. wicket has **zero runtime dependencies** (`dependencies = []` in `pyproject.toml`) and speaks to Gmail's (`imap.gmail.com:993`) or Fastmail's (`imap.fastmail.com:993`) IMAP endpoint with an app password over stdlib `imaplib`, the provider chosen by where an account's `imap.json` links. No SaaS, no cloud platform, no billing relationship, no provider cloud project.
 
 Sibling local packages: factotum and meridian are *consumers* of wicket, not dependencies of it. delphi reads wicket's manifest as a data contract and never `import`s wicket (`docs/adr/ADR-MAIL.md`).
 
@@ -386,7 +386,7 @@ The load-bearing detail:
 ### §2.5 Internal contracts
 
 - **The manifest row** (`wicket.manifest.Row`). Producer: `catalog` (observation), `ingest` (settlement, and observation for a message catalog never saw); `fetch` writes only a link (a Gmail msgid onto a row ingest filed). Consumer: `report`, `reconcile`, and **delphi**, which reads it as a data contract to map Message-ID → archive path and never imports wicket (`docs/adr/ADR-MAIL.md`). This is the one cross-repo wire shape: renaming a row field breaks a sibling repo silently. A row the owner marks `excluded` (`"duplicate of <row id>"`) is a Gmail copy fetch never downloads, ingest skips and counts, and the report views skip; a catalog carries it forward. `filed` records which filing rule placed a row (`rule`, `forced`, `self`, `sent`, `fallback`, `unfiled`); a catalog carries it too.
-- **`message_key`** (`wicket.message`). The provider-neutral identity: a normalized RFC `Message-ID`, or `<provider>:<native-id>` when a message has none. Producer: all three writing verbs. This is what makes a Gmail-harvested message and an Outlook-exported message the *same* message. A row is keyed per Gmail message (`gmail_key`): the first message with a Message-ID keeps the bare key, and a later, different message reusing it gets `<key>|gmail:<gmail id>`, so a reader must not assume one row per Message-ID.
+- **`message_key`** (`wicket.message`). The provider-neutral identity: a normalized RFC `Message-ID`, or `<provider>:<native-id>` when a message has none. Producer: all three writing verbs. This is what makes a Gmail-harvested message and an Outlook-exported message the *same* message. A row is keyed per Gmail message (`mailbox_key`): the first message with a Message-ID keeps the bare key, and a later, different message reusing it gets `<key>|gmail:<gmail id>`, so a reader must not assume one row per Message-ID.
 - **`AccountFor`** (`wicket.filing`). A `Callable[[str], str | None]` resolving an address to the store that owns it. The api binds it from `env.account_of` plus the stores that exist, so the worker reads no config file and lists no directory of its own. The counterparty router has the same shape.
 - **`Target`** (`wicket.root.lib.ingest`). Where an ingest writes and who the owner is there: store dir, archive dir, account, Identities, DomainAliases. The five travel together because the filing rule cannot say who the counterparty is without knowing who *you* are.
 - **The `uchg` immutable flag** (designed, not built — `ADR-MAIL.md`). The pin delphi sets on a wicket-owned `.eml` it references; wicket's prune must skip `UF_IMMUTABLE` files. A filesystem flag rather than a manifest bit, so neither repo writes the other's state.
@@ -419,7 +419,7 @@ All three maps are optional, and **nothing in them is inferred** — an entry ex
 
 ### §2.8 Seams
 
-- **Provider seam (planned, not built).** Gmail's `X-GM-RAW` / `X-GM-MSGID` / `X-GM-THRID` / `X-GM-LABELS` are used directly inside `root/lib/catalog.py` and `root/lib/fetch.py` today. Phase 2 extracts them behind a `MailProvider` interface (`provider.py`); phase 3 adds Fastmail and `--source {gmail|fastmail}`. Do not add a second provider's quirks ad hoc before the seam lands — that is what the seam is for.
+- **Provider seam.** Each provider's host, all-mail folder (or the folders a pass walks), native id, thread and labels items, search, id order, file name, staged name and required capability live in `wicket.provider` (`GMAIL`, `FASTMAIL`); `auth`, the workers and the api ask the provider and never test its name. An account's provider is where its `imap.json` links (`~/.config/gmail/` or `~/.config/fastmail/`); anything else is refused. Fastmail walks every folder but Trash, Spam and its four non-mail folders, one message per `EMAILID`, names a file by a lowercase digest of it, and takes no `--domains`, `--query` or `catalog --mailbox` until ADR 0001's compiler exists.
 - **Export-profile seam.** `ingest --source {local}` is a one-value enum today, reserving the flag for other export shapes (mbox, an Apple Mail package) without a breaking change.
 - **Resolver seam (live).** `root/lib/ingest.py` takes `AccountFor` callables rather than reading config itself, so routing policy can change entirely in the api with no worker change. Recent example: the counterparty router was added as a second resolver argument to `route_threads` (`src/wicket/filing.py`) without touching the filing code.
 - **Verb registration.** A new verb gets a `cli.py` (no `__main__.py`) and is added to the root `__main__.py`'s `subcommands()` list and `_VERBS` dict. Explicit registration, no dynamic discovery.
@@ -470,7 +470,7 @@ All three maps are optional, and **nothing in them is inferred** — an entry ex
 |---|---|---|---|---|
 | local | n/a — library | n/a | `python -m wicket <verb>` (or the `wicket <verb>` console script), or `from wicket.root.api import ...` | none needed for `report` or `ingest` |
 | Gmail IMAP (upstream) | `imap.gmail.com:993` (implicit TLS) | Google-managed | stdlib `imaplib.IMAP4_SSL`, 60s timeout | `~/.config/wicket/accounts/<account>/imap.json` (`0600`) |
-| Fastmail (planned) | not implemented | — | — | — |
+| Fastmail IMAP (upstream) | `imap.fastmail.com:993` (implicit TLS) | Fastmail-managed | stdlib `imaplib.IMAP4_SSL`, 60s timeout; must announce `OBJECTID` | `~/.config/wicket/accounts/<account>/imap.json`, a link into `~/.config/fastmail/<login>/` |
 
 ### §3.2 Auth
 

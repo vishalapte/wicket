@@ -26,7 +26,7 @@ def halt_text(line: str, path: str) -> str:
     return (
         f"halted: {line}\n"
         f"HALT at {path}; clear it with `python -m wicket.halt clear --mail-account "
-        f"{Path(path).name}` (if Gmail rejected the app password, re-seed it first)"
+        f"{Path(path).name}` (if the provider rejected the app password, re-seed it first)"
     )
 
 
@@ -249,7 +249,7 @@ def print_report(result: ReportRoot) -> None:
         print(f"manifest: {result['store_dir']}")
         print(f"  messages           {counts['messages']:>8}")
         print(f"  downloaded         {counts['downloaded']:>8}  (held locally)")
-        print(f"    gone from Gmail  {counts['downloaded_gone']:>8}  (only copy)")
+        print(f"    gone from mailbox{counts['downloaded_gone']:>8}  (only copy)")
         print(f"    still in mailbox {counts['downloaded_present']:>8}")
         print(f"  observed only      {counts['observed_only']:>8}  (not held)")
         print(f"  excluded           {counts['excluded']:>8}  (duplicates not kept)")

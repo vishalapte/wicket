@@ -84,7 +84,7 @@ def _which(verb: argparse.ArgumentParser) -> None:
         "--mail-account",
         help=(
             "The account (a mailbox) whose store the verb reads or writes; "
-            "Gmail `+tag` aliases are normalized."
+            "`+tag` aliases (you+x@...) are normalized."
         ),
     )
     which.add_argument(

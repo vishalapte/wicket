@@ -1,8 +1,8 @@
 """Shared configuration and secret-handling helpers.
 
-Shared across the three verbs (`catalog`, `fetch`, `report`). The two that
-touch IMAP (`catalog`, `fetch`) authenticate to Gmail with an app password,
-not OAuth. The credential file is JSON of the form
+Shared across the verbs. The two that touch IMAP (`catalog`, `fetch`)
+authenticate with an app password, not OAuth, to the provider `wicket.provider`
+names. The credential file is JSON of the form
 ``{"email": "...", "app_password": "..."}`` (mode `0600`).
 """
 
@@ -21,7 +21,7 @@ from pathlib import Path
 
 # Secrets live OUTSIDE the repo (never committed, never on the command line).
 # One folder per account, ``accounts/<account>/``, holding ``imap.json``: a link to the
-# provider's file (``~/.config/gmail/<account>/imap.json``), made by hand with ``ln -s``
+# provider's file (``~/.config/<gmail|fastmail>/<login>/imap.json``), made by hand with ``ln -s``
 # or by a noun. The one home of an account.
 DEFAULT_STATE_DIR = Path.home() / ".config" / "wicket"
 ACCOUNTS_DIRNAME = "accounts"
@@ -131,11 +131,8 @@ DUPLICATES_DIRNAME = ".duplicates"
 # simultaneous IMAP connections (~15), so stay well under.
 DEFAULT_THREADS = 4
 
-# Gmail IMAP endpoint. The mailbox brackets are mandatory — Gmail's IMAP
-# folder list literally names this "[Gmail]/All Mail" (note the space).
-IMAP_HOST = "imap.gmail.com"
-IMAP_PORT = 993
-ALL_MAIL_MAILBOX = "[Gmail]/All Mail"
+# How long one IMAP connect or command may take. Each provider's host and folders
+# live in `wicket.provider`.
 IMAP_TIMEOUT_SECONDS = 60
 
 
@@ -492,7 +489,7 @@ def resolve_staging_dir(account: str) -> Path:
     """Per-store staging dir (``<mail-root>/<store>/staging``), where `fetch` gets bodies.
 
     The one home for this path: `wicket.root.lib.fetch` writes
-    ``<thread_id>/<msgid>@<INTERNALDATE>.eml`` here (`manifest.staged_name`) and
+    its provider's staged name here (`Provider.staged_name`) and
     `wicket.root.lib.ingest` files them from here into the archive. Never created
     here.
     """

@@ -8,9 +8,9 @@ from datetime import datetime, timezone
 import pytest
 
 from wicket.message import (
-    GmailRow,
-    gmail_key,
+    MailRow,
     local_msgid,
+    mailbox_key,
     message_id_of,
     message_key,
     normalize_message_id,
@@ -106,22 +106,27 @@ def test_a_colon_id_keys_whole() -> None:
     )
 
 
-# --- one row per Gmail message (gmail_key) --------------------------------
+# --- one row per Gmail message (mailbox_key) ------------------------------
 
 SENT = datetime(2024, 3, 1, 9, 0, tzinfo=timezone.utc)
 
 
-def _always_held(_row: GmailRow) -> bool:
+def _always_held(_row: MailRow) -> bool:
     return True
 
 
-def _key(rows: dict[str, GmailRow], gmail_id: str, sent: datetime | None = SENT) -> str:
-    return gmail_key(
-        key="a@x", gmail_id=gmail_id, sent=sent, rows=rows, held=_always_held
+def _key(rows: dict[str, MailRow], gmail_id: str, sent: datetime | None = SENT) -> str:
+    return mailbox_key(
+        key="a@x",
+        native_id=gmail_id,
+        tag="gmail",
+        sent=sent,
+        rows=rows,
+        held=_always_held,
     )
 
 
-def _ingest_row(date: datetime = SENT) -> GmailRow:
+def _ingest_row(date: datetime = SENT) -> MailRow:
     return {"id": "a@x", "msgid": local_msgid("a@x"), "date": date.isoformat()}
 
 
@@ -129,42 +134,42 @@ def test_local_msgid_is_ingests_filename() -> None:
     assert local_msgid("a@x") == hashlib.sha1(b"a@x").hexdigest()[:16]
 
 
-def test_gmail_key_keeps_the_row_carrying_its_gmail_id() -> None:
-    rows: dict[str, GmailRow] = {"a@x": {"id": "a@x", "msgid": "18a"}}
+def test_mailbox_key_keeps_the_row_carrying_its_gmail_id() -> None:
+    rows: dict[str, MailRow] = {"a@x": {"id": "a@x", "msgid": "18a"}}
     assert _key(rows, "18a") == "a@x"
 
 
-def test_gmail_key_finds_its_split_row() -> None:
-    rows: dict[str, GmailRow] = {
+def test_mailbox_key_finds_its_split_row() -> None:
+    rows: dict[str, MailRow] = {
         "a@x": {"id": "a@x", "msgid": "18a"},
         "a@x|gmail:19b": {"id": "a@x|gmail:19b", "msgid": "19b"},
     }
     assert _key(rows, "19b") == "a@x|gmail:19b"
 
 
-def test_gmail_key_takes_a_free_key_and_records_it() -> None:
-    rows: dict[str, GmailRow] = {}
+def test_mailbox_key_takes_a_free_key_and_records_it() -> None:
+    rows: dict[str, MailRow] = {}
     assert _key(rows, "18a") == "a@x"
     assert rows["a@x"]["msgid"] == "18a"
 
 
-def test_gmail_key_splits_a_second_gmail_message() -> None:
-    rows: dict[str, GmailRow] = {"a@x": {"id": "a@x", "msgid": "18a"}}
+def test_mailbox_key_splits_a_second_gmail_message() -> None:
+    rows: dict[str, MailRow] = {"a@x": {"id": "a@x", "msgid": "18a"}}
     assert _key(rows, "19b") == "a@x|gmail:19b"
     assert rows["a@x|gmail:19b"]["msgid"] == "19b"
     assert rows["a@x"]["msgid"] == "18a"  # the first message keeps its row
 
 
-def test_gmail_key_in_one_run_is_stable_across_runs() -> None:
-    rows: dict[str, GmailRow] = {}
+def test_mailbox_key_in_one_run_is_stable_across_runs() -> None:
+    rows: dict[str, MailRow] = {}
     first = [_key(rows, g) for g in ("18a", "19b")]
     again = [_key(rows, g) for g in ("18a", "19b")]
     assert first == again == ["a@x", "a@x|gmail:19b"]
 
 
-def test_gmail_key_links_the_copy_ingest_filed() -> None:
+def test_mailbox_key_links_the_copy_ingest_filed() -> None:
     row = _ingest_row()
-    rows: dict[str, GmailRow] = {"a@x": row}
+    rows: dict[str, MailRow] = {"a@x": row}
     assert _key(rows, "18a") == "a@x"
     assert rows["a@x"]["msgid"] == "18a"
     assert row["msgid"] == local_msgid(
@@ -175,7 +180,7 @@ def test_gmail_key_links_the_copy_ingest_filed() -> None:
 @pytest.mark.parametrize(
     "case", ["different send time", "no parseable Date", "file not held", "a Gmail row"]
 )
-def test_gmail_key_never_links_anything_else(case: str) -> None:
+def test_mailbox_key_never_links_anything_else(case: str) -> None:
     row = _ingest_row()
     sent: datetime | None = SENT
     held = _always_held
@@ -185,11 +190,13 @@ def test_gmail_key_never_links_anything_else(case: str) -> None:
         sent = None
     elif case == "file not held":
 
-        def held(_row: GmailRow) -> bool:  # pylint: disable=function-redefined
+        def held(_row: MailRow) -> bool:  # pylint: disable=function-redefined
             return False
 
     else:
         row["msgid"] = "17f"
-    rows: dict[str, GmailRow] = {"a@x": row}
-    key = gmail_key(key="a@x", gmail_id="18a", sent=sent, rows=rows, held=held)
+    rows: dict[str, MailRow] = {"a@x": row}
+    key = mailbox_key(
+        key="a@x", native_id="18a", tag="gmail", sent=sent, rows=rows, held=held
+    )
     assert key == "a@x|gmail:18a"

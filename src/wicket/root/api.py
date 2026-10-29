@@ -54,7 +54,7 @@ from collections import Counter
 from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Iterator, cast
 
@@ -68,7 +68,6 @@ from wicket.domains import (
     route_of,
 )
 from wicket.env import (
-    ALL_MAIL_MAILBOX,
     CREDENTIALS_FILENAME,
     DEFAULT_THREADS,
     MAIL_ROOT,
@@ -79,7 +78,6 @@ from wicket.env import (
     identities,
     known_accounts,
     load_account_aliases,
-    normalize_account,
     resolve_account,
     resolve_archive_dir,
     resolve_duplicates_dir,
@@ -91,6 +89,7 @@ from wicket.env import (
 from wicket.errors import ApiError
 from wicket.filing import AccountFor, build_domain_query
 from wicket.manifest import Row, latest_shard_year, load_store
+from wicket.provider import Provider, Search, provider_of
 
 from .lib import report as report_lib
 from .lib.catalog import sweep
@@ -169,12 +168,12 @@ class CatalogOptions:
     (from the latest year already in the manifest through now); ``full`` forces a
     complete re-sweep from the oldest message. ``interactive`` is deliberately not
     a field: it is an ambient capability of the calling face (is a tty present),
-    not part of the request.
+    not part of the request. ``mailbox`` None is the provider's all-mail folder.
     """
 
     store_dir: Path | None = None
     state_dir: Path | None = None
-    mailbox: str = ALL_MAIL_MAILBOX
+    mailbox: str | None = None
     years: list[int] | None = None
     dry_run: bool = False
     threads: int = DEFAULT_THREADS
@@ -230,6 +229,12 @@ def catalog(
         resolve_state_dir(resolved, opts.state_dir) / CREDENTIALS_FILENAME
     )
     load_credentials(credentials_path, interactive=interactive)
+    provider = provider_of(credentials_path)
+    if opts.mailbox is not None and provider.all_mail is None:
+        raise ValueError(
+            f"{provider.label} has no all-mail folder to replace: catalog walks "
+            "every folder, so --mailbox is refused"
+        )
 
     def run() -> dict[str, int | str]:
         stats = sweep(
@@ -240,6 +245,7 @@ def catalog(
             dry_run=opts.dry_run,
             threads=opts.threads,
             archive_dir=store.parent / "archive",  # the store's own archive
+            provider=provider,
         )
         return {**stats, "store_dir": str(store)}
 
@@ -261,9 +267,10 @@ DEST_REFUSED = (
 class FetchOptions:
     """What to fetch, independent of which account.
 
-    At most one of ``domains`` (list or comma-string) or ``query`` (a raw Gmail
-    expression) may be set; the invariant is enforced here so a face cannot build
-    an ambiguous request. Neither means every message not got and not excluded.
+    At most one of ``domains`` (list or comma-string), ``query`` (a raw provider
+    expression) or ``last`` (``2d``, ``3m``, ``1y``) may be set; the invariant is
+    enforced here so a face cannot build an ambiguous request. None means every
+    message not got and not excluded.
     ``dest`` is refused (`DEST_REFUSED`): fetch stages and files nothing, so a
     destination would be silently ignored.
     ``limit`` bounds the candidates of the whole run. ``interactive`` is
@@ -273,6 +280,7 @@ class FetchOptions:
 
     domains: list[str] | str | None = None
     query: str | None = None
+    last: str | None = None
     dest: Path | None = None
     state_dir: Path | None = None
     alias_file: Path | None = None
@@ -281,32 +289,35 @@ class FetchOptions:
     dry_run: bool = False
 
     def __post_init__(self) -> None:
-        if self.domains is not None and self.query is not None:
-            raise ValueError("pass at most one of domains=... or query=...")
+        given = [v for v in (self.domains, self.query, self.last) if v is not None]
+        if len(given) > 1:
+            raise ValueError("pass at most one of domains=..., query=... or last=...")
         if self.dest is not None:
             raise ValueError(DEST_REFUSED)
 
 
-def _domain_query(
-    domains: list[str] | str | None,
-    query: str | None,
-    domain_aliases: dict[str, str],
-) -> str | None:
-    """Turn the options' filter into a Gmail search expression, or None for no filter.
+def _search(
+    options: FetchOptions, provider: Provider, domain_aliases: dict[str, str]
+) -> Search | None:
+    """Turn the options' filter into the provider's search, or None for no filter.
 
-    At most one of ``domains`` / ``query`` is set (`FetchOptions`). A raw ``query``
-    passes through; ``domains`` (list or comma-string) expands via the alias map.
-    Raises ``ValueError`` if a domains filter cleans to empty.
+    At most one of ``domains`` / ``query`` / ``last`` is set (`FetchOptions`). A raw
+    ``query`` passes through; ``domains`` (list or comma-string) expands via the
+    alias map; ``last`` is the provider's since-search. Raises ``ValueError`` if a
+    domains filter cleans to empty.
     """
-    if query is not None:
-        return query
-    if domains is None:
+    if options.last is not None:
+        return provider.since_search(options.last, date.today())
+    if options.query is not None:
+        return provider.raw_search(options.query)
+    if options.domains is None:
         return None
+    domains = options.domains
     items = domains.split(",") if isinstance(domains, str) else list(domains or [])
     names = [d.strip() for d in items if d.strip()]
     if not names:
         raise ValueError("domains was empty")
-    return build_domain_query(names, domain_aliases)
+    return provider.raw_search(build_domain_query(names, domain_aliases))
 
 
 def _run_log(account: str) -> Callable[[str], None]:
@@ -347,7 +358,7 @@ def fetch(
     subdomain-fold map (``<mail-root>/domain-aliases.json`` by default — ONE home,
     shared with `ingest`, and not per-account: a fold is a fact about a domain, not
     about a mailbox, and a *bucket* has no state dir to put it in), seeds
-    credentials (the login email is the account reconcile checks), then runs
+    credentials, then runs
     `lib.download` or `lib.download_years` and returns its stats dict, which
     carries ``halted`` (and the HALT's ``halt`` line and ``halt_file``) when a
     throttle stopped it. Raises `env.StoreBusy` when another process holds the
@@ -357,20 +368,21 @@ def fetch(
     state = resolve_state_dir(resolved, options.state_dir)
     alias_path = options.alias_file or domain_aliases_path(MAIL_ROOT)
     domain_aliases = load_domain_aliases(alias_path)
-    search = _domain_query(options.domains, options.query, domain_aliases)
-
     credentials_path = state / CREDENTIALS_FILENAME
-    imap_email, _ = load_credentials(credentials_path, interactive=interactive)
+    load_credentials(credentials_path, interactive=interactive)
+    provider = provider_of(credentials_path)
+    search = _search(options, provider, domain_aliases)
 
     store = resolve_store_dir(resolved)
     ctx = ThreadContext(
         dest=resolve_archive_dir(resolved),
-        imap_email=normalize_account(imap_email),
+        account=resolved,
         domain_aliases=domain_aliases,
         dry_run=options.dry_run,
         store_dir=store,
         staging_dir=resolve_staging_dir(resolved),
         duplicates_dir=resolve_duplicates_dir(resolved),
+        provider=provider,
     )
     log: Callable[[str], None] = (
         (lambda _line: None) if options.dry_run else _run_log(resolved)
@@ -391,7 +403,7 @@ def fetch(
         else:
             log("run start: one filtered pass")
             stats = download(
-                query=search,
+                search=search,
                 ctx=ctx,
                 credentials_path=credentials_path,
                 limit=options.limit,
@@ -566,7 +578,7 @@ def catalog_root(  # pylint: disable=too-many-arguments
     mail_account: str | None = None,
     years: str | None = None,
     full: bool = False,
-    mailbox: str = ALL_MAIL_MAILBOX,
+    mailbox: str | None = None,
     store_dir: Path | None = None,
     state_dir: Path | None = None,
     threads: int = DEFAULT_THREADS,
@@ -708,19 +720,19 @@ def fetch_root(  # pylint: disable=too-many-arguments
     with no filter, every message not yet got, until Gmail throttles.
 
     A run that halts partway is refused: the ``ApiError`` says what it did, then the
-    HALT. ``last`` (``2d``, ``3m``, ``1y``) is the Gmail search ``newer_than:<last>``,
-    run as a ``query``; at most one of ``domains``, ``query`` and ``last`` is given.
+    HALT. ``last`` (``2d``, ``3m``, ``1y``) is the provider's since-search (Gmail's
+    ``newer_than:<last>``); at most one of ``domains``, ``query`` and ``last`` is given.
     """
     if last is not None:
         if not re.fullmatch("[1-9][0-9]*[dmy]", last):
             raise ApiError(f"--last takes N then d, m or y (2d, 3m, 1y), not {last!r}")
         if domains is not None or query is not None:
             raise ApiError("pass at most one of --domains, --query or --last")
-        query = f"newer_than:{last}"
     try:
         options = FetchOptions(
             domains=domains,
             query=query,
+            last=last,
             dest=target.expanduser() if target else None,
             state_dir=state_dir,
             alias_file=alias_file.expanduser() if alias_file else None,
@@ -737,7 +749,7 @@ def fetch_root(  # pylint: disable=too-many-arguments
     result: FetchRoot = {
         "account_linked": True,
         "dry_run": dry_run,
-        "filtered": not (domains is None and query is None),
+        "filtered": not (domains is None and query is None and last is None),
         "account": mail_account,
         "matched": cast(int, stats["matched"]),
         "got": cast(int, stats["got"]),

@@ -58,8 +58,10 @@ duplicate it here. Bound by the racecar standards (resolver:
   - `auth.py`, `env.py`, `domains.py`, `message.py`, `manifest.py` (package
     root): shared. `env.DEFAULT_THREADS` is the one home for the worker-pool
     size; `domains.canonical_domain` for subdomain folding; `message.message_key`
-    for the provider-neutral key; `manifest` for the year-sharded store (ADR 0002)
-    and the staged name (`staged_name`/`parse_staged`, writer and reader alike).
+    for the provider-neutral key and `message.assign_threads` for a local export's
+    header threads; `manifest` for the year-sharded store (ADR 0002);
+    `provider` for each provider's dialect and the staged name
+    (`Provider.staged_name`/`provider.parse_staged`, writer and reader alike).
     `env` also owns the **destination rules**: `MAIL_ROOT` (+ `$WICKET_MAIL_ROOT`),
     `require_mail_root` (fail closed — an absent root is a locked vault, not an
     empty store), `known_accounts` (stores that exist; skips dotted dirs, so a
@@ -102,7 +104,8 @@ duplicate it here. Bound by the racecar standards (resolver:
   `__main__` → `wicket.root.api` and each noun's `api` → each root verb's
   worker (`wicket.root.lib.<verb>`), the root renderer and each noun's `lib` →
   `wicket.root.lib.results` → `reconcile` → `filing` → shared
-  (`auth`/`domains`/`message`/`manifest`) → `env`, downward only (acyclic).
+  (`auth`/`domains`/`message`/`manifest`) → `env` and `provider`, downward only
+  (acyclic).
   The workers and nouns are independent siblings (no cross-imports). The face → api →
   lib routing is convention, not a wall: the contract gates direction and
   acyclicity (defects); a face that bypasses its api is a reviewed
@@ -136,13 +139,17 @@ duplicate it here. Bound by the racecar standards (resolver:
 - Keep `--non-interactive` failing **loudly** (non-zero exit). Cron/launchd
   relies on that to surface a revoked app password. Do not add a silent fallback.
 
-## Provider work in progress
+## Providers
 
-Gmail is the only backend today; its `X-GM-*` IMAP extensions are used directly
-in the worker modules. Phase 2 extracts these behind a `MailProvider` interface
-(`provider.py`); phase 3 adds the Fastmail backend and the `--source` flag. Do
-not add a second provider's quirks ad hoc before the interface lands, that is
-what the seam is for.
+Two backends, `provider.GMAIL` and `provider.FASTMAIL`. Every provider-specific
+IMAP detail (the host, the all-mail folder or the folders a pass walks, the native
+id, thread and labels items, the search a year or `--last` becomes, how an id
+orders and names a file, the staged name, the required capability, the
+app-password hint) lives in `wicket.provider`; `auth`, the workers and the api ask
+the provider and never test its name. An account's provider is where its
+`imap.json` links (`provider.provider_of`); anything else is refused. Every SELECT
+is read-only: `auth.open_mailbox`'s own and `auth.select_folder`'s, the only two. A
+third provider is a third `Provider`; never put its quirks in a verb.
 
 ## Verify after any change
 

@@ -11,22 +11,31 @@ One home (ADR 0002) for the things the unified manifest needs:
     stores and fetch matches against;
   * the **Message-ID reader** (``message_id_of``), the one way every verb reads
     the header the key is made from;
-  * the **Gmail key** (``gmail_key``), which gives every Gmail message its own
-    row when two share a Message-ID, and ``local_msgid``, the name ingest gives
-    a file, by which an ingest row is recognized.
+  * the **header thread** (``assign_threads``): which messages of a local export
+    belong together, from ``References``/``In-Reply-To`` and Outlook's
+    ``Thread-Index``;
+  * the **mailbox key** (``mailbox_key``), which gives every message of a mailbox
+    its own row when two share a Message-ID, and ``local_msgid``, the name ingest
+    gives a file, by which an ingest row is recognized.
 
-Pure stdlib, no wicket imports: this sits in the shared layer below the verbs
+Pure stdlib beside `wicket.provider`: this sits in the shared layer below the verbs
 and is imported by ``root.lib.catalog``, ``root.lib.fetch`` and ``root.lib.ingest``.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
+import email.message
 import email.parser
 import email.policy
 import email.utils
 import hashlib
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
+from typing import NamedTuple
+
+from wicket.provider import Provider
 
 # Field ownership (ADR 0002 §2). Module-level tuples, not enums.
 IDENTITY_FIELDS = ("id", "msgid", "thread_id", "account")
@@ -37,7 +46,7 @@ DERIVED_FIELDS = ("domain",)
 # message on the mailbox is not kept locally (``"duplicate of <row id>"``).
 OWNER_FIELDS = ("excluded",)
 
-GmailRow = dict[str, object]
+MailRow = dict[str, object]
 
 
 def normalize_message_id(raw: str | None) -> str | None:
@@ -120,44 +129,78 @@ def local_msgid(key: str) -> str:
     return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
 
 
-def gmail_key(
+def mailbox_key(  # pylint: disable=too-many-arguments
     *,
     key: str,
-    gmail_id: str,
+    native_id: str,
+    tag: str,
     sent: datetime | None,
-    rows: dict[str, GmailRow],
-    held: Callable[[GmailRow], bool],
+    rows: dict[str, MailRow],
+    held: Callable[[MailRow], bool],
 ) -> str:
-    """The manifest key for one Gmail message, recorded in ``rows`` as it is decided.
+    """The manifest key for one mailbox message, recorded in ``rows`` as it is decided.
 
-    ``key`` is the message's ``message_key``; ``rows`` maps every row id in the
-    store to its row and is updated in place, so messages keyed one after another
-    in one run (in Gmail-id order) each see those before them. Two Gmail
-    messages with one Message-ID (a sender reusing it, or two Gmail copies) get
-    two rows: the first recorded keeps the bare key, every later one is keyed
-    ``<key>|gmail:<gmail id>``, so no run can move a recorded message to another
-    row. The one exception links instead: a row ingest filed (no Gmail id on it,
+    ``key`` is the message's ``message_key``, ``native_id`` the provider's id for it
+    (Gmail's X-GM-MSGID), ``tag`` the provider's name; ``rows`` maps every row id in
+    the store to its row and is updated in place, so messages keyed one after another
+    in one run (in the provider's order) each see those before them. Two messages
+    with one Message-ID (a sender reusing it, or two copies in the mailbox) get two
+    rows: the first recorded keeps the bare key, every later one is keyed
+    ``<key>|<tag>:<native id>``, so no run can move a recorded message to another
+    row. The one exception links instead: a row ingest filed (no native id on it,
     its file on disk, the same send time) is this message's copy and keeps the
-    bare key, with the Gmail id recorded on it.
+    bare key, with the native id recorded on it.
     """
     row = rows.get(key)
-    if row is not None and row.get("msgid") == gmail_id:
+    if row is not None and row.get("msgid") == native_id:
         return key
-    split = f"{key}|gmail:{gmail_id}"
+    split = f"{key}|{tag}:{native_id}"
     if split in rows:
         return split
     if row is None:
-        rows[key] = {"id": key, "msgid": gmail_id}
+        rows[key] = {"id": key, "msgid": native_id}
         return key
     if _is_ingest_copy(key, row, sent, held):
-        rows[key] = {**row, "msgid": gmail_id}
+        rows[key] = {**row, "msgid": native_id}
         return key
-    rows[split] = {"id": split, "msgid": gmail_id}
+    rows[split] = {"id": split, "msgid": native_id}
     return split
 
 
+class KeyRequest(NamedTuple):
+    """One mailbox message to key: its ``message_key``, native id, INTERNALDATE (ISO, UTC)
+    and send date."""
+
+    key: str
+    native_id: str
+    when: str
+    sent: datetime | None
+
+
+def mailbox_keys(
+    requests: Iterable[KeyRequest],
+    *,
+    provider: Provider,
+    rows: dict[str, MailRow],
+    held: Callable[[MailRow], bool],
+) -> dict[str, str]:
+    """Each message's manifest key by native id, keyed with `mailbox_key` in the
+    provider's order: the one keying loop catalog, fetch and ingest --staged share."""
+    keys: dict[str, str] = {}
+    for req in sorted(requests, key=lambda r: provider.order(r.native_id, r.when)):
+        keys[req.native_id] = mailbox_key(
+            key=req.key,
+            native_id=req.native_id,
+            tag=provider.name,
+            sent=req.sent,
+            rows=rows,
+            held=held,
+        )
+    return keys
+
+
 def _is_ingest_copy(
-    key: str, row: GmailRow, sent: datetime | None, held: Callable[[GmailRow], bool]
+    key: str, row: MailRow, sent: datetime | None, held: Callable[[MailRow], bool]
 ) -> bool:
     """Whether ``row`` is a held ingest row whose stored send time is ``sent``.
 
@@ -170,3 +213,82 @@ def _is_ingest_copy(
         return datetime.fromisoformat(str(row.get("date", ""))) == sent
     except ValueError:
         return False
+
+
+# --- the header thread (a local export carries no provider thread id) ------
+
+
+class UnionFind:
+    """Minimal union-find over opaque string nodes for thread grouping."""
+
+    def __init__(self) -> None:
+        self.parent: dict[str, str] = {}
+
+    def find(self, node: str) -> str:
+        """Return the component root of ``node`` (path-halving as it walks)."""
+        self.parent.setdefault(node, node)
+        root = node
+        while self.parent[root] != root:
+            self.parent[root] = self.parent[self.parent[root]]
+            root = self.parent[root]
+        return root
+
+    def union(self, a: str, b: str) -> None:
+        ra, rb = self.find(a), self.find(b)
+        if ra != rb:
+            self.parent[ra] = rb
+
+
+def referenced_ids(msg: email.message.Message) -> list[str]:
+    """Normalized message-ids this message replies to (References + In-Reply-To)."""
+    out: list[str] = []
+    for header in ("References", "In-Reply-To"):
+        raw = str(msg.get(header, "") or "")
+        for tok in raw.replace("<", " <").split():
+            normalized = normalize_message_id(tok)
+            if normalized:
+                out.append(normalized)
+    return out
+
+
+def conversation_key(msg: email.message.Message) -> str | None:
+    """Outlook Thread-Index conversation id: hex of the shared leading 22 bytes."""
+    raw = str(msg.get("Thread-Index", "") or "").strip()
+    if not raw:
+        return None
+    try:
+        decoded = base64.b64decode(raw)
+    except (ValueError, binascii.Error):
+        return None
+    return decoded[:22].hex() if len(decoded) >= 22 else None
+
+
+def assign_threads(messages: list[dict[str, object]]) -> dict[str, str]:
+    """Return {id -> thread_id} via References/In-Reply-To + Thread-Index.
+
+    Connected components over ``Message-ID`` <-> ``References``/``In-Reply-To``,
+    augmented by the Outlook ``Thread-Index`` conversation id, with no
+    subject-matching. Each message is a dict carrying ``id``, ``date``, ``refs``
+    (`referenced_ids`) and ``conv`` (`conversation_key`); ``thread_id`` is the
+    earliest member's id in its connected component.
+    """
+    uf = UnionFind()
+    for m in messages:
+        mid = str(m["id"])
+        uf.find(mid)
+        for ref in m["refs"]:  # type: ignore[attr-defined]
+            uf.union(mid, ref)
+        if m["conv"]:
+            uf.union(mid, f"tidx:{m['conv']}")
+
+    components: dict[str, list[dict[str, object]]] = {}
+    for m in messages:
+        components.setdefault(uf.find(str(m["id"])), []).append(m)
+
+    thread_of: dict[str, str] = {}
+    for members in components.values():
+        root = min(members, key=lambda m: (m["date"], str(m["id"])))
+        thread_id = str(root["id"])
+        for m in members:
+            thread_of[str(m["id"])] = thread_id
+    return thread_of

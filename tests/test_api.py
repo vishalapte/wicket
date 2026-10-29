@@ -242,6 +242,9 @@ def test_catalog_resolves_paths_and_passes_dry_run(
     monkeypatch.setattr(env, "MAIL_ROOT", tmp_path / "mail")
     monkeypatch.setattr(env, "DEFAULT_STATE_DIR", tmp_path / "state")
     (tmp_path / "state" / "accounts" / "you@gmail.com").mkdir(parents=True)
+    (tmp_path / "state" / "accounts" / "you@gmail.com" / "imap.json").symlink_to(
+        tmp_path / "gmail" / "you@gmail.com" / "imap.json"
+    )
     monkeypatch.delenv(env.ACCOUNT_ENV_VAR, raising=False)
 
     seen: dict[str, object] = {}
@@ -286,6 +289,9 @@ def test_fetch_wires_query_and_paths(
     monkeypatch.setattr(env, "MAIL_ROOT", tmp_path / "mail")
     monkeypatch.setattr(env, "DEFAULT_STATE_DIR", tmp_path / "state")
     (tmp_path / "state" / "accounts" / "you@gmail.com").mkdir(parents=True)
+    (tmp_path / "state" / "accounts" / "you@gmail.com" / "imap.json").symlink_to(
+        tmp_path / "gmail" / "you@gmail.com" / "imap.json"
+    )
     monkeypatch.delenv(env.ACCOUNT_ENV_VAR, raising=False)
 
     seen: dict[str, object] = {}
@@ -313,7 +319,7 @@ def test_fetch_wires_query_and_paths(
     assert ctx.dest == tmp_path / "mail" / "you@gmail.com" / "archive"  # reconciled
     assert ctx.staging_dir == tmp_path / "mail" / "you@gmail.com" / "staging"
     assert ctx.duplicates_dir == tmp_path / "mail" / ".duplicates" / "you@gmail.com"
-    assert "acme.com" in str(seen["query"])
+    assert "acme.com" in str(seen["search"])
     creds = tmp_path / "state" / "accounts" / "you@gmail.com" / "imap.json"
     assert seen["creds_path"] == creds
 
@@ -335,3 +341,37 @@ def test_sweep_years_incremental_full_and_explicit(tmp_path: Path) -> None:
     assert root_api._sweep_years(store, root_api.CatalogOptions(full=True)) is None
     # explicit years win over both
     assert root_api._sweep_years(store, root_api.CatalogOptions(years=[2024])) == [2024]
+
+
+def test_fetch_reconciles_as_the_account_not_the_login(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An account folder named for its store logs in as another address (Fastmail's
+    vishalapte@fastmail.com files into vishal@enine.com): reconcile's *you* is the
+    account, as ingest --staged has it."""
+    (tmp_path / "mail" / "you@enine.com").mkdir(parents=True)
+    monkeypatch.setattr(env, "MAIL_ROOT", tmp_path / "mail")
+    monkeypatch.setattr(env, "DEFAULT_STATE_DIR", tmp_path / "state")
+    (tmp_path / "state" / "accounts" / "you@enine.com").mkdir(parents=True)
+    (tmp_path / "state" / "accounts" / "you@enine.com" / "imap.json").symlink_to(
+        tmp_path / "gmail" / "you@enine.com" / "imap.json"
+    )
+    monkeypatch.delenv(env.ACCOUNT_ENV_VAR, raising=False)
+    seen: dict[str, object] = {}
+
+    def fake_load_credentials(_path: Path, **_kw: object) -> tuple[str, str]:
+        return ("login@fastmail.com", "pw")
+
+    def fake_download(**kwargs: object) -> dict[str, int]:
+        seen.update(kwargs)
+        return {"downloaded": 0, "failed": 0, "got": 0}
+
+    monkeypatch.setattr(root_api, "load_credentials", fake_load_credentials)
+    monkeypatch.setattr(root_api, "download", fake_download)
+
+    root_api.fetch(
+        "you@enine.com", options=root_api.FetchOptions(domains="a.com", dry_run=True)
+    )
+
+    ctx: ThreadContext = seen["ctx"]  # type: ignore[assignment]
+    assert ctx.account == "you@enine.com"

@@ -22,9 +22,9 @@ rule lives in `wicket.filing`. Four nouns: `python -m wicket.alias` and
 `python -m wicket.account` lists, creates and deletes an account's folder in
 `~/.config/wicket/accounts` (it holds an `imap.json` link).
 It was
-lifted out of `factotum`; its consumers (factotum, meridian) depend on it. The
-provider story is mid-build: Gmail works today, Fastmail is planned behind a `--source`
-interface.
+lifted out of `factotum`; its consumers (factotum, meridian) depend on it. Two
+providers, Gmail and Fastmail (`wicket.provider`), chosen by where an account's
+`imap.json` links (`~/.config/gmail/` or `~/.config/fastmail/`).
 
 Data lives under the **mail root** (`~/.delphi/mail`, `$WICKET_MAIL_ROOT`), one
 directory per **store**. A store is an **account** (a real mailbox) or a **bucket**
@@ -83,10 +83,8 @@ mailbox owns, and topical grouping of mailbox-owned mail is a *view*
 
 ## Open work
 
-- Phase 2: extract the Gmail-specific primitives behind a `MailProvider`
-  interface (`provider.py`), no behavior change.
-- Phase 3: add the Fastmail (IMAP) backend, `--source {gmail|fastmail}`, and the
-  portable query compiler per `docs/adr/0001-portable-query-grammar.md`.
+- The portable query compiler per `docs/adr/0001-portable-query-grammar.md`, so
+  Fastmail takes `--query` and `--domains`.
 - Phase 4: rewire factotum and meridian to depend on wicket; delete the moved
   code from factotum.
 

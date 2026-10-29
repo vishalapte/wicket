@@ -6,9 +6,8 @@ fields and ``deleted``; ``ingest`` writes the settlement fields (``downloaded``,
 ``path``, ``filed``) as it files a body. A catalog rewrite of a shard refreshes
 observation and preserves settlement, so the two never clobber each other.
 
-Also the one home for the **staged** name: ``fetch`` gets a body into
-``<store>/staging/<thread_id>/<msgid>@<INTERNALDATE>.eml`` and ``ingest --staged``
-reads the Gmail ids back off that path, so writer and reader share one rule.
+Also the reader of ``<store>/staging/`` (`staged_files`); the name ``fetch`` gives a
+staged body is its provider's (`wicket.provider`), so writer and reader share one rule.
 
 Pure stdlib, operates on paths and dicts: it is the shared store below the
 verbs, fully testable without a mailbox.
@@ -22,9 +21,7 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from collections.abc import Iterator
-from datetime import datetime, timezone
 from pathlib import Path
 
 # Settlement fields a catalog rewrite carries forward (filing owns them): whether
@@ -74,31 +71,6 @@ def write_eml(path: Path, raw: bytes) -> None:
     tmp.write_bytes(raw)
     os.chmod(tmp, EML_MODE)
     os.replace(tmp, path)
-
-
-# A staged body's path under ``<store>/staging/``: the Gmail thread id, the Gmail
-# msgid (hex) and the INTERNALDATE in UTC. Anything else under staging/ is not
-# filed: the msgid becomes an archive file name, so it must be exactly this shape.
-STAGED_RE = re.compile(r"^(\d+)/([0-9a-f]+)@(\d{8}T\d{6}Z)\.eml$")
-_STAGED_DATE = "%Y%m%dT%H%M%SZ"
-
-
-def staged_name(thread_id: str, msgid: str, internal_dt: datetime) -> str:
-    """The path, under ``staging/``, that ``fetch`` gets one Gmail message to."""
-    stamp = internal_dt.astimezone(timezone.utc).strftime(_STAGED_DATE)
-    return f"{thread_id}/{msgid}@{stamp}.eml"
-
-
-def parse_staged(rel: str) -> tuple[str, str, datetime] | None:
-    """``(thread_id, msgid, internal_dt)`` from a staged path, or None if it is not one."""
-    match = STAGED_RE.match(rel)
-    if match is None:
-        return None
-    try:
-        when = datetime.strptime(match.group(3), _STAGED_DATE)
-    except ValueError:
-        return None
-    return match.group(1), match.group(2), when.replace(tzinfo=timezone.utc)
 
 
 def staged_files(staging_dir: Path) -> Iterator[tuple[Path, str]]:

@@ -1,7 +1,8 @@
 """The account worker: the computation, with no knowledge of who calls it.
 
 An account is a folder ``~/.config/wicket/accounts/<name>/`` (``env.account_dirs``)
-holding ``imap.json``, a link to the provider's file (``~/.config/gmail/<name>/imap.json``).
+holding ``imap.json``, a link to the provider's file (``~/.config/gmail/<name>/imap.json``;
+a Fastmail one, made by hand, links into ``~/.config/fastmail/<login>/``).
 Nothing else is stored, so a folder and link made by hand work the same. No argument
 parsing, no printing; ``api`` imports from here and reaches no deeper.
 """

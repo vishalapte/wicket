@@ -53,7 +53,7 @@ no usable `Message-ID`, the key is `"<provider>:<native-id>"` (e.g.
 > reuse one for different mail, and Gmail can hold one message twice under two
 > Gmail ids. One row per key could then record only one of them, so the other
 > looked undownloaded on every run and the row flipped between the two. Within
-> a Gmail store the unit is now the Gmail message (`message.gmail_key`): the
+> a Gmail store the unit is now the Gmail message (`message.mailbox_key`): the
 > first message recorded keeps the bare key, every later one with the same
 > `Message-ID` is keyed `<key>|gmail:<gmail-id>`, and a recorded message keeps
 > its key on every later run. The one merge is a link: a Gmail message whose
@@ -62,6 +62,15 @@ no usable `Message-ID`, the key is `"<provider>:<native-id>"` (e.g.
 > copy is cleaned up by hand, not by code: its row carries `excluded`
 > (`"duplicate of <row id>"`), which fetch never downloads, catalog carries
 > forward and never drops, and the reports leave out.
+>
+> **Amended 2026-10-29 (Fastmail).** The unit is the mailbox message, whatever the
+> provider: `msgid` and `thread_id` are the provider's native ids (Gmail's
+> X-GM-MSGID in hex and X-GM-THRID; Fastmail's RFC 8474 `EMAILID` and `THREADID`),
+> a second message sharing a `Message-ID` is keyed `<key>|<provider>:<native-id>`,
+> and messages are keyed in the provider's order (Gmail's id order; Fastmail's
+> INTERNALDATE, then `EMAILID`). A Fastmail message in two folders is one row whose
+> `labels` are both folders, and its archived file is named by a lowercase digest of
+> its `EMAILID`, which is mixed case. `wicket.provider` is the one home for each.
 
 ### 2. One store, account-scoped, year-sharded
 

@@ -491,13 +491,33 @@ dependencies = ["wicket @ git+https://github.com/vishalapte/wicket.git@main"]
 
 ## Providers
 
-Today the IMAP verbs (`catalog`, `fetch`) speak **Gmail** (Gmail's `X-GM-*`
-extensions). **Fastmail** support is planned behind a provider interface,
-selected per run with `--source {gmail|fastmail}`. The two providers do not share
-a search dialect; the portable query grammar that reconciles them is specified in
+The IMAP verbs (`catalog`, `fetch`) speak **Gmail** and **Fastmail**. An
+account's provider is where its `imap.json` links: into `~/.config/gmail/<login>/`
+is Gmail, into `~/.config/fastmail/<login>/` is Fastmail, and anything else (a real
+file, a link elsewhere) is refused, exit 2. The account folder's name is the store;
+the login is the `email` in `imap.json`, so a Fastmail login can file into a store of
+another name:
+
+```
+~/.config/wicket/accounts/vishal@enine.com/imap.json -> ~/.config/fastmail/vishalapte@fastmail.com/imap.json
+```
+
+| | Gmail | Fastmail |
+|---|---|---|
+| Host | `imap.gmail.com` | `imap.fastmail.com` (must announce `OBJECTID`, else refused, no HALT) |
+| What a whole-mailbox pass walks | `[Gmail]/All Mail` | every folder but Trash, Spam, Scheduled, Memos, Notes and Templates; one message per `EMAILID`, its labels the folders holding it |
+| `msgid` / `thread_id` | `X-GM-MSGID` (hex) / `X-GM-THRID` | `EMAILID` / `THREADID` (RFC 8474) |
+| Archived file name | `<msgid>.eml` | a lowercase 16-hex digest of the `EMAILID` (it is mixed case) |
+| Staged name | `<thread>/<msgid>@<date>.eml` | `fastmail/<thread hex>/<emailid hex>@<date>.eml` |
+| `--last N{d,m,y}` | `newer_than:N…` | `SINCE <date>` |
+| `--domains`, `--query`, `catalog --mailbox` | Gmail search | refused, exit 2 |
+
+The two providers do not share a search dialect; the portable query grammar that
+would reconcile them is specified in
 [`docs/adr/0001-portable-query-grammar.md`](docs/adr/0001-portable-query-grammar.md),
 with the living key-by-key divergence table in
-[`docs/QUERY-FIDELITY.md`](docs/QUERY-FIDELITY.md).
+[`docs/QUERY-FIDELITY.md`](docs/QUERY-FIDELITY.md). Until it is built, Fastmail
+takes no `--domains` or `--query`.
 
 When a mailbox can't be reached over IMAP at all — Microsoft 365 tenants with
 basic-auth IMAP disabled and OAuth app-registration off the table — there is no

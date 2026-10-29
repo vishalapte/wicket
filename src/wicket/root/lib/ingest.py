@@ -13,15 +13,13 @@ filed and its file recorded on that row, the observation untouched. Nothing is
 ever deleted, so removing a file from the source folder can never remove it from
 the archive. Re-running with nothing new is a no-op.
 
-A local export's threads are reconstructed deterministically from headers (no
-subject-matching): connected components over ``Message-ID`` <->
-``References``/``In-Reply-To``, augmented by the Outlook ``Thread-Index``
-conversation id; a staged message carries Gmail's thread id. The folder is
-`wicket.filing`'s rank (anchor, ``--domain``, self, sent, computed domain,
-fallback, ``_unfiled``) over the thread's opener, and each new row records which
-rank won as ``filed``. Only an archived member anchors: when a thread already has
-one, new members join its folder so a reply never splits from its thread. A
-message whose row the owner marked ``excluded`` is skipped and counted.
+A local export's threads are reconstructed deterministically from headers
+(`message.assign_threads`, no subject-matching); a staged message carries its
+provider's thread id. The folder is `wicket.filing`'s rank (anchor, ``--domain``, self, sent,
+computed domain, fallback, ``_unfiled``) over the thread's opener, and each new row
+records which rank won as ``filed``. Only an archived member anchors: when a thread
+already has one, new members join its folder so a reply never splits from its
+thread. A message whose row the owner marked ``excluded`` is skipped and counted.
 
 No argparse, no CLI, no network: the CLI (`wicket.__main__`) parses argv and
 the api (`wicket.root.api`) resolves paths; this worker computes and writes. A store is
@@ -33,8 +31,6 @@ and skips, and names, a busy one. A dry run writes nothing and takes no lock.
 
 from __future__ import annotations
 
-import base64
-import binascii
 import email
 import email.policy
 import email.utils
@@ -61,7 +57,6 @@ from wicket.manifest import (
     Row,
     eml_on_disk,
     merge_settlement,
-    parse_staged,
     read_shard,
     shard_path,
     staged_files,
@@ -69,14 +64,18 @@ from wicket.manifest import (
     write_shard,
 )
 from wicket.message import (
-    GmailRow,
-    gmail_key,
+    KeyRequest,
+    MailRow,
+    assign_threads,
+    conversation_key,
     local_msgid,
+    mailbox_keys,
     message_id_of,
     message_key,
-    normalize_message_id,
+    referenced_ids,
     sent_date,
 )
+from wicket.provider import Provider, parse_staged
 from wicket.reconcile import reconcile
 
 # The export origin, tagged into the fallback key when a message carries no
@@ -89,51 +88,6 @@ _PROVIDER_TAG = "outlook"
 # that reached you by Cc or through a forwarder, which is exactly the mail whose
 # owning account is easiest to get wrong.
 RECIPIENT_HEADERS = ("To", "Cc", "Delivered-To", "X-Original-To")
-
-
-class UnionFind:
-    """Minimal union-find over opaque string nodes for thread grouping."""
-
-    def __init__(self) -> None:
-        self.parent: dict[str, str] = {}
-
-    def find(self, node: str) -> str:
-        """Return the component root of ``node`` (path-halving as it walks)."""
-        self.parent.setdefault(node, node)
-        root = node
-        while self.parent[root] != root:
-            self.parent[root] = self.parent[self.parent[root]]
-            root = self.parent[root]
-        return root
-
-    def union(self, a: str, b: str) -> None:
-        ra, rb = self.find(a), self.find(b)
-        if ra != rb:
-            self.parent[ra] = rb
-
-
-def _referenced_ids(msg: email.message.Message) -> list[str]:
-    """Normalized message-ids this message replies to (References + In-Reply-To)."""
-    out: list[str] = []
-    for header in ("References", "In-Reply-To"):
-        raw = str(msg.get(header, "") or "")
-        for tok in raw.replace("<", " <").split():
-            normalized = normalize_message_id(tok)
-            if normalized:
-                out.append(normalized)
-    return out
-
-
-def _conversation_key(msg: email.message.Message) -> str | None:
-    """Outlook Thread-Index conversation id: hex of the shared leading 22 bytes."""
-    raw = str(msg.get("Thread-Index", "") or "").strip()
-    if not raw:
-        return None
-    try:
-        decoded = base64.b64decode(raw)
-    except (ValueError, binascii.Error):
-        return None
-    return decoded[:22].hex() if len(decoded) >= 22 else None
 
 
 def _parse_eml(path: Path) -> dict[str, object]:
@@ -177,8 +131,8 @@ def _parse_eml(path: Path) -> dict[str, object]:
         "rcpt": delivered,
         "subject": str(msg.get("Subject", "") or ""),
         "size": len(raw),
-        "refs": _referenced_ids(msg),
-        "conv": _conversation_key(msg),
+        "refs": referenced_ids(msg),
+        "conv": conversation_key(msg),
     }
 
 
@@ -209,33 +163,6 @@ def check_account_matches(
         f"folder, so this would file mail belonging to {leader} into {account}. "
         f"Re-run with --mail-account {leader}, or pass --force if you meant it."
     )
-
-
-def _assign_threads(messages: list[dict[str, object]]) -> dict[str, str]:
-    """Return {id -> thread_id} via References/In-Reply-To + Thread-Index.
-
-    ``thread_id`` is the earliest member's id in its connected component.
-    """
-    uf = UnionFind()
-    for m in messages:
-        mid = str(m["id"])
-        uf.find(mid)
-        for ref in m["refs"]:  # type: ignore[attr-defined]
-            uf.union(mid, ref)
-        if m["conv"]:
-            uf.union(mid, f"tidx:{m['conv']}")
-
-    components: dict[str, list[dict[str, object]]] = {}
-    for m in messages:
-        components.setdefault(uf.find(str(m["id"])), []).append(m)
-
-    thread_of: dict[str, str] = {}
-    for members in components.values():
-        root = min(members, key=lambda m: (m["date"], str(m["id"])))
-        thread_id = str(root["id"])
-        for m in members:
-            thread_of[str(m["id"])] = thread_id
-    return thread_of
 
 
 def _dedup_folder(
@@ -379,7 +306,7 @@ def _place_threads(
 ) -> dict[str, Placed]:
     """Per thread of ``members_by_thread``, where its new members file (`filing.file_thread`).
 
-    A staged thread keeps Gmail's thread id; a local one adopts that of its earliest
+    A staged thread keeps its provider's thread id; a local one adopts that of its earliest
     member the store has (an archived one first). Only an archived row anchors
     (split plan rule 3). The opener is the earliest observed row among the store's
     rows of the thread and the new members, the store's copy of a member first.
@@ -423,14 +350,15 @@ def _row_for(
 ) -> tuple[Row, str]:
     """Build the manifest row and archive rel-path for one new message.
 
-    Named by a staged message's Gmail ``msgid``, else `message.local_msgid` of the
-    key. ``labels`` is the ``--tag`` payload (a flat export carries no provider
-    folders, so ``None`` unless the owner names tags).
+    Named by a staged message's provider (``stem``: Gmail's msgid, a digest of
+    Fastmail's), else `message.local_msgid` of the key. ``labels`` is the ``--tag``
+    payload (a flat export carries no provider folders, so ``None`` unless the owner
+    names tags).
     """
     mid = str(m["id"])
     mgid = str(m.get("msgid") or local_msgid(mid))
     dt: datetime = m["date"]  # type: ignore[assignment]
-    rel = f"{placed.folder}/{dt.strftime('%Y-%m')}/{mgid}.eml"
+    rel = f"{placed.folder}/{dt.strftime('%Y-%m')}/{m.get('stem') or mgid}.eml"
     row: Row = {
         "id": mid,
         "msgid": mgid,
@@ -574,7 +502,7 @@ def ingest_folder(
     if complaint and not force:
         raise ValueError(complaint)
 
-    thread_of = _assign_threads(messages)
+    thread_of = assign_threads(messages)
     stats = _file_under_lock(target, messages, thread_of, dry_run=dry_run)
     durable: set[str] = stats.pop("durable")  # type: ignore[assignment]
     # Already-archived messages are durable too, so a re-run with nothing new to
@@ -708,7 +636,7 @@ def ingest_routed(
     """
     files = source_files(src)
     messages, dup, files_by_id = _dedup_folder(files)
-    thread_of = _assign_threads(messages)
+    thread_of = assign_threads(messages)
 
     members_by_thread: dict[str, list[dict[str, object]]] = {}
     for m in messages:
@@ -762,7 +690,7 @@ class _StagedRun:
     """What one ``ingest --staged`` decided beyond the rows and bodies it files.
 
     ``remove``: staged copies whose archived twin has the same bytes. ``duplicates``:
-    (staged, ``.duplicates`` target, body). ``links``: Gmail msgids onto archived rows,
+    (staged, ``.duplicates`` target, body). ``links``: native msgids onto archived rows,
     by year shard. ``sources``: each filed message's staged file.
     """
 
@@ -787,17 +715,19 @@ def _load_staged(
     messages: list[dict[str, object]] = []
     seen: set[str] = set()
     for path, rel in found:
-        parsed = parse_staged(rel)
-        if parsed is None:
+        staged = parse_staged(rel)
+        if staged is None:
             run.unrecognized.append(rel)
             continue
-        thread, msgid, internal = parsed
+        provider, msgid = staged.provider, staged.msgid
         if msgid in seen:
             run.refused.append(rel)
             continue
         seen.add(msgid)
         m = _parse_eml(path)
-        m.update(source=path, rel=rel, msgid=msgid, thread=thread, date=internal)
+        m.update(source=path, rel=rel, msgid=msgid, thread=staged.thread_id)
+        m.update(date=staged.internal_dt, provider=provider)
+        m.update(stem=provider.file_stem(msgid))
         messages.append(m)
     return messages
 
@@ -805,23 +735,28 @@ def _load_staged(
 def _key_staged(
     messages: list[dict[str, object]], existing: Existing, archive_dir: Path
 ) -> None:
-    """Key each staged message as catalog keyed it (`message.gmail_key`), in Gmail-id order."""
-    work: dict[str, GmailRow] = dict(existing.rows)
+    """Key each staged message as catalog keyed it (`message.mailbox_key`): by the
+    provider its staged name says, in that provider's order."""
+    work: dict[str, MailRow] = dict(existing.rows)
 
-    def held(row: GmailRow) -> bool:
+    def held(row: MailRow) -> bool:
         return bool(row.get("downloaded")) and eml_on_disk(row, archive_dir)
 
-    for m in sorted(messages, key=lambda m: int(str(m["msgid"]), 16)):
-        msgid = str(m["msgid"])
-        m["id"] = gmail_key(
-            key=message_key(
-                message_id=str(m["message_id"]), provider="gmail", native_id=msgid
-            ),
-            gmail_id=msgid,
-            sent=m["sent"],  # type: ignore[arg-type]
-            rows=work,
-            held=held,
+    def request(m: dict[str, object]) -> KeyRequest:
+        msgid, when = str(m["msgid"]), cast(datetime, m["date"]).isoformat()
+        tag = cast(Provider, m["provider"]).name
+        key = message_key(
+            message_id=str(m["message_id"]), provider=tag, native_id=msgid
         )
+        return KeyRequest(key, msgid, when, cast(datetime | None, m["sent"]))
+
+    for provider in dict.fromkeys(cast(Provider, m["provider"]) for m in messages):
+        batch = [m for m in messages if m["provider"] is provider]
+        keys = mailbox_keys(
+            map(request, batch), provider=provider, rows=work, held=held
+        )
+        for m in batch:
+            m["id"] = keys[str(m["msgid"])]
 
 
 def _settle_archived(
@@ -833,8 +768,8 @@ def _settle_archived(
 ) -> None:
     """A staged message whose row is archived: drop an identical copy, or set it aside.
 
-    The same Gmail message: same bytes are removed, other bytes refused and kept. A
-    row archived under another name (an ingest-filed copy `gmail_key` links): the
+    The same mailbox message: same bytes are removed, other bytes refused and kept. A
+    row archived under another name (an ingest-filed copy `mailbox_key` links): the
     msgid is linked onto it and the body set aside in the duplicates dir at the path
     it would have had, never over a taken one.
     """
@@ -849,7 +784,7 @@ def _settle_archived(
         return
     dt: datetime = m["date"]  # type: ignore[assignment]
     dst = (
-        duplicates_dir / anchor_folder(row) / dt.strftime("%Y-%m") / f"{m['msgid']}.eml"
+        duplicates_dir / anchor_folder(row) / dt.strftime("%Y-%m") / f"{m['stem']}.eml"
     )
     if dst.exists():
         if dst.read_bytes() == raw:
@@ -977,7 +912,7 @@ def ingest_staged(
     """File what ``fetch`` got into ``staging_dir`` into ``target``'s archive (plan rule 6).
 
     Holds the store's lock and reconciles first (ADR 0002 §4). Each message is keyed
-    as catalog keyed it (`message.gmail_key`) and filed by `wicket.filing`'s rank, so
+    as catalog keyed it (`message.mailbox_key`) and filed by `wicket.filing`'s rank, so
     ``--domain D`` files each one without an archived anchor under D (plan rule 7). A
     file not named as staged is reported in ``unrecognized``; nothing goes to the
     Trash. An empty staging dir is a no-op; a dry run takes no lock and writes

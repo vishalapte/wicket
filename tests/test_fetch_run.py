@@ -23,6 +23,7 @@ import wicket.root.lib.fetch as fetch_lib
 from wicket import auth, env
 from wicket.errors import ApiError
 from wicket.manifest import Row
+from wicket.provider import GMAIL
 from wicket.root import api as root_api
 
 ME = "you@gmail.com"
@@ -79,7 +80,7 @@ def _creds(tmp_path: Path) -> Path:
 def _ctx(tmp_path: Path, *, dry_run: bool = False) -> fetch_lib.ThreadContext:
     return fetch_lib.ThreadContext(
         dest=tmp_path / "archive",
-        imap_email=ME,
+        account=ME,
         domain_aliases={},
         dry_run=dry_run,
         store_dir=tmp_path / "manifest",
@@ -100,11 +101,12 @@ class Years:
         monkeypatch.setattr(fetch_lib, "_pass", self._pass)
         monkeypatch.setattr(fetch_lib, "_got_count", lambda _ctx: self.rows)
         monkeypatch.setattr(fetch_lib, "open_mailbox", lambda *_a, **_k: self.conn)
-        monkeypatch.setattr(fetch_lib, "first_year", lambda _conn: 2022)
+        monkeypatch.setattr(fetch_lib, "first_year", lambda *_a: 2022)
         monkeypatch.setattr(fetch_lib, "reconcile", lambda *_a: {})
 
     def _pass(self, **kw: object) -> tuple[dict[str, int], auth.Halted | None]:
-        query, limit = str(kw["query"]), kw["limit"]
+        search, limit = cast(tuple[str, ...], kw["search"]), kw["limit"]
+        query = search[-1].strip('"')  # Gmail's X-GM-RAW expression
         self.calls.append((query, limit))  # type: ignore[arg-type]
         year = int(query[6:10])
         got = self.growth.get(year, [])
@@ -204,7 +206,12 @@ def test_a_refused_discovery_connection_returns_halted(
 
 
 def _entry(uid: bytes, month: str = "2024-03") -> Row:
-    return {"uid": uid, "month": month, "path": f"acme.com/{month}/{uid.decode()}.eml"}
+    return {
+        "uid": uid,
+        "folder": "[Gmail]/All Mail",
+        "month": month,
+        "path": f"acme.com/{month}/{uid.decode()}.eml",
+    }
 
 
 def _bodies(*rows: tuple[bytes, int, bytes]) -> Callable[..., tuple[str, list[object]]]:
@@ -306,7 +313,7 @@ def test_a_rejected_search_halts_the_pass(tmp_path: Path) -> None:
     conn = FakeConn(lambda *_a: ("NO", [b""]))
     counts, halt = fetch_lib._pass(
         conn=_imap(conn),
-        query="after:2024/01/01 before:2025/01/01",
+        search=GMAIL.year_search(2024),
         ctx=_ctx(tmp_path),
         credentials_path=creds,
         limit=500,
@@ -376,7 +383,7 @@ def test_last_runs_gmail_newer_than_as_one_filtered_pass(
     seen = _fetched(monkeypatch)
     code = root.main(["fetch", "--mail-account", ME, "--last", last, "--json"])
     assert code == 0 and json.loads(capsys.readouterr().out)["filtered"] is True
-    assert [(o.query, o.domains) for o in seen] == [(f"newer_than:{last}", None)]
+    assert [(o.last, o.query, o.domains) for o in seen] == [(last, None, None)]
 
 
 @pytest.mark.parametrize(
