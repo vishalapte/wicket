@@ -134,6 +134,7 @@ class IngestStore(TypedDict):
     filed: dict[str, list[str]]
     skipped: int
     excluded: int
+    excluded_lists: int
 
 
 class BusyStore(TypedDict):
@@ -147,10 +148,11 @@ class BusyStore(TypedDict):
 class IngestRoot(TypedDict):
     """What ``wicket ingest`` returns: the mode it ran in, and that mode's stats.
 
-    Every mode carries ``added``, ``excluded`` and ``filed`` (archive dir -> the
-    ``.eml`` filed there). ``staged`` and ``single`` carry one store's counts at the
-    top (``account`` ... ``by_rule``); ``routed`` carries them per store in
-    ``accounts``. ``added_by_year`` is keyed by the year as a string. A returned
+    Every mode carries ``added``, ``excluded``, ``excluded_lists`` (mail sent via a
+    mailing list the store excludes, skipped and left where it is) and ``filed``
+    (archive dir -> the ``.eml`` filed there). ``staged`` and ``single`` carry one
+    store's counts at the top (``account`` ... ``by_rule``); ``routed`` carries them
+    per store in ``accounts``. ``added_by_year`` is keyed by the year as a string. A returned
     result never names a busy store: a routed run that skips one is refused.
     """
 
@@ -159,6 +161,7 @@ class IngestRoot(TypedDict):
     to_trash: bool
     added: int
     excluded: int
+    excluded_lists: int
     filed: dict[str, list[str]]
     account: NotRequired[str]
     unfiled: NotRequired[int]

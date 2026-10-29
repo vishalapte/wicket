@@ -72,6 +72,13 @@ def commands() -> list[tuple[str, str]]:
                 "an imap.json link to its credential file."
             ),
         ),
+        (
+            "exclude",
+            (
+                "A mailing list whose mail is never fetched or filed "
+                "(excluded-lists.json), for every account or one."
+            ),
+        ),
     ]
 
 

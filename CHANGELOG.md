@@ -12,6 +12,11 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+## 0.9.0 - 2026-10-29
+
+### Added
+- **Mailing lists you never keep: `excluded-lists.json` and `wicket.exclude`.** A fourth owner map at the mail root, `{"*": [list-id], "<account>": [list-id]}`: a list-id (the text in a message's `List-Id` header, `made-of-meat.googlegroups.com`) under `"*"` is excluded for every account, under an account for that account alone. `fetch` appends the provider's `NOT` key to every search (Gmail `NOT X-GM-RAW "list:L"`, Fastmail `NOT HEADER List-Id "<L>"`, the brackets so part of a name never matches another list), so an excluded list is never listed or downloaded; `ingest --staged` and `--src` skip its mail, count it as `excluded_lists` and leave the file where it is; `catalog` still records the whole mailbox. A key that is neither `"*"` nor an account folder holding `imap.json` refuses the run. `python -m wicket.exclude create --list L [--mail-account A]`, `delete`, `list` edit it; no `--mail-account` is every account.
+
 ## 0.8.0 - 2026-10-29
 
 ### Added

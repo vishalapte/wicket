@@ -84,7 +84,11 @@ duplicate it here. Bound by the racecar standards (resolver:
     make the filing rule treat it as *me* and file its mail under the
     recipient's domain — that is the bug the split prevents. `wicket.alias` and
     `wicket.store` are how you WRITE to them; `env`/`domains` only ever read them,
-    through the `parse_*` rules the writers also apply.
+    through the `parse_*` rules the writers also apply. A fourth,
+    `excluded-lists.json` (mailing lists never fetched or filed, `{"*" | account:
+    [list-id]}`), is read by `wicket.exclusions` and written by `wicket.exclude`;
+    `fetch` appends `Provider.exclude_list` to every search and `ingest` skips the
+    mail (`Target.excluded_lists`), while `catalog` records the whole mailbox.
   - `root/lib/catalog.py`, `root/lib/fetch.py`, `root/lib/ingest.py`: per-verb
     worker modules. **`fetch` files nothing**: it gets bodies into
     `<store>/staging/` (`env.resolve_staging_dir`) and writes no `downloaded` or
@@ -97,7 +101,7 @@ duplicate it here. Bound by the racecar standards (resolver:
     thread, and files. It takes its resolvers (`AccountFor`) and maps from the
     api as arguments, so the worker reads no config file and no directory
     listing of its own. `maps.py` (shared) is generic on purpose: one
-    `{primary: [items]}` engine serves all three maps, since they share that
+    `{primary: [items]}` engine serves all four maps, since they share that
     shape; validation is the readers' `parse_*` rules, not here.
 - **Import direction** is checked by `[tool.importlinter]` in `pyproject.toml`:
   one `layers` contract, `wicket.__main__` (root face) → each noun's

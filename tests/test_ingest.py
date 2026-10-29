@@ -777,6 +777,7 @@ def test_render_names_the_already_archived_share(
             "trashed": 7,
             "added": 4,
             "excluded": 0,
+            "excluded_lists": 0,
             "filed": {},
             "accounts": [
                 {
@@ -784,6 +785,7 @@ def test_render_names_the_already_archived_share(
                     "added": 4,
                     "skipped": 3,
                     "excluded": 0,
+                    "excluded_lists": 0,
                     "unfiled": 0,
                     "added_by_year": {"2026": 4},
                     "top_domains": [],

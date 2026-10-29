@@ -6,7 +6,7 @@ generator:
 target:
   repo: wicket
   date: 2026-09-04
-  version: "0.8.0"
+  version: "0.9.0"
 bundle:
   - WICKET.md
   - WICKET-DOSSIER.md
@@ -192,6 +192,11 @@ external_surface:
       args: "{list,create <name> --config <folder>,delete <name>} [--json]"
       behavior: An account is a folder ~/.config/wicket/accounts/<name>/ holding imap.json, a link to the provider's file; every folder there holding an imap.json is the one list halt --all reads, and fetch and catalog resolve the named one. create makes the folder and links imap.json to <config>/imap.json (the same link again is a no-op); delete removes the imap.json link, or renames a real imap.json to imap_YYYYMMDD_HHMM.json, and keeps the folder. create and delete print nothing. No IMAP, no mail root.
       exit: "0 ok or no-op, 2 when --config does not exist, imap.json has another target, or delete's new name is taken"
+    - verb: python -m wicket.exclude
+      module: wicket.exclude.__main__
+      args: "{list,create --list L,delete --list L} [--mail-account A] [--json]"
+      behavior: Edit excluded-lists.json at the mail root, the mailing lists never fetched or filed. No --mail-account is "*", every account; --mail-account A is that account alone, and must be a folder holding imap.json. fetch leaves each list out of every search, ingest skips its mail, catalog records everything. No IMAP.
+      exit: "0 ok, 2 on a key that is no account folder, a malformed list-id, or an absent root"
   library_exports:
     - name: catalog
       module: wicket.root.api
@@ -237,8 +242,8 @@ inventory:
         glob: src/wicket/*/__main__.py
         id_format: "python -m wicket.{parent}"
   - kind: verb-package
-    describes: One package under src/wicket/ with its own api -- the root noun (the four root verbs' api) and the alias, store, halt and account nouns.
-    members: [account, alias, halt, root, store]
+    describes: One package under src/wicket/ with its own api -- the root noun (the four root verbs' api) and the alias, store, halt, account and exclude nouns.
+    members: [account, alias, exclude, halt, root, store]
     sources:
       - match: path
         glob: src/wicket/*/api.py
@@ -326,7 +331,7 @@ One runtime: a **CLI, and the library beneath it**. There is no server, no daemo
 | `python -m wicket` | no args: prints subcommand help and exits 0 |
 | `from wicket.root.api import ...` | the library surface; the package root is a namespace, not an API |
 
-**State lives entirely on disk**, in two places that never mix. The **mail root** (`~/.delphi/mail`, override `$WICKET_MAIL_ROOT`) holds every Store and the three maps. `~/.config/wicket/accounts/<account>/imap.json`, a link to the provider's file, holds credentials. Secrets are never inside the data tree, never in the repo, and never on a command line.
+**State lives entirely on disk**, in two places that never mix. The **mail root** (`~/.delphi/mail`, override `$WICKET_MAIL_ROOT`) holds every Store and the four maps. `~/.config/wicket/accounts/<account>/imap.json`, a link to the provider's file, holds credentials. Secrets are never inside the data tree, never in the repo, and never on a command line.
 
 ### §2.2 Entities
 
@@ -400,12 +405,13 @@ The load-bearing detail:
 | `<mail-root>/account-aliases.json` | Addresses that **are you** → the store that owns them. Exceptions only: an address that already names a store resolves to itself. A primary may be an account address or a bucket name; an alias may be a literal address or a `*@domain` catch-all. |
 | `<mail-root>/domain-routes.json` | Counterparties that are **not you** → where their mail goes. Used only when no mailbox claims the thread. |
 | `<mail-root>/domain-aliases.json` | Subdomain **folding** (`*.delta.com` → `delta.com`). Shared by `fetch` and `ingest`; `--alias-file` overrides. |
+| `<mail-root>/excluded-lists.json` | Mailing lists never fetched or filed: `"*"` for every account, an account key for that one. `fetch` leaves them out of every search, `ingest` skips their mail; `catalog` records everything. Edited by `wicket.exclude`. |
 | `~/.config/wicket/accounts/<account>/imap.json` | Address and app password, through the account's link. File `0600`. Seeded on first run; `--state-dir` overrides the base; no account folder is a silent no-op. |
 | `~/.local/state/wicket/halt/<account>` | The account's HALT (`$XDG_STATE_HOME`); present means halted. Only `wicket.auth` writes or removes it. |
 | `~/.local/state/wicket/log/<account>.log` | fetch's counts and years, and every HALT set and cleared. Never a subject, another address, a path or a secret. |
 | `DEFAULT_THREADS = 4` | Worker pool per verb. One worker is one IMAP connection; Gmail caps simultaneous connections near 15, so stay well under. |
 
-All three maps are optional, and **nothing in them is inferred** — an entry exists because the owner wrote it.
+All four maps are optional, and **nothing in them is inferred** — an entry exists because the owner wrote it.
 
 ### §2.7 Flows
 

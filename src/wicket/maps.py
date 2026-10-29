@@ -1,7 +1,8 @@
 """The owner-authored maps on disk: ``{primary: [items, ...]}``, read, edited, written.
 
-All three maps (account-aliases, domain-aliases, domain-routes) share this one shape, so one
-engine serves the nouns that edit them (`wicket.alias`, `wicket.store`). The edits are pure:
+All four maps (account-aliases, domain-aliases, domain-routes, excluded-lists) share this one
+shape, so one engine serves the nouns that edit them (`wicket.alias`, `wicket.store`,
+`wicket.exclude`). The edits are pure:
 each takes a map and returns a new one, so a caller can check the result with the readers'
 own rules (`env.parse_account_aliases`, `domains.parse_domain_aliases`,
 `domains.parse_domain_routes`) before anything reaches disk. No validation lives here.

@@ -497,6 +497,7 @@ def _filed(account: str = ME, **over: object) -> Stats:
         "filed": {"acme.com/2026-07": ["a1.eml", "a2.eml"]},
         "skipped": 0,
         "excluded": 0,
+        "excluded_lists": 0,
     }
     return {**stats, **over}
 
@@ -511,6 +512,7 @@ def _routed(**over: object) -> Stats:
         "added": 2,
         "skipped": 0,
         "excluded": 0,
+        "excluded_lists": 0,
         "filed": {"acme.com/2026-07": ["a1.eml", "a2.eml"]},
         "unrouted": 0,
         "unrouted_threads": 0,

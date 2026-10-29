@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import cast
 
 from wicket.env import Identities, StoreBusy, store_lock
+from wicket.exclusions import normalize_list_id
 from wicket.filing import (
     UNFILED,
     AccountFor,
@@ -133,6 +134,7 @@ def _parse_eml(path: Path) -> dict[str, object]:
         "size": len(raw),
         "refs": referenced_ids(msg),
         "conv": conversation_key(msg),
+        "list_id": normalize_list_id(str(msg.get("List-Id", "") or "")),
     }
 
 
@@ -270,6 +272,8 @@ class Target:
     domain_aliases: dict[str, str]  # domains.load_domain_aliases(): subdomain folding
     filing_domain: str | None = None  # --domain: forced filing domain override
     labels: list[str] | None = None  # --tag: recorded as each new row's labels
+    # exclusions.excluded_for: mailing lists whose mail is never filed here.
+    excluded_lists: frozenset[str] = frozenset()
 
     @property
     def owner(self) -> Owner:
@@ -549,8 +553,9 @@ def _file_into(
     ``messages`` is either the whole folder (single-target ingest) or one
     account's share of it (routed ingest); either way it is whole threads, so the
     filing plan sees every member of every thread it decides on. A message whose
-    row the owner marked ``excluded`` is skipped and counted (plan rule 14): it is
-    not filed, and its source file is not trashed.
+    row the owner marked ``excluded`` is skipped and counted (plan rule 14), and so is
+    one sent via a mailing list the target excludes (``excluded_lists``): neither is
+    filed, and its source file is not trashed.
     """
     existing = _load_existing(target.store_dir, target.archive_dir)
     excluded = {
@@ -558,7 +563,10 @@ def _file_into(
         for m in messages
         if existing.rows.get(mid := str(m["id"]), {}).get("excluded")
     }
-    kept = [m for m in messages if str(m["id"]) not in excluded]
+    listed = {
+        str(m["id"]) for m in messages if m["list_id"] in target.excluded_lists
+    } - excluded
+    kept = [m for m in messages if str(m["id"]) not in excluded | listed]
 
     members_by_thread: dict[str, list[dict[str, object]]] = {}
     for m in kept:
@@ -571,6 +579,7 @@ def _file_into(
     # it read reads like loss.
     stats["skipped"] = len(kept) - len(filed.to_write)
     stats["excluded"] = len(excluded)
+    stats["excluded_lists"] = len(listed)
     # Durably in this store once the commit lands: filed now, or already
     # archived. These are the messages whose source files may be trashed.
     stats["durable"] = {str(m["id"]) for m in kept}
@@ -668,6 +677,9 @@ def ingest_routed(
         "added": sum(int(a["added"]) for a in per_account),  # type: ignore[call-overload]
         "skipped": sum(int(a["skipped"]) for a in per_account),  # type: ignore[call-overload]
         "excluded": sum(int(a["excluded"]) for a in per_account),  # type: ignore[call-overload]
+        "excluded_lists": sum(
+            int(a["excluded_lists"]) for a in per_account  # type: ignore[call-overload]
+        ),
         "filed": _merge_filed(per_account),
         "unrouted": sum(len(members_by_thread[tid]) for tid in unrouted),
         "unrouted_threads": len(unrouted),
@@ -697,6 +709,7 @@ class _StagedRun:
     unrecognized: list[str] = field(default_factory=list)
     refused: list[str] = field(default_factory=list)
     excluded: int = 0
+    excluded_lists: int = 0
     archived: int = 0
     remove: list[Path] = field(default_factory=list)
     duplicates: list[tuple[Path, Path, bytes]] = field(default_factory=list)
@@ -867,6 +880,8 @@ def _staged_into(
         mid = str(m["id"])
         if existing.rows.get(mid, {}).get("excluded"):
             run.excluded += 1  # plan rule 14: skipped, counted, left staged
+        elif m["list_id"] in target.excluded_lists:
+            run.excluded_lists += 1  # an excluded mailing list's: left staged
         elif mid in existing.held:
             _settle_archived(m, existing, target, duplicates_dir, run)
         else:
@@ -894,6 +909,7 @@ def _staged_into(
         duplicates=len(run.duplicates),
         linked=sum(len(rows) for rows in run.links.values()),
         excluded=run.excluded,
+        excluded_lists=run.excluded_lists,
         refused=sorted(run.refused),
         unrecognized=run.unrecognized,
     )

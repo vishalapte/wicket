@@ -123,6 +123,7 @@ def _single(result: IngestRoot) -> IngestStore:
         "filed": result["filed"],
         "skipped": result["skipped"],
         "excluded": result["excluded"],
+        "excluded_lists": result["excluded_lists"],
     }
 
 
@@ -146,6 +147,8 @@ def ingest_lines(result: IngestRoot) -> list[str]:
             line += f"; {got['skipped']} already archived"
         if got["excluded"]:
             line += f"; {got['excluded']} excluded, skipped"
+        if got["excluded_lists"]:
+            line += f"; {got['excluded_lists']} from an excluded mailing list, skipped"
         if got["unfiled"]:
             line += f"; {got['unfiled']} unfiled"
         lines.append(line)
@@ -189,6 +192,7 @@ def _print_staged(result: IngestRoot) -> None:
         (result["archived"], "already archived (staged copy removed)"),
         (result["duplicates"], "set aside as duplicates"),
         (result["excluded"], "excluded, skipped and left staged"),
+        (result["excluded_lists"], "from an excluded mailing list, left staged"),
         (result["unfiled"], "unfiled"),
     ):
         if count:

@@ -63,10 +63,16 @@ ACCOUNT_ALIASES_FILE_ENV_VAR = "WICKET_ACCOUNT_ALIASES_FILE"
 DOMAIN_ROUTES_FILENAME = "domain-routes.json"
 
 # Path overrides for the two domain maps, same shape as ACCOUNT_ALIASES_FILE_ENV_VAR
-# above. Named here (not in `wicket.domains`) so all three owner-authored maps'
+# above. Named here (not in `wicket.domains`) so every owner-authored map's
 # filenames AND overrides share one home; `wicket.domains`'s path functions read them.
 DOMAIN_ROUTES_FILE_ENV_VAR = "WICKET_DOMAIN_ROUTES_FILE"
 DOMAIN_ALIASES_FILE_ENV_VAR = "WICKET_DOMAIN_ALIASES_FILE"
+
+# The fourth owner-authored map: mailing lists whose mail is never fetched or filed,
+# ``{"*": [list-id], "<account>": [list-id]}`` ("*" is every account). Read by
+# `wicket.exclusions`; named here so every owner map's filename and override share one home.
+EXCLUDED_LISTS_FILENAME = "excluded-lists.json"
+EXCLUDED_LISTS_FILE_ENV_VAR = "WICKET_EXCLUDED_LISTS_FILE"
 
 # An email address. Deliberately permissive in the local part (burner services
 # mint odd ones) and strict in the domain, which is the half that can reach the
@@ -445,14 +451,15 @@ def resolve_state_dir(
     return path
 
 
-def account_dirs() -> list[Path]:
+def account_dirs(override: str | os.PathLike[str] | None = None) -> list[Path]:
     """Every account: each folder in ``~/.config/wicket/accounts`` holding ``imap.json``.
 
     The one home of the list (owner, 2026-10-28: "list of accounts are all directories
     that contain an imap.json"). A link counts even when its target does not exist yet;
     a folder without one is no account. Sorted by name. Reads only; creates nothing.
+    ``override`` replaces the base, as `resolve_accounts_dir` takes it.
     """
-    root = resolve_accounts_dir()
+    root = resolve_accounts_dir(override)
     if not root.is_dir():
         return []
     return [

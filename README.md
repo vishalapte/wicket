@@ -92,7 +92,7 @@ IMAP, and `ingest` that files a local export offline. These are subcommands of
 one CLI, not separate dotted modules: the `wicket` console script and `python
 -m wicket` are the same dispatcher (`wicket <verb> ...` == `python -m wicket
 <verb> ...`); bare `python -m wicket` (or `wicket` with no args) prints this
-list. The three owner-authored maps below are edited through two **nouns**, each
+list. The four owner-authored maps below are edited through three **nouns**, each
 its own module: `python -m wicket.alias <list|create|update|delete>` and
 `python -m wicket.store <list|create|delete>`. A third noun, `python -m wicket.halt
 <list|set|clear>`, operates the HALT (below), and a fourth, `python -m wicket.account
@@ -344,8 +344,8 @@ An app password is account-scoped and revocable at
 that is the kill switch. Full security model:
 [`src/wicket/README.md`](src/wicket/README.md).
 
-**Three owner-authored maps** sit at the mail root. All three are optional, and
-none of them is inferred — an entry exists because you wrote it. They answer three
+**Four owner-authored maps** sit at the mail root. All four are optional, and
+none of them is inferred — an entry exists because you wrote it. They answer four
 different questions, and keeping them apart is load bearing:
 
 | File | Answers | Example |
@@ -353,6 +353,7 @@ different questions, and keeping them apart is load bearing:
 | `<mail-root>/account-aliases.json` | *Which addresses are **me**?* Maps an address you receive at to the store that owns it. **Exceptions only:** an address that already names a store (`you@work.com`) resolves to itself and must not be listed. A primary may be an account address or a **bucket** name; an alias may be a literal address or a `*@domain` catch-all. | `{"travel": ["hyatt@xcv.org"], "shopping": ["*@shop.you.com"]}` |
 | `<mail-root>/domain-routes.json` | *Which counterparties are **not me**, and where does their mail go?* Used only when no mailbox claims the thread. | `{"shopping": ["ikea.com", "llbean.com"]}` |
 | `<mail-root>/domain-aliases.json` | *What is this domain **called**?* Folds a marketing subdomain onto its primary when filing, so a store does not fragment into one folder per campaign host. Shared by `fetch` and `ingest`; override with `--alias-file`. | `{"delta.com": ["*.delta.com"]}` |
+| `<mail-root>/excluded-lists.json` | *Which **mailing lists** do I never keep?* A list-id (the text in a message's `List-Id` header) under `"*"` is excluded for every account, under an account for that account alone. `fetch` leaves it out of every search; `ingest --staged` and `--src` skip its mail and leave the file where it is; `catalog` still records the whole mailbox. A key that is neither `"*"` nor an account folder holding `imap.json` refuses the run. | `{"*": ["made-of-meat.googlegroups.com"]}` |
 
 > A counterparty must **never** go in `account-aliases.json`. That file means "this
 > is me", so listing IKEA there makes every message *from* IKEA look outbound, and
@@ -363,8 +364,18 @@ Domains are folded **before** routes are matched, so `domain-routes.json` lists
 only primaries (`delta.com`) and never has to repeat every subdomain the fold map
 already knows about.
 
-Two nouns edit all three without hand-editing JSON. **`wicket.alias`** edits the
-fold map; **`wicket.store`** edits both maps that pick a store, one flag per file:
+Three nouns edit all four without hand-editing JSON. **`wicket.alias`** edits the
+fold map; **`wicket.store`** edits both maps that pick a store, one flag per file;
+**`wicket.exclude`** edits the excluded lists (no `--mail-account` is every account,
+`*`):
+
+```
+python -m wicket.exclude create --list made-of-meat.googlegroups.com
+python -m wicket.exclude create --list news.example.org --mail-account vishal@enine.com
+python -m wicket.exclude list
+python -m wicket.exclude delete --list made-of-meat.googlegroups.com
+```
+
 
 ```
 python -m wicket.alias create --primary delta.com --item '*.delta.com'
@@ -571,6 +582,10 @@ python -m wicket   [Pattern 2 (discovery + own CLI)] OK
     python -m wicket.account list   [subcommand] OK
     python -m wicket.account create   [subcommand] OK
     python -m wicket.account delete   [subcommand] OK
+  python -m wicket.exclude   [Pattern 3 (leaf)] OK
+    python -m wicket.exclude create   [subcommand] OK
+    python -m wicket.exclude delete   [subcommand] OK
+    python -m wicket.exclude list   [subcommand] OK
   python -m wicket catalog   [subcommand] OK
   python -m wicket fetch   [subcommand] OK
   python -m wicket report   [subcommand] OK

@@ -239,7 +239,8 @@ class ThreadContext:
     the account's mail provider (`wicket.provider`). ``account`` is who is *you*
     when reconcile derives a domain: the account, as ingest --staged reconciles
     with, never the login (they differ when an account's folder is named for its
-    store).
+    store). ``exclude`` is the search keys every pass appends: the mailing lists the
+    account never fetches (`Provider.exclude_list` over `exclusions.excluded_for`).
     """
 
     dest: Path
@@ -250,6 +251,7 @@ class ThreadContext:
     staging_dir: Path | None = None
     duplicates_dir: Path | None = None
     provider: Provider = GMAIL
+    exclude: Search = ()
 
 
 # --- Discovery + planning ------------------------------------------------
@@ -705,7 +707,12 @@ def _pass(
     done, rows = _got(ctx)
     try:
         records, total, unheld = _discover_records(
-            credentials_path, search, done, limit, conn=conn, provider=ctx.provider
+            credentials_path,
+            search + ctx.exclude,
+            done,
+            limit,
+            conn=conn,
+            provider=ctx.provider,
         )
     except Halted as refused:
         return counts, refused

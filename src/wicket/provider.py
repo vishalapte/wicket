@@ -136,6 +136,14 @@ class Provider:
         """Every message of the last ``last`` (``2d``, ``3m``, ``1y``) up to ``today``."""
         raise NotImplementedError
 
+    def exclude_list(self, list_id: str) -> Search:
+        """The search keys that leave out mail sent via mailing list ``list_id``.
+
+        Appended to a search (IMAP ANDs its keys), so an excluded list's mail is never
+        listed, keyed or downloaded (`wicket.exclusions`).
+        """
+        raise NotImplementedError
+
     def staged_name(self, thread_id: str, msgid: str, internal_dt: datetime) -> str:
         """The path, under ``staging/``, ``fetch`` gets one message of this provider to."""
         stamp = internal_dt.astimezone(timezone.utc).strftime(_STAGED_DATE)
@@ -204,6 +212,9 @@ class Gmail(Provider):
     def since_search(self, last: str, today: date) -> Search:
         return self.raw_search(f"newer_than:{last}")
 
+    def exclude_list(self, list_id: str) -> Search:
+        return ("NOT", "X-GM-RAW", imap_quote(f"list:{list_id}"))
+
 
 # RFC 8474's objectid: 1*255(ALPHA / DIGIT / "_" / "-").
 _OBJECTID_RE = re.compile(r"^[A-Za-z0-9_-]{1,255}$")
@@ -261,6 +272,11 @@ class Fastmail(Provider):
         else:
             since = months_back(today, n if unit == "m" else 12 * n)
         return ("SINCE", imap_date(since))
+
+    def exclude_list(self, list_id: str) -> Search:
+        # The header carries the id in angle brackets; quoting them pins both ends, so a
+        # part of one list's name never matches another (probed 2026-10-29).
+        return ("NOT", "HEADER", "List-Id", imap_quote(f"<{list_id}>"))
 
     def _stage(self, thread_id: str, msgid: str) -> tuple[str, str]:
         return (

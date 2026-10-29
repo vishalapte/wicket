@@ -73,6 +73,7 @@ from wicket.env import (
     MAIL_ROOT,
     NotLinked,
     StoreBusy,
+    account_dirs,
     account_of,
     append_log,
     identities,
@@ -87,6 +88,7 @@ from wicket.env import (
     store_lock,
 )
 from wicket.errors import ApiError
+from wicket.exclusions import excluded_for, excluded_lists_path, load_excluded_lists
 from wicket.filing import AccountFor, build_domain_query
 from wicket.manifest import Row, latest_shard_year, load_store
 from wicket.provider import Provider, Search, provider_of
@@ -320,6 +322,17 @@ def _search(
     return provider.raw_search(build_domain_query(names, domain_aliases))
 
 
+def _excluded(account: str, state_dir: Path | None = None) -> list[str]:
+    """The mailing lists ``account`` never fetches or files (`exclusions.excluded_for`).
+
+    The map's keys are checked against the accounts dir this run resolves, so a
+    ``--state-dir`` run checks its own. A malformed map raises ``ValueError``.
+    """
+    accounts = [p.name for p in account_dirs(state_dir)]
+    mapping = load_excluded_lists(excluded_lists_path(MAIL_ROOT), accounts)
+    return excluded_for(account, mapping)
+
+
 def _run_log(account: str) -> Callable[[str], None]:
     """Append one timestamped line to the account's log (`env.append_log`)."""
 
@@ -372,6 +385,9 @@ def fetch(
     load_credentials(credentials_path, interactive=interactive)
     provider = provider_of(credentials_path)
     search = _search(options, provider, domain_aliases)
+    exclude: Search = ()
+    for list_id in _excluded(resolved, options.state_dir):
+        exclude += provider.exclude_list(list_id)
 
     store = resolve_store_dir(resolved)
     ctx = ThreadContext(
@@ -383,6 +399,7 @@ def fetch(
         staging_dir=resolve_staging_dir(resolved),
         duplicates_dir=resolve_duplicates_dir(resolved),
         provider=provider,
+        exclude=exclude,
     )
     log: Callable[[str], None] = (
         (lambda _line: None) if options.dry_run else _run_log(resolved)
@@ -499,6 +516,7 @@ def _target(account: str, accounts: set[str], options: IngestOptions) -> Target:
         domain_aliases=load_domain_aliases(domain_aliases_path(MAIL_ROOT)),
         filing_domain=options.domain,
         labels=list(options.tags) or None,
+        excluded_lists=frozenset(_excluded(account)),
     )
 
 
