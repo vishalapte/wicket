@@ -370,7 +370,7 @@ This repo follows the racecar standards. Set up with `make install-dev` (adds th
 dev tools and pre-commit hooks), then run `make check` before opening a change;
 `make help` lists every target. Notable changes are recorded in
 [`CHANGELOG.md`](CHANGELOG.md). Agent-facing rules live in
-[`CLAUDE.md`](CLAUDE.md) (repo-level) and
+[`AGENTS.md`](AGENTS.md) (repo-level) and
 [`src/wicket/CLAUDE.md`](src/wicket/CLAUDE.md) (package-level). Full usage and the
 security model are in the package README:
 [`src/wicket/README.md`](src/wicket/README.md).
@@ -382,9 +382,14 @@ MIT. See the [`LICENSE`](LICENSE) file.
 <!-- BEGIN cli-tree (generated) -->
 ## CLI
 
-<!-- GENERATED — DO NOT EDIT between the markers. Regenerate:  python scripts/gen_cli_docs.py --write -->
+<!-- GENERATED — DO NOT EDIT between the markers. Regenerate:  python -m racecar.surface generate --surface cli --docs --apply -->
 
 ```text
 python -m wicket   [Pattern 3 (leaf)] OK
+  python -m wicket catalog   [subcommand] OK
+  python -m wicket fetch   [subcommand] OK
+  python -m wicket report   [subcommand] OK
+  python -m wicket ingest   [subcommand] OK
+  python -m wicket config   [subcommand] OK
 ```
 <!-- END cli-tree -->

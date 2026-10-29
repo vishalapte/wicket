@@ -77,6 +77,7 @@ def parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         dest="limit",
+        metavar="N",
         help="Stop after N new messages this run (after the store dedup).",
     )
     build.add_argument(

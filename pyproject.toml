@@ -24,7 +24,7 @@ wicket = "wicket.__main__:main"
 dev = [
     "black",
     "isort",
-    "pylint",
+    "pylint==4.0.9",              # pinned: the version racecar lints its delivered files under
     "pylint-pytest",
     "mypy",
     "pytest",
@@ -159,5 +159,5 @@ layers = [
   "wicket.catalog.lib | wicket.fetch.lib | wicket.report.lib | wicket.ingest.lib | wicket.config.lib",
   "wicket.reconcile",
   "wicket.auth | wicket.domains | wicket.message | wicket.manifest",
-  "wicket.env",
+  "wicket.env | wicket.errors | wicket.schema | wicket.lib",
 ]

@@ -35,7 +35,7 @@ repos:
         language: python
         additional_dependencies: [isort==8.0.1]
         types: [python]
-        exclude: '^scripts/'
+        exclude: '^\.racecar/'
 
       - id: black
         name: black
@@ -43,7 +43,7 @@ repos:
         language: python
         additional_dependencies: [black==26.5.1]
         types: [python]
-        exclude: '^scripts/'
+        exclude: '^\.racecar/'
 
       # djhtml reindents Django/Jinja template tags. types: [html] scopes it so it
       # only fires when HTML is staged — a no-op in repos without templates. Mirrors
@@ -57,7 +57,7 @@ repos:
 
       - id: import-linter
         name: import-linter
-        entry: bash -c 'VENV=; for d in .venv venv ../venv; do [ -d "$d" ] && VENV=$d && break; done; export PATH="${VENV:+$VENV/bin:}$PATH"; CONF=$(make -s print-LIB_PYPROJECT); SERVER=$(make -s print-SERVER); export PYTHONPATH="${SERVER:+$SERVER:}$PYTHONPATH"; lint-imports --config "$CONF"'
+        entry: bash -c 'B=$(make -s print-RC_BIN); export PATH="${B:+$B:}$PATH"; CONF=$(make -s print-LIB_PYPROJECT); RC_DJANGO=$(make -s print-RC_DJANGO); export PYTHONPATH="${RC_DJANGO:+$RC_DJANGO:}$PYTHONPATH"; lint-imports --config "$CONF"'
         language: system
         pass_filenames: false
         always_run: true
@@ -72,28 +72,21 @@ repos:
 
       - id: no-upward-imports-in-business-modules
         name: arch-python/PYTHON.md §1 — business modules must not import from root package directly
-        entry: bash -c 'for d in $(make -s print-RACECAR_SCRIPT_DIRS); do f="$d/check_upward_imports.py"; [ -f "$f" ] && exec python "$f" "$@"; done; echo "cannot find check_upward_imports.py" >&2; exit 1' --
+        entry: bash -c 'for d in $(make -s print-RACECAR_SCRIPT_DIRS); do f="$d/check_upward_imports.py"; [ -f "$f" ] && exec "$(make -s print-RC_PYTHON)" "$f" "$@"; done; echo "cannot find check_upward_imports.py" >&2; exit 1' --
         language: python
         types: [python]
         exclude: '(__main__|__init__)\.py$'
 
       - id: doc-coherence-mechanical-pre-pass
         name: doc-coherence/README.md — mechanical pre-pass (link / §N / vocabulary drift)
-        entry: bash -c 'for d in $(make -s print-RACECAR_SCRIPT_DIRS); do f="$d/check_docs.py"; [ -f "$f" ] && exec python "$f" "$@"; done; echo "cannot find check_docs.py" >&2; exit 1' --
-        language: python
-        pass_filenames: false
-        always_run: true
-
-      - id: todo-format
-        name: shared/TODO_FORMAT.md — TODO item schema (id / Prio / Depends / Updated)
-        entry: bash -c 'for d in $(make -s print-RACECAR_SCRIPT_DIRS); do f="$d/check_todo_format.py"; [ -f "$f" ] && exec python "$f" "$@"; done; echo "cannot find check_todo_format.py" >&2; exit 1' --
+        entry: bash -c 'for d in $(make -s print-RACECAR_SCRIPT_DIRS); do f="$d/check_docs.py"; [ -f "$f" ] && exec "$(make -s print-RC_PYTHON)" "$f" "$@"; done; echo "cannot find check_docs.py" >&2; exit 1' --
         language: python
         pass_filenames: false
         always_run: true
 
       - id: file-placement
         name: doc-coherence/README.md — markdown docs placement (top-level whitelist / subdir README+CLAUDE)
-        entry: bash -c 'for d in $(make -s print-RACECAR_SCRIPT_DIRS); do f="$d/check_file_placement.py"; [ -f "$f" ] && exec python "$f" "$@"; done; echo "cannot find check_file_placement.py" >&2; exit 1' --
+        entry: bash -c 'for d in $(make -s print-RACECAR_SCRIPT_DIRS); do f="$d/check_file_placement.py"; [ -f "$f" ] && exec "$(make -s print-RC_PYTHON)" "$f" "$@"; done; echo "cannot find check_file_placement.py" >&2; exit 1' --
         language: python
         # pyyaml is not this checker's own dependency: it imports
         # check_doc_graph.graph_edges to resolve `pnode` frontmatter edges, and
@@ -119,7 +112,7 @@ repos:
       # not touched.
       - id: changelog-headings
         name: shared/COMMITS.md — changelog headings parse; the newest matches the version home
-        entry: bash -c 'for d in $(make -s print-RACECAR_SCRIPT_DIRS); do f="$d/check_changelog.py"; [ -f "$f" ] && exec python "$f" "$@"; done; echo "cannot find check_changelog.py" >&2; exit 1' --
+        entry: bash -c 'for d in $(make -s print-RACECAR_SCRIPT_DIRS); do f="$d/check_changelog.py"; [ -f "$f" ] && exec "$(make -s print-RC_PYTHON)" "$f" "$@"; done; echo "cannot find check_changelog.py" >&2; exit 1' --
         language: python
         pass_filenames: false
         always_run: true
@@ -129,14 +122,14 @@ repos:
       # `content_blind: true` in README frontmatter (no other config needed).
       - id: content-blind
         name: docs-orchestrator/CONTENT_BLINDNESS.md — no real figures in prose
-        entry: python scripts/check_content_blind.py
+        entry: bash -c 'for d in $(make -s print-RACECAR_SCRIPT_DIRS); do f="$d/check_content_blind.py"; [ -f "$f" ] && exec "$(make -s print-RC_PYTHON)" "$f"; done; echo "cannot find check_content_blind.py" >&2; exit 1'
         language: python
         pass_filenames: false
         always_run: true
 
       - id: no-cross-module-string-relations
         name: arch-python/DJANGO.md §2 — no cross-module string ORM relations (skipped if no manage.py)
-        entry: bash -c 'VENV=; for d in .venv venv ../venv; do [ -d "$d" ] && VENV=$d && break; done; export PATH="${VENV:+$VENV/bin:}$PATH"; if find . -maxdepth 3 -name "manage.py" -not -path "*/.venv/*" -not -path "*/venv/*" | grep -q .; then python scripts/check_dj_model_ref_as_string.py; fi'
+        entry: bash -c 'B=$(make -s print-RC_BIN); export PATH="${B:+$B:}$PATH"; if find . -maxdepth 3 -name "manage.py" -not -path "*/.venv/*" -not -path "*/venv/*" | grep -q .; then for d in $(make -s print-RACECAR_SCRIPT_DIRS); do f="$d/check_dj_model_ref_as_string.py"; [ -f "$f" ] && exec "$(make -s print-RC_PYTHON)" "$f"; done; fi'
         language: system
         pass_filenames: false
         always_run: true
@@ -146,12 +139,12 @@ repos:
       # message, which only exists at commit-msg time.
       - id: commit-message-budget
         name: shared/COMMITS.md — subject under 72 chars, body prose under 12 lines
-        entry: python scripts/check_commit_message.py
+        entry: bash -c 'for d in $(make -s print-RACECAR_SCRIPT_DIRS); do f="$d/check_commit_message.py"; [ -f "$f" ] && exec "$(make -s print-RC_PYTHON)" "$f" "$@"; done; echo "cannot find check_commit_message.py" >&2; exit 1' --
         language: python
         stages: [commit-msg]
 
       - id: version-bump-gate
         name: shared/COMMITS.md — a bumpable commit type must bump the version home
-        entry: python scripts/check_version_bump.py
+        entry: bash -c 'for d in $(make -s print-RACECAR_SCRIPT_DIRS); do f="$d/check_version_bump.py"; [ -f "$f" ] && exec "$(make -s print-RC_PYTHON)" "$f" "$@"; done; echo "cannot find check_version_bump.py" >&2; exit 1' --
         language: python
         stages: [commit-msg]

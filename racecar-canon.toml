@@ -21,6 +21,13 @@
 # init-hook name racecar's OWN tree, and shipped they would grade an adopter's copy against
 # directories it does not have. They are dropped by RACECAR_ONLY in canon.py, and any value
 # that still looks like a path after that drop is a hard error rather than a silent export.
+#
+# WHY SOME SETTINGS ARE ADDED. The delivered scripts import each other as bare top-level
+# modules, and isort and pylint place an undeclared name by looking for a folder of that
+# name at YOUR root. So a repo with its own `ontology/` or `lib/` folder would fail files
+# that pass in racecar (issue #150). `known_third_party` (isort) and `known-third-party`
+# (pylint) list every delivered module, read from the manifest, so your layout does not
+# enter into it.
 
 [tool.black]
 line-length = 88
@@ -28,6 +35,7 @@ target-version = ["py312"]
 
 [tool.isort]
 profile = "black"
+known_third_party = ["bump_version", "check_brief", "check_changelog", "check_cli_commands", "check_commit_message", "check_config_closure", "check_content_blind", "check_deferred_imports", "check_description", "check_dj_model_ref_as_string", "check_doc_graph", "check_docs", "check_file_placement", "check_packaging", "check_red", "check_required_docs", "check_runbook", "check_surface", "check_surface_orchestration", "check_test_isolation", "check_upward_imports", "check_version_bump", "docs_orchestrate", "gate_orchestrate", "gen_cli_launcher", "graph", "identifiers", "lexicon", "lib", "ontology", "package", "pii", "rehearse_runbook", "results", "surface", "topology"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -55,3 +63,6 @@ max-args = 10
 max-nested-blocks = 6
 max-attributes = 10
 max-bool-expr = 8
+
+[tool.pylint.IMPORTS]
+known-third-party = ["bump_version", "check_brief", "check_changelog", "check_cli_commands", "check_commit_message", "check_config_closure", "check_content_blind", "check_deferred_imports", "check_description", "check_dj_model_ref_as_string", "check_doc_graph", "check_docs", "check_file_placement", "check_packaging", "check_red", "check_required_docs", "check_runbook", "check_surface", "check_surface_orchestration", "check_test_isolation", "check_upward_imports", "check_version_bump", "docs_orchestrate", "gate_orchestrate", "gen_cli_launcher", "graph", "identifiers", "lexicon", "lib", "ontology", "package", "pii", "rehearse_runbook", "results", "surface", "topology"]

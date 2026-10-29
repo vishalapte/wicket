@@ -10,6 +10,11 @@ All notable changes to this project are documented here, following
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **racecar tooling moves to `.racecar/`.** The synced checkers leave `scripts/`, telemetry is removed, `CLAUDE.md` becomes a pointer to `AGENTS.md`, and the CLI gains racecar's standard error packet, output schema and JSON renderer. `fetch --help` shows `--max N`.
+
 ## 0.5.0 - 2026-09-04
 
 ### Changed

@@ -190,6 +190,4 @@ def example_output() -> list[tuple[str, str, str, int]]:
 
 
 if __name__ == "__main__":
-    from wicket._telemetry import run
-
-    run(main)
+    sys.exit(main())
