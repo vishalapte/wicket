@@ -9,6 +9,7 @@ from wicket.root.lib.report import (
     addresses,
     all_addresses,
     bucket_rows,
+    by_year,
     sender_counts,
     summary,
 )
@@ -132,3 +133,29 @@ def test_observed_only_leaves_out_a_message_deleted_before_download(
     )
     s = summary(tmp_path)
     assert (s["messages"], s["observed_only"]) == (2, 1)
+
+
+def test_by_year_counts_local_and_not_local_per_shard(tmp_path: Path) -> None:
+    write_shard(
+        shard_path(tmp_path, 2025),
+        {
+            "1@x": {"id": "1@x", "downloaded": True},
+            "2@x": {"id": "2@x"},
+            "3@x": {"id": "3@x", "deleted": True},  # gone before download: neither
+            "4@x": {"id": "4@x", "list_id": "news.example.com"},  # excluded: neither
+            "5@x": {"id": "5@x", "excluded": "duplicate of 1@x"},  # excluded: neither
+            "6@x": {"id": "6@x"},  # also in 2026's shard, which wins
+        },
+    )
+    write_shard(
+        shard_path(tmp_path, 2026),
+        {
+            "6@x": {"id": "6@x", "downloaded": True},
+            "7@x": {
+                "id": "7@x",
+                "downloaded": True,
+                "deleted": True,
+            },  # only copy: local
+        },
+    )
+    assert by_year(tmp_path, {"news.example.com"}) == {2025: (1, 1), 2026: (2, 0)}

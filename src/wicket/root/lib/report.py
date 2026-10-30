@@ -16,7 +16,7 @@ from email.utils import getaddresses
 from pathlib import Path
 
 from wicket.domains import canonical_domain, route_of
-from wicket.manifest import Row, is_excluded, load_store
+from wicket.manifest import Row, is_excluded, load_store, read_shard, store_shards
 
 
 def addresses(value: object) -> list[str]:
@@ -89,6 +89,33 @@ def summary(store_dir: Path, excluded_lists: Collection[str] = ()) -> dict[str, 
         "senders": len(senders),
         "addresses": len(addrs),
     }
+
+
+def by_year(
+    store_dir: Path, excluded_lists: Collection[str] = ()
+) -> dict[int, tuple[int, int]]:
+    """``{year: (local, not local)}`` for one store, by the shard each row lives in.
+
+    Local is a ``downloaded`` row. Not local is a row not downloaded and not ``deleted``:
+    a message the server deleted before it was downloaded is an update to the catalog,
+    not mail to get. An excluded row (`manifest.is_excluded`) is in neither count. An id
+    in two shards counts once, the later shard winning, as `manifest.load_store` reads it.
+    """
+    latest: dict[str, tuple[int, Row]] = {}
+    for shard in store_shards(store_dir):
+        if shard.stem.isdigit():
+            for id_, row in read_shard(shard).items():
+                latest[id_] = (int(shard.stem), row)
+    cells: dict[int, list[int]] = {}
+    for year, row in latest.values():
+        if is_excluded(row, excluded_lists):
+            continue
+        cell = cells.setdefault(year, [0, 0])
+        if row.get("downloaded"):
+            cell[0] += 1
+        elif not row.get("deleted"):
+            cell[1] += 1
+    return {year: (cell[0], cell[1]) for year, cell in sorted(cells.items())}
 
 
 def bucket_rows(

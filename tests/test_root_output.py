@@ -818,6 +818,19 @@ def test_report_empty_bucket(
     )
 
 
+def test_report_by_year(mail: Path, run: Run, monkeypatch: pytest.MonkeyPatch) -> None:
+    del mail
+    _report(monkeypatch, "by_year", {2025: (12, 3), 2026: (100, 0)})
+    assert run("report", "--by-year") == (
+        0,
+        "local/not local, by account and year\n"
+        "account        2025   2026  total\n"
+        f"{ME}  12/3  100/0  112/3\n"
+        "total          12/3  100/0  112/3\n",
+        "",
+    )
+
+
 def test_report_unknown_account(mail: Path, run: Run) -> None:
     assert run("report", "--mail-account", "nobody@example.com") == (
         2,

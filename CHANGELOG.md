@@ -12,6 +12,11 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+## 0.11.0 - 2026-10-30
+
+### Added
+- **`wicket report --by-year`: every account by year.** One row per account (a folder in `~/.config/wicket/accounts`), one column per year (the shard's), each cell `local/not local`, with a total row and column. Local is a downloaded row; not local is a row neither downloaded nor deleted, so a message the server deleted before it was downloaded counts in neither. A row the owner excluded, or whose `list_id` is on `excluded-lists.json`, counts in neither. A staged body counts as not local until `ingest --staged` files it. Read from the manifests only, no IMAP.
+
 ## 0.10.1 - 2026-10-30
 
 ### Fixed

@@ -99,8 +99,10 @@ from .lib.fetch import RunHooks, ThreadContext, download, download_years
 from .lib.ingest import Target, ingest_folder, ingest_routed, ingest_staged
 from .lib.renderer.plaintext import busy_lines, fetch_lines, halt_text, ingest_lines
 from .lib.results import (
+    AccountYears,
     BucketStore,
     BucketView,
+    ByYearView,
     CatalogRoot,
     FetchRoot,
     IngestRoot,
@@ -670,15 +672,46 @@ def _bucket_view(name: str) -> BucketView:
     }
 
 
+def _by_year_view() -> ByYearView:
+    """Every account (a folder in ~/.config/wicket/accounts) by year: local, not local."""
+    rows: list[AccountYears] = []
+    years: set[int] = set()
+    for folder in account_dirs():
+        counts = report_lib.by_year(
+            resolve_store_dir(folder.name), _excluded(folder.name)
+        )
+        years.update(counts)
+        rows.append(
+            {
+                "account": folder.name,
+                "years": [
+                    {"year": year, "local": local, "not_local": not_local}
+                    for year, (local, not_local) in counts.items()
+                ],
+                "local": sum(local for local, _ in counts.values()),
+                "not_local": sum(not_local for _, not_local in counts.values()),
+            }
+        )
+    return {
+        "years": sorted(years),
+        "accounts": rows,
+        "local": sum(row["local"] for row in rows),
+        "not_local": sum(row["not_local"] for row in rows),
+    }
+
+
 def report_root(
     mail_account: str | None = None,
     senders: bool = False,
     addresses: bool = False,
     bucket: str | None = None,
+    by_year: bool = False,
 ) -> ReportRoot:
-    """Read-only reports over the manifest: a summary, senders, addresses, or a bucket's
-    view."""
+    """Read-only reports over the manifest: a summary, senders, addresses, a bucket's
+    view, or every account by year."""
     try:
+        if by_year:
+            return {"view": "by_year", "by_year": _by_year_view()}
         if bucket:
             return {"view": "bucket", "bucket": _bucket_view(bucket)}
         if senders:

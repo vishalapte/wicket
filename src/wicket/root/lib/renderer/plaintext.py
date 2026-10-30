@@ -13,6 +13,7 @@ from pathlib import Path
 from ..results import (
     BucketView,
     BusyStore,
+    ByYearView,
     CatalogRoot,
     FetchRoot,
     IngestRoot,
@@ -238,9 +239,48 @@ def _print_bucket(view: BucketView) -> None:
     )
 
 
+def _print_by_year(view: ByYearView) -> None:
+    """Accounts in rows, years in columns, each cell ``local/not local``, then totals."""
+    years = view["years"]
+    table = [["account", *map(str, years), "total"]]
+    for row in view["accounts"]:
+        cells = {c["year"]: f"{c['local']}/{c['not_local']}" for c in row["years"]}
+        table.append(
+            [
+                row["account"],
+                *(cells.get(year, "-") for year in years),
+                f"{row['local']}/{row['not_local']}",
+            ]
+        )
+    totals = {year: [0, 0] for year in years}
+    for row in view["accounts"]:
+        for c in row["years"]:
+            totals[c["year"]][0] += c["local"]
+            totals[c["year"]][1] += c["not_local"]
+    table.append(
+        [
+            "total",
+            *(f"{totals[year][0]}/{totals[year][1]}" for year in years),
+            f"{view['local']}/{view['not_local']}",
+        ]
+    )
+    widths = [max(len(line[i]) for line in table) for i in range(len(table[0]))]
+    print("local/not local, by account and year")
+    for line in table:
+        first, *rest = line
+        print(
+            "  ".join(
+                [first.ljust(widths[0])]
+                + [cell.rjust(widths[i + 1]) for i, cell in enumerate(rest)]
+            )
+        )
+
+
 def print_report(result: ReportRoot) -> None:
-    """``wicket report`` as text: the summary, one record per line, or a bucket."""
-    if result["view"] == "bucket":
+    """``wicket report`` as text: the summary, one record per line, a bucket, or by year."""
+    if result["view"] == "by_year":
+        _print_by_year(result["by_year"])
+    elif result["view"] == "bucket":
         _print_bucket(result["bucket"])
     elif result["view"] == "senders":
         for row in result["senders"]:

@@ -59,6 +59,32 @@ class BucketView(TypedDict):
     total: int
 
 
+class YearCount(TypedDict):
+    """One account's messages in one year: held locally, and still to get."""
+
+    year: int
+    local: int
+    not_local: int
+
+
+class AccountYears(TypedDict):
+    """One account's row of the by-year view, and its totals."""
+
+    account: str
+    years: list[YearCount]
+    local: int
+    not_local: int
+
+
+class ByYearView(TypedDict):
+    """Every account by year: the years any account has, each account's row, the totals."""
+
+    years: list[int]
+    accounts: list[AccountYears]
+    local: int
+    not_local: int
+
+
 class CatalogRoot(TypedDict):
     """What ``wicket catalog`` returns: the sweep's counts, and where it wrote.
 
@@ -191,12 +217,13 @@ class ReportRoot(TypedDict):
     """What ``wicket report`` returns: one view, and only that view's key.
 
     ``summary`` carries ``store_dir`` and ``counts``, ``senders`` its rows, ``addresses``
-    its list, ``bucket`` the bucket's view.
+    its list, ``bucket`` the bucket's view, ``by_year`` every account by year.
     """
 
-    view: Literal["summary", "senders", "addresses", "bucket"]
+    view: Literal["summary", "senders", "addresses", "bucket", "by_year"]
     store_dir: NotRequired[str]
     counts: NotRequired[ReportCounts]
     senders: NotRequired[list[SenderRow]]
     addresses: NotRequired[list[str]]
     bucket: NotRequired[BucketView]
+    by_year: NotRequired[ByYearView]

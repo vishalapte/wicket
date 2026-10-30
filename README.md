@@ -102,7 +102,7 @@ its own module: `python -m wicket.alias <list|create|update|delete>` and
 |---|---|
 | `wicket catalog` | Observe the mailbox (headers only) into the manifest, recording **what exists**. |
 | `wicket fetch` | Get full `.eml` for matching messages into the store's `staging/`, **filing nothing**; `wicket ingest --staged` files them. |
-| `wicket report` | Read-only summaries over the manifest (top senders, every address, a bucket across every store). No IMAP. |
+| `wicket report` | Read-only summaries over the manifest (top senders, every address, a bucket across every store, every account by year). No IMAP. |
 | `wicket ingest` | The only verb that files. `--staged` files what `fetch` got; `--src` files local `.eml` — a folder (a desktop-client drag-export) or a single message — routing each thread to the account it belongs to, for mailboxes wicket can't reach over IMAP. **Additive**; never deletes an archived message. |
 | `python -m wicket.alias` | Edit `domain-aliases.json`: which domains are really another (`us.icapenergy.com` is `icapenergy.com`). No IMAP. |
 | `python -m wicket.store` | Edit which store mail goes to: a sender domain (`--from`, `domain-routes.json`) or one of your addresses (`--to`, `account-aliases.json`). No IMAP. |
@@ -258,8 +258,9 @@ With no flag, prints a one-screen summary.
 | `--senders` | Every From address with its message count, descending (`count<TAB>address`). |
 | `--addresses` | Every distinct address seen in From or To, sorted. |
 | `--bucket NAME` | Every message **any** store holds that this bucket claims (`travel`, `shopping`), grouped by store. A view, not a location; ignores `--mail-account`. |
+| `--by-year` | One row per account (a folder in `~/.config/wicket/accounts`), one column per year, each cell `local/not local`, with totals. Local is downloaded; not local is not downloaded and not deleted. An excluded row (yours, or on an excluded list) is in neither count. Ignores `--mail-account`. |
 | `--mail-account ACCOUNT` | Scopes the manifest store. Default `$WICKET_ACCOUNT`, else the only account folder. |
-| `--json` | Print the result as JSON instead of text: `view` (`summary`, `senders`, `addresses`, `bucket`) and that view's data. |
+| `--json` | Print the result as JSON instead of text: `view` (`summary`, `senders`, `addresses`, `bucket`, `by_year`) and that view's data. |
 
 **`wicket ingest`** is the only verb that files: it moves a body into the archive and
 records `downloaded`, `path` and `filed` on its row. No IMAP, no credentials, no prompt.

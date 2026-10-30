@@ -125,6 +125,7 @@ def _cmd_report(args: argparse.Namespace) -> int:
         senders=args.senders,
         addresses=args.addresses,
         bucket=args.bucket,
+        by_year=args.by_year,
     )
     return json_renderer.show(args, result, plaintext.print_report)
 
@@ -359,6 +360,14 @@ def parser() -> argparse.ArgumentParser:
         help="Every message ANY store holds that this bucket claims (travel, "
         "shopping), grouped by store. A view, not a location: mail owned by a "
         "mailbox stays in that mailbox's store. Ignores --mail-account.",
+    )
+    view.add_argument(
+        "--by-year",
+        action="store_true",
+        help="One row per account (a folder in ~/.config/wicket/accounts), one column "
+        "per year: messages local/not local. A row excluded (yours, or an excluded "
+        "list) is in neither count, nor is a message deleted before it was downloaded. "
+        "Ignores --mail-account.",
     )
     p_report.add_argument(
         "--mail-account",
