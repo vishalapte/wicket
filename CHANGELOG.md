@@ -12,6 +12,11 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+## 0.11.1 - 2026-10-30
+
+### Fixed
+- **`catalog --years` refuses a value that is not a year.** Each must be four digits, 1970 or later; anything else (`202`, `x`) exits 2 before any IMAP, where it once reached the server as a bad date, was rejected, and HALTed the account. The years are also sorted and taken once, as the sweep already did.
+
 ## 0.11.0 - 2026-10-30
 
 ### Added

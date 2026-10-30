@@ -173,7 +173,7 @@ Idempotent, incremental by default.
 | `--store-dir DIR` | Override the manifest store dir. Default `<mail-root>/<account>/manifest/`. |
 | `--state-dir DIR` | The base holding `accounts/<account>/imap.json`. Default `~/.config/wicket/`. |
 | `--mailbox NAME` | IMAP mailbox to sweep. Default `"[Gmail]/All Mail"`. |
-| `--years Y,Y` | Comma-separated years to replace, e.g. `2025, 2026`. Omit for incremental. |
+| `--years Y,Y` | Comma-separated years to replace, e.g. `2025, 2026`; four digits, 1970 or later. Omit for incremental. |
 | `--full` | Re-sweep every year from the oldest message through now (rebuild). |
 | `--threads N` | Concurrent year workers, one IMAP connection each. Default 4. |
 | `--dry-run` | Sweep and report per-year counts; write nothing. |

@@ -224,7 +224,16 @@ def test_catalog_bad_years(mail: Path, run: Run) -> None:
     assert run("catalog", "--mail-account", ME, "--years", "x") == (
         2,
         "",
-        "bad --years: invalid literal for int() with base 10: 'x'\n",
+        "bad --years: 'x' is not a year (four digits, 1970 or later)\n",
+    )
+
+
+def test_catalog_refuses_a_year_that_is_not_four_digits(mail: Path, run: Run) -> None:
+    del mail
+    assert run("catalog", "--mail-account", ME, "--years", "202") == (
+        2,
+        "",
+        "bad --years: '202' is not a year (four digits, 1970 or later)\n",
     )
 
 

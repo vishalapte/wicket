@@ -592,14 +592,21 @@ def _refused(exc: Exception) -> ApiError:
 
 
 def _parse_years(raw: str) -> list[int]:
-    years = []
+    """``--years`` as catalog takes it: sorted, each once, four digits from 1970.
+
+    A year outside that would reach the server as a bad date, which it rejects, and a
+    rejected command HALTs the account; so it is refused here, before any IMAP.
+    """
+    years = set()
     for part in raw.split(","):
         part = part.strip()
         if part:
-            years.append(int(part))
+            if not re.fullmatch("[0-9]{4}", part) or int(part) < 1970:
+                raise ValueError(f"{part!r} is not a year (four digits, 1970 or later)")
+            years.add(int(part))
     if not years:
         raise ValueError("--years was empty")
-    return years
+    return sorted(years)
 
 
 def catalog_root(  # pylint: disable=too-many-arguments
