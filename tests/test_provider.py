@@ -42,10 +42,10 @@ def test_gmail_searches_through_x_gm_raw() -> None:
     )
 
 
-def test_gmail_catalog_fetches_the_items_it_always_fetched() -> None:
+def test_gmail_catalog_fetches_its_items_and_the_list_id_header() -> None:
     assert _fetch_items(GMAIL) == (
         "(X-GM-MSGID X-GM-THRID RFC822.SIZE INTERNALDATE X-GM-LABELS "
-        "BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT MESSAGE-ID DATE)])"
+        "BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT MESSAGE-ID DATE LIST-ID)])"
     )
 
 

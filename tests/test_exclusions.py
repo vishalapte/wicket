@@ -2,8 +2,9 @@
 
 ``excluded-lists.json`` at the mail root holds ``{"*": [list-id], "<account>": [list-id]}``:
 ``"*"`` is every account (owner, 2026-10-29). fetch leaves an excluded list out of every
-search; ingest skips its mail and leaves the file where it is; catalog is untouched. No
-test reaches the network.
+search; ingest skips its mail and leaves the file where it is; catalog and ingest record
+each row's ``list_id``, and report leaves out a row whose list is on the map. No test
+reaches the network.
 """
 
 from __future__ import annotations
@@ -20,13 +21,14 @@ import wicket.exclude.__main__ as exclude_cli
 import wicket.root.lib.fetch as fetch_lib
 import wicket.root.lib.ingest as ingest_lib
 from wicket import env
+from wicket.errors import ApiError
 from wicket.exclusions import (
     excluded_for,
     excluded_lists_path,
     normalize_list_id,
     parse_excluded_lists,
 )
-from wicket.manifest import load_store
+from wicket.manifest import load_store, shard_path, write_shard
 from wicket.provider import FASTMAIL, GMAIL
 from wicket.root import api as root_api
 
@@ -246,3 +248,51 @@ def test_ingest_src_files_nothing_of_an_excluded_list_and_trashes_nothing(
     assert (result["added"], result["excluded_lists"]) == (1, 1)
     assert trashed == [src / "b.eml"]  # the excluded list's file stays in the export
     assert set(load_store(mail / ME / "manifest")) == {"b@acme"}
+
+
+def test_ingest_records_list_id_only_when_the_message_has_one(
+    mail: Path, tmp_path: Path
+) -> None:
+    src = tmp_path / "export"
+    src.mkdir()
+    (src / "a.eml").write_bytes(_eml("a@acme", LIST))
+    (src / "b.eml").write_bytes(_eml("b@acme"))
+    root_api.ingest(ME, options=root_api.IngestOptions(src=src, to_trash=False))
+    rows = load_store(mail / ME / "manifest")
+    assert rows["a@acme"]["list_id"] == LIST
+    assert "list_id" not in rows["b@acme"]  # absent, never null
+
+
+# --- report -------------------------------------------------------------------------
+
+
+def _rows_on_lists(mail: Path) -> None:
+    write_shard(
+        shard_path(mail / ME / "manifest", 2026),
+        {
+            "a@x": {"id": "a@x", "from": "a@acme.com", "list_id": LIST},
+            "b@x": {"id": "b@x", "from": "b@acme.com", "list_id": "other.example.org"},
+            "c@x": {"id": "c@x", "from": "c@acme.com", "downloaded": True},
+        },
+    )
+
+
+def test_report_leaves_out_a_row_whose_list_is_on_the_map_now(mail: Path) -> None:
+    _rows_on_lists(mail)
+    _write_map(mail, {"*": [LIST]})
+    counts = root_api.report(ME)
+    assert (counts["messages"], counts["excluded"], counts["observed_only"]) == (
+        2,
+        1,
+        1,
+    )
+    assert "a@acme.com" not in dict(root_api.sender_counts(ME))
+    _write_map(mail, {})  # the list removed: its rows count again, with no catalog
+    assert root_api.report(ME)["messages"] == 3
+
+
+def test_report_refuses_a_malformed_map(mail: Path) -> None:
+    _rows_on_lists(mail)
+    (mail / "excluded-lists.json").write_text("{", encoding="utf-8")
+    with pytest.raises(ApiError):
+        root_api.report_root(ME)

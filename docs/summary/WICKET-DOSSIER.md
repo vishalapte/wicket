@@ -6,7 +6,7 @@ generator:
 target:
   repo: wicket
   date: 2026-09-04
-  version: "0.9.0"
+  version: "0.10.0"
 bundle:
   - WICKET.md
   - WICKET-DOSSIER.md
@@ -195,7 +195,7 @@ external_surface:
     - verb: python -m wicket.exclude
       module: wicket.exclude.__main__
       args: "{list,create --list L,delete --list L} [--mail-account A] [--json]"
-      behavior: Edit excluded-lists.json at the mail root, the mailing lists never fetched or filed. No --mail-account is "*", every account; --mail-account A is that account alone, and must be a folder holding imap.json. fetch leaves each list out of every search, ingest skips its mail, catalog records everything. No IMAP.
+      behavior: Edit excluded-lists.json at the mail root, the mailing lists never fetched or filed. No --mail-account is "*", every account; --mail-account A is that account alone, and must be a folder holding imap.json. fetch leaves each list out of every search, ingest skips its mail, catalog records everything with each row's list_id, and report leaves out a row whose list_id is on the map. No IMAP.
       exit: "0 ok, 2 on a key that is no account folder, a malformed list-id, or an absent root"
   library_exports:
     - name: catalog
@@ -405,7 +405,7 @@ The load-bearing detail:
 | `<mail-root>/account-aliases.json` | Addresses that **are you** → the store that owns them. Exceptions only: an address that already names a store resolves to itself. A primary may be an account address or a bucket name; an alias may be a literal address or a `*@domain` catch-all. |
 | `<mail-root>/domain-routes.json` | Counterparties that are **not you** → where their mail goes. Used only when no mailbox claims the thread. |
 | `<mail-root>/domain-aliases.json` | Subdomain **folding** (`*.delta.com` → `delta.com`). Shared by `fetch` and `ingest`; `--alias-file` overrides. |
-| `<mail-root>/excluded-lists.json` | Mailing lists never fetched or filed: `"*"` for every account, an account key for that one. `fetch` leaves them out of every search, `ingest` skips their mail; `catalog` records everything. Edited by `wicket.exclude`. |
+| `<mail-root>/excluded-lists.json` | Mailing lists never fetched or filed: `"*"` for every account, an account key for that one. `fetch` leaves them out of every search, `ingest` skips their mail; `catalog` records everything, each row's `list_id` too, and `report` leaves out a row whose `list_id` is on the map. Edited by `wicket.exclude`. |
 | `~/.config/wicket/accounts/<account>/imap.json` | Address and app password, through the account's link. File `0600`. Seeded on first run; `--state-dir` overrides the base; no account folder is a silent no-op. |
 | `~/.local/state/wicket/halt/<account>` | The account's HALT (`$XDG_STATE_HOME`); present means halted. Only `wicket.auth` writes or removes it. |
 | `~/.local/state/wicket/log/<account>.log` | fetch's counts and years, and every HALT set and cleared. Never a subject, another address, a path or a secret. |

@@ -380,6 +380,8 @@ def _row_for(
     }
     if placed.filed:
         row["filed"] = placed.filed
+    if m.get("list_id"):  # only when the message has a List-Id header, never null
+        row["list_id"] = m["list_id"]
     return row, rel
 
 

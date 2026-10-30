@@ -89,6 +89,9 @@ duplicate it here. Bound by the racecar standards (resolver:
     [list-id]}`), is read by `wicket.exclusions` and written by `wicket.exclude`;
     `fetch` appends `Provider.exclude_list` to every search and `ingest` skips the
     mail (`Target.excluded_lists`), while `catalog` records the whole mailbox.
+    `catalog` and `ingest` write a row's `list_id` (its `List-Id`, absent when
+    none: a fact, never the decision); `report` leaves a row out by
+    `manifest.is_excluded` (`excluded`, or `list_id` on the map now).
   - `root/lib/catalog.py`, `root/lib/fetch.py`, `root/lib/ingest.py`: per-verb
     worker modules. **`fetch` files nothing**: it gets bodies into
     `<store>/staging/` (`env.resolve_staging_dir`) and writes no `downloaded` or

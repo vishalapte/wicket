@@ -4,8 +4,8 @@ For every message in the mailbox (optionally restricted to INTERNALDATE years), 
 the provider's native id and thread (Gmail's X-GM-MSGID and X-GM-THRID, Fastmail's
 EMAILID and THREADID), RFC822.SIZE, INTERNALDATE, the labels (Gmail's X-GM-LABELS; on
 Fastmail the folders holding it), and the ``From:``, ``To:``, ``Subject:``,
-``Message-ID:`` and ``Date:`` headers — never bodies — and write one JSON Lines row per
-message, sharded by INTERNALDATE year (UTC):
+``Message-ID:``, ``Date:`` and ``List-Id:`` headers — never bodies — and write one JSON Lines
+row per message, sharded by INTERNALDATE year (UTC):
 
     <inventory-dir>/<YYYY>.jsonl
 
@@ -16,9 +16,12 @@ Row shape (one JSON object per line, ADR 0002 unified schema)::
      "size": <bytes>,
      "from": "sender@example.com", "to": ["you@example.com"],
      "subject": "Your account statement is ready",
-     "labels": ["\\\\Inbox"]}
+     "labels": ["\\\\Inbox"], "list_id": "news.example.com"}
 
-``subject`` is RFC 2047-decoded to plain Unicode ('' when absent). ``id`` is
+``subject`` is RFC 2047-decoded to plain Unicode ('' when absent). ``list_id`` is the
+``List-Id`` header as `exclusions.normalize_list_id` reads it, and the key is absent when the
+message has none (never null): a fact about the message, which report reads against
+today's excluded-lists map (`manifest.is_excluded`). ``id`` is
 the provider-neutral key (normalized Message-ID, else ``gmail:<msgid>``)
 shared with the archive manifest so the two faces join; a second Gmail message
 with the same Message-ID is keyed ``<key>|gmail:<msgid>`` (``message.mailbox_key``).
@@ -63,6 +66,7 @@ from wicket.auth import (
     throttle_halt,
 )
 from wicket.env import DEFAULT_THREADS
+from wicket.exclusions import normalize_list_id
 from wicket.manifest import (
     Shard,
     eml_on_disk,
@@ -85,7 +89,11 @@ from wicket.provider import GMAIL, Provider
 BATCH_SIZE = 1000  # UIDs per IMAP FETCH; headers only, so larger than archive's.
 _SIZE_RE = re.compile(rb"RFC822\.SIZE\s+(\d+)")
 _INTERNALDATE_RE = re.compile(rb'INTERNALDATE\s+"([^"]+)"')
-_HEADER_LITERAL_MARKER = b"BODY[HEADER.FIELDS (FROM TO SUBJECT MESSAGE-ID DATE)]"
+# The headers catalog reads. The FETCH and the marker its reply carries are both made from
+# this one tuple, so they cannot drift apart.
+_HEADER_FIELDS = ("FROM", "TO", "SUBJECT", "MESSAGE-ID", "DATE", "LIST-ID")
+_HEADER_ITEM = f"HEADER.FIELDS ({' '.join(_HEADER_FIELDS)})"
+_HEADER_LITERAL_MARKER = f"BODY[{_HEADER_ITEM}]".encode("ascii")
 _SHARD_RE = re.compile(r"^\d{4}\.jsonl$")
 # Progress, one line per step; the CLI's `main()` shows it on stderr.
 logger = logging.getLogger(__name__)
@@ -189,9 +197,9 @@ def _parse_labels(meta: bytes, item: str) -> list[str] | None:
 
 def _parse_header_block(
     header_block: bytes,
-) -> tuple[str, list[str], str, str, datetime | None]:
-    """Return ``(from_address, to_addresses, subject, message_id, sent)`` from a
-    raw FROM+TO+SUBJECT+MESSAGE-ID+DATE header block.
+) -> tuple[str, list[str], str, str, datetime | None, str]:
+    """Return ``(from_address, to_addresses, subject, message_id, sent, list_id)`` from a
+    raw FROM+TO+SUBJECT+MESSAGE-ID+DATE+LIST-ID header block.
 
     ``email.policy.default`` unfolds continuation lines and decodes RFC 2047
     encoded-words, so the subject is plain Unicode and addresses survive a
@@ -199,7 +207,8 @@ def _parse_header_block(
     the sorted set of lowercased recipient addresses (what the filing-domain
     rule consumes); ``message_id`` is the raw header (normalized downstream),
     read by ``message.message_id_of`` rather than ``policy.default``, which
-    cuts some ids short; ``sent`` is the ``Date:`` header (``message.sent_date``).
+    cuts some ids short; ``sent`` is the ``Date:`` header (``message.sent_date``);
+    ``list_id`` is the ``List-Id:`` header (``exclusions.normalize_list_id``).
     All default to '' / [] / None when absent or unparseable.
     """
     parsed = email.message_from_bytes(header_block, policy=email.policy.default)
@@ -214,7 +223,8 @@ def _parse_header_block(
     subject = str(parsed.get("Subject", "") or "")
     message_id = message_id_of(header_block)
     sent = sent_date(parsed.get("Date"))
-    return from_addr.strip().lower(), to_addrs, subject, message_id, sent
+    list_id = normalize_list_id(str(parsed.get("List-Id", "") or ""))
+    return from_addr.strip().lower(), to_addrs, subject, message_id, sent, list_id
 
 
 def _finalize_record(
@@ -234,9 +244,11 @@ def _finalize_record(
     internal_dt = parse_internaldate(date_match.group(1))
     if internal_dt is None:
         return None
-    from_addr, to_addrs, subject, message_id, sent = _parse_header_block(header_block)
+    from_addr, to_addrs, subject, message_id, sent, list_id = _parse_header_block(
+        header_block
+    )
     labels_item = provider.labels_item
-    return {
+    row: dict[str, object] = {
         "id": message_key(
             message_id=message_id, provider=provider.name, native_id=msgid
         ),
@@ -250,6 +262,9 @@ def _finalize_record(
         "labels": _parse_labels(meta, labels_item) if labels_item else None,
         "_sent": sent,
     }
+    if list_id:
+        row["list_id"] = list_id
+    return row
 
 
 def _fetch_items(provider: Provider) -> str:
@@ -257,7 +272,7 @@ def _fetch_items(provider: Provider) -> str:
     labels = f" {provider.labels_item}" if provider.labels_item else ""
     return (
         f"({provider.id_item} {provider.thread_item} RFC822.SIZE INTERNALDATE"
-        f"{labels} BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT MESSAGE-ID DATE)])"
+        f"{labels} BODY.PEEK[{_HEADER_ITEM}])"
     )
 
 
@@ -269,9 +284,10 @@ def _fetch_rows_batch(
     A message's response may span several imaplib items when the reply
     carries more than one literal (rare: a label sent as a literal). The
     accumulator concatenates metadata segments and keeps the literal whose
-    preceding segment ends with the ``BODY[HEADER.FIELDS (FROM SUBJECT)]``
-    marker as the FROM+SUBJECT header block; a record closes on the
-    standalone ``)`` item.
+    preceding segment carries the ``BODY[HEADER.FIELDS (...)]`` marker as the
+    header block; a record closes on the standalone ``)`` item. The marker is
+    matched anywhere in that segment: the segment also carries the literal's
+    ``{size}`` after it, so a fixed window from its end misses a long marker.
     """
     if not uids:
         return [], 0
@@ -287,7 +303,7 @@ def _fetch_rows_batch(
     for item in data:
         if isinstance(item, tuple):
             meta += item[0]
-            if _HEADER_LITERAL_MARKER in item[0][-64:]:
+            if _HEADER_LITERAL_MARKER in item[0]:
                 header_block = item[1]
         elif isinstance(item, bytes):
             meta += item

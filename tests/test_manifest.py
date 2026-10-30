@@ -139,3 +139,14 @@ def test_write_eml_archives_read_only_and_never_overwrites(tmp_path: Path) -> No
     with pytest.raises(FileExistsError):
         write_eml(target, b"changed")
     assert target.read_bytes().endswith(b"body")  # the archived message is untouched
+
+
+def test_is_excluded_is_the_owners_mark_or_a_list_on_the_map() -> None:
+    from wicket.manifest import is_excluded
+
+    lists = {"news.example.com"}
+    assert is_excluded({"excluded": "duplicate of 1@x"}, ())
+    assert is_excluded({"list_id": "news.example.com"}, lists)
+    assert not is_excluded({"list_id": "news.example.com"}, ())  # list not on the map
+    assert not is_excluded({"list_id": "other.example.com"}, lists)
+    assert not is_excluded({}, lists)

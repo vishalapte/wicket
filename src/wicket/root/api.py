@@ -125,18 +125,25 @@ __all__ = [
 
 
 def report(account: str | None = None) -> dict[str, int]:
-    """One-screen counts for ``account``'s manifest (messages, held, addresses)."""
-    return report_lib.summary(resolve_store_dir(resolve_account(account)))
+    """One-screen counts for ``account``'s manifest (messages, held, addresses).
+
+    Each report reads the excluded-lists map (`_excluded`), so a row on an excluded
+    list is left out; a malformed map raises ``ValueError``, as it does for fetch.
+    """
+    resolved = resolve_account(account)
+    return report_lib.summary(resolve_store_dir(resolved), _excluded(resolved))
 
 
 def sender_counts(account: str | None = None) -> list[tuple[str, int]]:
     """``(sender, count)`` for every From address, descending by count."""
-    return report_lib.sender_counts(resolve_store_dir(resolve_account(account)))
+    resolved = resolve_account(account)
+    return report_lib.sender_counts(resolve_store_dir(resolved), _excluded(resolved))
 
 
 def all_addresses(account: str | None = None) -> list[str]:
     """Every distinct address seen in From or To, sorted."""
-    return report_lib.all_addresses(resolve_store_dir(resolve_account(account)))
+    resolved = resolve_account(account)
+    return report_lib.all_addresses(resolve_store_dir(resolved), _excluded(resolved))
 
 
 def manifest(account: str | None = None) -> dict[str, Row]:
@@ -155,7 +162,9 @@ def bucket_rows(name: str) -> dict[str, list[tuple[str, Row]]]:
     aliases = load_domain_aliases(domain_aliases_path(MAIL_ROOT))
     found: dict[str, list[tuple[str, Row]]] = {}
     for account in sorted(known_accounts()):
-        rows = report_lib.bucket_rows(resolve_store_dir(account), name, routes, aliases)
+        rows = report_lib.bucket_rows(
+            resolve_store_dir(account), name, routes, aliases, _excluded(account)
+        )
         if rows:
             found[account] = rows
     return found

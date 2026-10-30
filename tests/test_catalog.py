@@ -216,8 +216,9 @@ def test_a_dry_run_writes_nothing(tmp_path: Path) -> None:
 class _Conn:
     """An IMAP connection that answers one header FETCH the way Gmail does."""
 
-    def __init__(self) -> None:
+    def __init__(self, list_id: bytes = b"") -> None:
         self.items = ""
+        self.list_id = list_id
 
     def uid(self, _cmd: str, _uids: str, items: str) -> tuple[str, list[object]]:
         """Answer the FETCH with the field list it asked for, as Gmail echoes it."""
@@ -225,7 +226,7 @@ class _Conn:
         fields = items[items.index("HEADER.FIELDS") : items.index("])") + 1]
         header = (
             b"From: news@ba.com\r\nMessage-ID: <r@ba>\r\n"
-            b"Date: Fri, 01 Mar 2024 09:00:00 +0000\r\n\r\n"
+            b"Date: Fri, 01 Mar 2024 09:00:00 +0000\r\n" + self.list_id + b"\r\n"
         )
         meta = _meta() + b"BODY[" + fields.encode() + b" {%d}" % len(header)
         return "OK", [(meta, header), b")"]
@@ -237,3 +238,18 @@ def test_the_header_fetch_asks_for_date_and_parses_it() -> None:
     assert "DATE" in conn.items and not skips
     assert rows[0]["id"] == "r@ba"  # the marker matched, so the header block was read
     assert rows[0]["_sent"] == SENT
+
+
+def test_the_header_fetch_records_list_id_and_finds_a_long_marker() -> None:
+    # The marker with LIST-ID plus a real-size literal suffix (" {NNNN}") is longer than
+    # the 64 bytes the parser once looked in; it must still be found.
+    conn = _Conn(b"List-Id: Made of meat <Made-of-Meat.googlegroups.com>\r\n")
+    rows, skips = _fetch_rows_batch(conn, [b"7"])  # type: ignore[arg-type]
+    assert "LIST-ID" in conn.items and not skips
+    assert rows[0]["id"] == "r@ba" and rows[0]["from"] == "news@ba.com"
+    assert rows[0]["list_id"] == "made-of-meat.googlegroups.com"
+
+
+def test_a_message_with_no_list_id_gets_no_list_id_key() -> None:
+    rows, _ = _fetch_rows_batch(_Conn(), [b"7"])  # type: ignore[arg-type]
+    assert "list_id" not in rows[0]  # absent, never null

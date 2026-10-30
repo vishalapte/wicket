@@ -750,7 +750,7 @@ def test_report_summary(mail: Path, run: Run, monkeypatch: pytest.MonkeyPatch) -
         "    gone from mailbox      41  (only copy)\n"
         "    still in mailbox     2946\n"
         "  observed only           254  (not held)\n"
-        "  excluded                  7  (duplicates not kept)\n"
+        "  excluded                  7  (duplicates, excluded lists)\n"
         "  distinct senders        318\n"
         "  distinct addresses      512\n",
         "",

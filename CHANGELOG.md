@@ -12,6 +12,11 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+## 0.10.0 - 2026-10-30
+
+### Added
+- **The manifest records each message's mailing list, and `report` leaves excluded lists out.** `catalog` fetches `List-Id` with the headers it already reads and writes it on the row as `list_id` (lowercased, the bracketed id); `ingest` does the same on a row it creates. A message with no `List-Id` gets no key, never null. The row holds the fact, not the decision: `report` counts a row as excluded when the owner marked it `excluded` or its `list_id` is on `excluded-lists.json` as it is now, so `wicket.exclude delete` counts a list's rows again at once, with no catalog. `fetch` and `ingest` still decide from the map, unchanged. Rows catalog has not seen since this change have no `list_id` until it sweeps their year again (`catalog --full` once). The header marker is now matched anywhere in the reply line, since the longer field list no longer fits the 64 bytes it was looked for in.
+
 ## 0.9.0 - 2026-10-29
 
 ### Added

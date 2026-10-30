@@ -39,7 +39,17 @@ from wicket.provider import Provider
 
 # Field ownership (ADR 0002 §2). Module-level tuples, not enums.
 IDENTITY_FIELDS = ("id", "msgid", "thread_id", "account")
-OBSERVATION_FIELDS = ("date", "from", "to", "subject", "size", "labels", "deleted")
+# ``list_id`` is written only when the message has a List-Id header (never null).
+OBSERVATION_FIELDS = (
+    "date",
+    "from",
+    "to",
+    "subject",
+    "size",
+    "labels",
+    "list_id",
+    "deleted",
+)
 SETTLEMENT_FIELDS = ("downloaded", "path", "filed")
 DERIVED_FIELDS = ("domain",)
 # Set only by the owner's cleanup, never by a verb: ``excluded`` holds why a

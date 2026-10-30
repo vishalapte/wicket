@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from pathlib import Path
 
 # Settlement fields a catalog rewrite carries forward (filing owns them): whether
@@ -114,6 +114,17 @@ def load_store(store_dir: Path) -> Shard:
     for path in store_shards(store_dir):
         rows.update(read_shard(path))
     return rows
+
+
+def is_excluded(row: Row, excluded_lists: Collection[str]) -> bool:
+    """Whether a row is left out of what the store holds and reports.
+
+    Either the owner marked it ``excluded``, or catalog recorded a ``list_id`` that is
+    on ``excluded_lists``, the account's excluded mailing lists as the map says now
+    (`exclusions.excluded_for`). The row holds the list it was sent via, never the
+    decision, so removing a list from the map counts its rows again at once.
+    """
+    return bool(row.get("excluded")) or row.get("list_id") in excluded_lists
 
 
 def eml_on_disk(row: Row, archive_dir: Path) -> bool:

@@ -256,7 +256,9 @@ def print_report(result: ReportRoot) -> None:
         print(f"    gone from mailbox{counts['downloaded_gone']:>8}  (only copy)")
         print(f"    still in mailbox {counts['downloaded_present']:>8}")
         print(f"  observed only      {counts['observed_only']:>8}  (not held)")
-        print(f"  excluded           {counts['excluded']:>8}  (duplicates not kept)")
+        print(
+            f"  excluded           {counts['excluded']:>8}  (duplicates, excluded lists)"
+        )
         print(f"  distinct senders   {counts['senders']:>8}")
         print(f"  distinct addresses {counts['addresses']:>8}")
 
