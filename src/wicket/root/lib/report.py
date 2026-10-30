@@ -79,8 +79,11 @@ def summary(store_dir: Path, excluded_lists: Collection[str] = ()) -> dict[str, 
         "downloaded": len(downloaded),
         "downloaded_gone": gone,
         "downloaded_present": len(downloaded) - gone,
+        # Deleted before it was downloaded is an update to the catalog, not mail to get.
         "observed_only": sum(
-            1 for r in rows if not r.get("downloaded") and "from" in r
+            1
+            for r in rows
+            if not r.get("downloaded") and not r.get("deleted") and "from" in r
         ),
         "excluded": len(every) - len(rows),
         "senders": len(senders),

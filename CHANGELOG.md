@@ -12,6 +12,11 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+## 0.10.1 - 2026-10-30
+
+### Fixed
+- **`report`'s "observed only" no longer counts a message the server deleted before it was downloaded.** That is an update to the catalog, not mail still to get; `messages` still counts it.
+
 ## 0.10.0 - 2026-10-30
 
 ### Added

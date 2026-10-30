@@ -118,3 +118,17 @@ def test_an_excluded_row_is_counted_apart_and_listed_nowhere(tmp_path: Path) -> 
     assert (s["messages"], s["excluded"], s["observed_only"]) == (1, 1, 0)
     assert sender_counts(tmp_path) == [("a@acme.com", 1)]
     assert "copy@dup.com" not in all_addresses(tmp_path)
+
+
+def test_observed_only_leaves_out_a_message_deleted_before_download(
+    tmp_path: Path,
+) -> None:
+    write_shard(
+        shard_path(tmp_path, 2026),
+        {
+            "1@x": {"id": "1@x", "from": "a@acme.com"},
+            "2@x": {"id": "2@x", "from": "a@acme.com", "deleted": True},
+        },
+    )
+    s = summary(tmp_path)
+    assert (s["messages"], s["observed_only"]) == (2, 1)
