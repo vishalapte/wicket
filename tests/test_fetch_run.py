@@ -189,6 +189,26 @@ def test_a_halt_in_a_pass_ends_the_run(
     assert stats["halted"] is True and str(stats["halt"]) and _halt_file().is_file()
 
 
+def test_years_walks_only_those_years_and_skips_the_first_year_lookup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    years = Years(monkeypatch, {2021: [4]})
+
+    def no_lookup(*_a: object) -> int:
+        raise AssertionError("--years makes no first-year lookup")
+
+    monkeypatch.setattr(fetch_lib, "first_year", no_lookup)
+    stats = fetch_lib.download_years(
+        ctx=_ctx(tmp_path),
+        credentials_path=_creds(tmp_path),
+        limit=None,
+        hooks=_hooks(),
+        years=[2021, 2023],
+    )
+    assert years.years() == [2021, 2023]
+    assert stats["downloaded"] == 4 and stats["halted"] is False
+
+
 def test_a_refused_discovery_connection_returns_halted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -399,7 +419,9 @@ def test_last_refuses_another_filter(
     code, _, err = run_cli(root.main, ["fetch", "--last", "2d", *other])
     assert code == 2 and "not allowed with argument" in err
     assert seen == []
-    with pytest.raises(ApiError, match="at most one of --domains, --query or --last"):
+    with pytest.raises(
+        ApiError, match="at most one of --domains, --query, --last or --years"
+    ):
         root_api.fetch_root(mail_account=ME, last="2d", domains="a.com", query="x")
 
 
@@ -485,3 +507,42 @@ def test_catalog_opens_no_year_past_the_stop(account: Path, tmp_path: Path) -> N
     # Refused, not "could not reach": the autouse fake would raise OSError on connect.
     with pytest.raises(auth.Halted):
         root_api.catalog(ME, options=root_api.CatalogOptions(years=[2023, 2024]))
+
+
+def test_years_runs_the_named_years_sorted_once(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    seen = _fetched(monkeypatch)
+    code = root.main(
+        ["fetch", "--mail-account", ME, "--years", "2023,2021,2023", "--json"]
+    )
+    assert code == 0 and json.loads(capsys.readouterr().out)["filtered"] is False
+    assert [o.years for o in seen] == [[2021, 2023]]
+
+
+@pytest.mark.parametrize("bad", ["202", "20211", "1969", "21", "x", "2021,", ","])
+def test_years_refuses_anything_but_four_digit_years_before_any_imap(
+    monkeypatch: pytest.MonkeyPatch, bad: str
+) -> None:
+    seen = _fetched(monkeypatch)
+    if bad == "2021,":  # a trailing comma is no year: the one year is kept
+        root_api.fetch_root(mail_account=ME, years=bad)
+        assert [o.years for o in seen] == [[2021]]
+        return
+    with pytest.raises(ApiError, match="bad --years"):
+        root_api.fetch_root(mail_account=ME, years=bad)
+    assert seen == []
+
+
+def test_years_refuses_another_filter(
+    monkeypatch: pytest.MonkeyPatch,
+    run_cli: Callable[..., tuple[int, str, str]],
+) -> None:
+    seen = _fetched(monkeypatch)
+    code, _, err = run_cli(root.main, ["fetch", "--years", "2021", "--last", "2d"])
+    assert code == 2 and "not allowed with argument" in err
+    with pytest.raises(ApiError, match="at most one of"):
+        root_api.fetch_root(mail_account=ME, years="2021", domains="a.com")
+    with pytest.raises(ValueError, match="at most one"):
+        root_api.FetchOptions(years=[2021], last="2d")
+    assert seen == []

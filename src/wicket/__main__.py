@@ -108,6 +108,7 @@ def _cmd_fetch(args: argparse.Namespace) -> int:
         query=args.query,
         domains=args.domains,
         last=args.last,
+        years=args.years,
         limit=args.limit,
         target=args.target,
         alias_file=args.alias_file,
@@ -248,9 +249,10 @@ def parser() -> argparse.ArgumentParser:
             "imap.json links: ~/.config/gmail/ or ~/.config/fastmail/. "
             "fetch files nothing: `wicket ingest --staged` files staged mail into "
             "the archive, and until then it is not in report or the manifest's "
-            "downloaded rows. With no --domains, --query or --last, gets every "
-            "message not yet got and not excluded, this year, last year, then "
-            "older years oldest first, until the provider throttles: the first throttle "
+            "downloaded rows. With no --domains, --query, --last or --years, gets "
+            "every message not yet got and not excluded, this year, last year, then "
+            "older years oldest first, until the provider throttles (--years walks "
+            "only the years it names, oldest first): the first throttle "
             "writes the account's HALT and exits 2, and no IMAP connection opens "
             "past a HALT. Exits 2 when another process holds the store's lock."
         ),
@@ -273,6 +275,12 @@ def parser() -> argparse.ArgumentParser:
         metavar="AGE",
         help="Messages newer than AGE: N then d, m or y (2d, 3m, 1y): Gmail's "
         "newer_than:AGE, Fastmail's SINCE that date. Anything else exits 2.",
+    )
+    filter_group.add_argument(
+        "--years",
+        help="Comma-separated INTERNALDATE years (2021,2022): walk only these, oldest "
+        "first, each as the no-filter run walks a year. Each is four digits, 1970 or "
+        "later; anything else exits 2.",
     )
     p_fetch.add_argument(
         "--target",

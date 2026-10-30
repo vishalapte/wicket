@@ -913,13 +913,16 @@ def download_years(
     limit: int | None,
     threads: int = DEFAULT_THREADS,
     hooks: RunHooks | None = None,
+    years: list[int] | None = None,
 ) -> dict[str, object]:
     """Get every message in All Mail not got and not excluded, until throttled.
 
     One discovery connection serves the whole run: its first-year lookup and
     every pass's discovery, so no extra LOGIN is made. Years
     run this year, last year, then the rest oldest first from All Mail's first year;
-    none is skipped. ``limit`` (``--max``) bounds the candidates of the whole run.
+    none is skipped. ``years`` (``--years``) replaces that walk with exactly those years
+    in the order given, and the first-year lookup is not made. ``limit`` (``--max``)
+    bounds the candidates of the whole run.
     Returns the summed counts, ``passes`` (one record per pass), and ``halted`` with
     the HALT's first line and file when a throttle stopped the run.
     """
@@ -932,11 +935,12 @@ def download_years(
         return _result(run.totals, run.passes, refused)
     halt: Halted | None = None
     try:
-        try:
-            first = first_year(conn, ctx.provider)
-        except IMAP_FAILURES as exc:
-            first, halt = None, throttle_halt(credentials_path, "first year", exc)
-        years = [] if first is None else _year_order(first, hooks.this_year())
+        if years is None:
+            try:
+                first = first_year(conn, ctx.provider)
+            except IMAP_FAILURES as exc:
+                first, halt = None, throttle_halt(credentials_path, "first year", exc)
+            years = [] if first is None else _year_order(first, hooks.this_year())
         job = _YearJob(conn, ctx, credentials_path, threads, hooks)
         for year in years:
             if halt is not None or run.spent():

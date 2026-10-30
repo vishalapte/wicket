@@ -281,9 +281,9 @@ class FetchOptions:
     """What to fetch, independent of which account.
 
     At most one of ``domains`` (list or comma-string), ``query`` (a raw provider
-    expression) or ``last`` (``2d``, ``3m``, ``1y``) may be set; the invariant is
-    enforced here so a face cannot build an ambiguous request. None means every
-    message not got and not excluded.
+    expression), ``last`` (``2d``, ``3m``, ``1y``) or ``years`` (the years to walk)
+    may be set; the invariant is enforced here so a face cannot build an ambiguous
+    request. None means every message not got and not excluded, every year.
     ``dest`` is refused (`DEST_REFUSED`): fetch stages and files nothing, so a
     destination would be silently ignored.
     ``limit`` bounds the candidates of the whole run. ``interactive`` is
@@ -294,6 +294,7 @@ class FetchOptions:
     domains: list[str] | str | None = None
     query: str | None = None
     last: str | None = None
+    years: list[int] | None = None
     dest: Path | None = None
     state_dir: Path | None = None
     alias_file: Path | None = None
@@ -302,9 +303,11 @@ class FetchOptions:
     dry_run: bool = False
 
     def __post_init__(self) -> None:
-        given = [v for v in (self.domains, self.query, self.last) if v is not None]
-        if len(given) > 1:
-            raise ValueError("pass at most one of domains=..., query=... or last=...")
+        filters = (self.domains, self.query, self.last, self.years)
+        if len([v for v in filters if v is not None]) > 1:
+            raise ValueError(
+                "pass at most one of domains=..., query=..., last=... or years=..."
+            )
         if self.dest is not None:
             raise ValueError(DEST_REFUSED)
 
@@ -420,13 +423,17 @@ def fetch(
     )
     with lock:
         if search is None:
-            log("run start: every year")
+            if options.years is None:
+                log("run start: every year")
+            else:
+                log(f"run start: years {', '.join(map(str, options.years))}")
             stats = download_years(
                 ctx=ctx,
                 credentials_path=credentials_path,
                 limit=options.limit,
                 threads=options.threads,
                 hooks=RunHooks(log=log),
+                years=options.years,
             )
         else:
             log("run start: one filtered pass")
@@ -592,7 +599,7 @@ def _refused(exc: Exception) -> ApiError:
 
 
 def _parse_years(raw: str) -> list[int]:
-    """``--years`` as catalog takes it: sorted, each once, four digits from 1970.
+    """``--years`` as catalog and fetch take it: sorted, each once, four digits from 1970.
 
     A year outside that would reach the server as a bad date, which it rejects, and a
     rejected command HALTs the account; so it is refused here, before any IMAP.
@@ -775,6 +782,7 @@ def fetch_root(  # pylint: disable=too-many-arguments
     query: str | None = None,
     domains: str | None = None,
     last: str | None = None,
+    years: str | None = None,
     limit: int | None = None,
     target: Path | None = None,
     alias_file: Path | None = None,
@@ -788,18 +796,27 @@ def fetch_root(  # pylint: disable=too-many-arguments
 
     A run that halts partway is refused: the ``ApiError`` says what it did, then the
     HALT. ``last`` (``2d``, ``3m``, ``1y``) is the provider's since-search (Gmail's
-    ``newer_than:<last>``); at most one of ``domains``, ``query`` and ``last`` is given.
+    ``newer_than:<last>``); ``years`` (``2021,2022``) walks only those years; at most one
+    of ``domains``, ``query``, ``last`` and ``years`` is given.
     """
-    if last is not None:
-        if not re.fullmatch("[1-9][0-9]*[dmy]", last):
-            raise ApiError(f"--last takes N then d, m or y (2d, 3m, 1y), not {last!r}")
-        if domains is not None or query is not None:
-            raise ApiError("pass at most one of --domains, --query or --last")
+    if last is not None and not re.fullmatch("[1-9][0-9]*[dmy]", last):
+        raise ApiError(f"--last takes N then d, m or y (2d, 3m, 1y), not {last!r}")
+    if (last is not None or years is not None) and len(
+        [v for v in (domains, query, last, years) if v is not None]
+    ) > 1:
+        raise ApiError("pass at most one of --domains, --query, --last or --years")
+    walked = None
+    if years is not None:
+        try:
+            walked = _parse_years(years)
+        except ValueError as exc:
+            raise ApiError(f"bad --years: {exc}") from exc
     try:
         options = FetchOptions(
             domains=domains,
             query=query,
             last=last,
+            years=walked,
             dest=target.expanduser() if target else None,
             state_dir=state_dir,
             alias_file=alias_file.expanduser() if alias_file else None,

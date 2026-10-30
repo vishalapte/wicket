@@ -12,6 +12,11 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+## 0.12.0 - 2026-10-30
+
+### Added
+- **`wicket fetch --years 2021,2022`: backfill named years only.** The no-filter run walks this year, last year, then every older year, so a backfill of old years first re-lists the recent ones (on Fastmail, one search per folder per year). `--years` walks only the years it names, sorted and each once, as the no-filter run walks a year, and makes no first-year lookup. It is one of the four filters, so it refuses `--domains`, `--query` and `--last`, exit 2; a value that is not a year is refused as `catalog --years` refuses it.
+
 ## 0.11.1 - 2026-10-30
 
 ### Fixed
