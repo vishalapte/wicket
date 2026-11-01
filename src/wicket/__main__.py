@@ -346,8 +346,9 @@ def parser() -> argparse.ArgumentParser:
     p_report = sub.add_parser(
         "report",
         description=(
-            "Read-only reports over the year-sharded manifest (no IMAP). With "
-            "no flag, prints a one-screen summary; otherwise one record per line."
+            "Read-only reports over the year-sharded manifest (no IMAP). With no "
+            "flag, one row per account: downloaded, excluded, not downloaded, total; "
+            "with --mail-account, that account's one-screen summary."
         ),
     )
     view = p_report.add_mutually_exclusive_group()
@@ -380,8 +381,10 @@ def parser() -> argparse.ArgumentParser:
     p_report.add_argument(
         "--mail-account",
         default=None,
-        help="Account address; scopes the manifest store. `+tag` aliases "
-        f"are normalized. Default: ${ACCOUNT_ENV_VAR}, else the only account folder.",
+        help="Account address; scopes the manifest store. `+tag` aliases are "
+        "normalized. Absent with no view flag: every account's counts. With "
+        f"--senders or --addresses, default ${ACCOUNT_ENV_VAR}, else the only "
+        "account folder.",
     )
     p_report.set_defaults(func=_cmd_report)
 

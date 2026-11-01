@@ -840,6 +840,19 @@ def test_report_by_year(mail: Path, run: Run, monkeypatch: pytest.MonkeyPatch) -
     )
 
 
+def test_report_accounts(mail: Path, run: Run, monkeypatch: pytest.MonkeyPatch) -> None:
+    del mail
+    counts = {"downloaded": 2987, "excluded": 7, "not_downloaded": 254}
+    _report(monkeypatch, "account_counts", counts)
+    assert run("report") == (
+        0,
+        "account        downloaded  excluded  not downloaded  total\n"
+        f"{ME}        2987         7             254   3248\n"
+        "total                2987         7             254   3248\n",
+        "",
+    )
+
+
 def test_report_unknown_account(mail: Path, run: Run) -> None:
     assert run("report", "--mail-account", "nobody@example.com") == (
         2,

@@ -175,15 +175,44 @@ def test_resolve_account_no_longer_takes_the_only_store(
     assert env.resolve_account(None) == "you@gmail.com"
 
 
-@pytest.mark.parametrize("verb", ["report", "catalog", "fetch"])
+@pytest.mark.parametrize("verb", ["catalog", "fetch"])
 def test_a_verb_without_the_flag_exits_2_unless_one_folder_holds_imap_json(
     verb: str, state: Path, run_cli: Callable[..., tuple[int, str, str]]
 ) -> None:
     _account_folders(state, "a@x.com", "b@y.com")
-    argv = [verb] if verb == "report" else [verb, "--non-interactive"]
-    code, out, err = run_cli(root.main, argv)
+    code, out, err = run_cli(root.main, [verb, "--non-interactive"])
     assert (code, out) == (2, "")
     assert "no account: 2 folders in " in err and "pass --mail-account" in err
+
+
+def test_report_without_the_flag_counts_every_account(
+    state: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    run_cli: Callable[..., tuple[int, str, str]],
+) -> None:
+    _account_folders(state, "a@x.com", "b@y.com")
+    monkeypatch.setenv(env.ACCOUNT_ENV_VAR, "a@x.com")  # the table still shows
+    code, out, err = run_cli(root.main, ["report"])
+    assert (code, err) == (0, "")
+    assert [line.split()[0] for line in out.splitlines()] == [
+        "account",
+        "a@x.com",
+        "b@y.com",
+        "total",
+    ]
+
+
+def test_report_without_the_flag_refuses_an_absent_mail_root(
+    state: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    run_cli: Callable[..., tuple[int, str, str]],
+) -> None:
+    _account_folders(state, "a@x.com")
+    monkeypatch.setattr(env, "MAIL_ROOT", tmp_path / "locked")
+    code, out, err = run_cli(root.main, ["report"])
+    assert (code, out) == (2, "")
+    assert "does not exist" in err
 
 
 def test_resolve_state_dir_is_the_accounts_folder(

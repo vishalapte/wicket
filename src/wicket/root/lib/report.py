@@ -91,15 +91,31 @@ def summary(store_dir: Path, excluded_lists: Collection[str] = ()) -> dict[str, 
     }
 
 
+def row_state(row: Row, excluded_lists: Collection[str]) -> str | None:
+    """Which count a row is in: ``excluded``, ``downloaded``, ``not_downloaded``, or none.
+
+    The one rule `by_year` and `account_counts` sort by. Excluded (`manifest.is_excluded`)
+    wins; then a ``downloaded`` row (an only copy included); then a row not ``deleted``.
+    A message the server deleted before it was downloaded is in none: it is an update to
+    the catalog, not mail to get.
+    """
+    if is_excluded(row, excluded_lists):
+        return "excluded"
+    if row.get("downloaded"):
+        return "downloaded"
+    if not row.get("deleted"):
+        return "not_downloaded"
+    return None
+
+
 def by_year(
     store_dir: Path, excluded_lists: Collection[str] = ()
 ) -> dict[int, tuple[int, int]]:
     """``{year: (local, not local)}`` for one store, by the shard each row lives in.
 
-    Local is a ``downloaded`` row. Not local is a row not downloaded and not ``deleted``:
-    a message the server deleted before it was downloaded is an update to the catalog,
-    not mail to get. An excluded row (`manifest.is_excluded`) is in neither count. An id
-    in two shards counts once, the later shard winning, as `manifest.load_store` reads it.
+    Local is `row_state` ``downloaded``, not local ``not_downloaded``; an excluded row is
+    in neither. An id in two shards counts once, the later shard winning, as
+    `manifest.load_store` reads it.
     """
     latest: dict[str, tuple[int, Row]] = {}
     for shard in store_shards(store_dir):
@@ -108,14 +124,29 @@ def by_year(
                 latest[id_] = (int(shard.stem), row)
     cells: dict[int, list[int]] = {}
     for year, row in latest.values():
-        if is_excluded(row, excluded_lists):
+        state = row_state(row, excluded_lists)
+        if state == "excluded":
             continue
         cell = cells.setdefault(year, [0, 0])
-        if row.get("downloaded"):
+        if state == "downloaded":
             cell[0] += 1
-        elif not row.get("deleted"):
+        elif state == "not_downloaded":
             cell[1] += 1
     return {year: (cell[0], cell[1]) for year, cell in sorted(cells.items())}
+
+
+def account_counts(
+    store_dir: Path, excluded_lists: Collection[str] = ()
+) -> dict[str, int]:
+    """``{downloaded, excluded, not_downloaded}`` for one store, each row by `row_state`."""
+    counts = Counter(
+        row_state(row, excluded_lists) for row in load_store(store_dir).values()
+    )
+    return {
+        "downloaded": counts["downloaded"],
+        "excluded": counts["excluded"],
+        "not_downloaded": counts["not_downloaded"],
+    }
 
 
 def bucket_rows(

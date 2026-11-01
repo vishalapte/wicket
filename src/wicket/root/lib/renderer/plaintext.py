@@ -11,6 +11,8 @@ import sys
 from pathlib import Path
 
 from ..results import (
+    AccountCounts,
+    AccountsView,
     BucketView,
     BusyStore,
     ByYearView,
@@ -276,9 +278,43 @@ def _print_by_year(view: ByYearView) -> None:
         )
 
 
+def _print_accounts(view: AccountsView) -> None:
+    """Accounts in rows; downloaded, excluded, not downloaded and total in columns."""
+    table = [["account", "downloaded", "excluded", "not downloaded", "total"]]
+    total: AccountCounts = {
+        "account": "total",
+        "downloaded": view["downloaded"],
+        "excluded": view["excluded"],
+        "not_downloaded": view["not_downloaded"],
+        "total": view["total"],
+    }
+    for row in [*view["accounts"], total]:
+        table.append(
+            [
+                row["account"],
+                str(row["downloaded"]),
+                str(row["excluded"]),
+                str(row["not_downloaded"]),
+                str(row["total"]),
+            ]
+        )
+    widths = [max(len(line[i]) for line in table) for i in range(len(table[0]))]
+    for line in table:
+        first, *rest = line
+        print(
+            "  ".join(
+                [first.ljust(widths[0])]
+                + [cell.rjust(widths[i + 1]) for i, cell in enumerate(rest)]
+            )
+        )
+
+
 def print_report(result: ReportRoot) -> None:
-    """``wicket report`` as text: the summary, one record per line, a bucket, or by year."""
-    if result["view"] == "by_year":
+    """``wicket report`` as text: the summary, one record per line, a bucket, by year,
+    or every account's counts."""
+    if result["view"] == "accounts":
+        _print_accounts(result["accounts"])
+    elif result["view"] == "by_year":
         _print_by_year(result["by_year"])
     elif result["view"] == "bucket":
         _print_bucket(result["bucket"])

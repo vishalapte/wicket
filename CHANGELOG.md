@@ -12,6 +12,11 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+## 0.13.0 - 2026-11-01
+
+### Added
+- **`wicket report` with no `--mail-account` counts every account.** One row per account (a folder in `~/.config/wicket/accounts`), columns downloaded, excluded, not downloaded and total, then a total row; before, it refused unless exactly one account existed. `$WICKET_ACCOUNT` does not select a summary here: only `--mail-account` does. Each row is sorted by one rule that `--by-year` now reads too: excluded first (marked, or its list on `excluded-lists.json`), then downloaded (an only copy included), then not downloaded unless deleted; a message the server deleted before it was downloaded is in no column. An absent mail root still refuses. `--senders` and `--addresses` still need an account.
+
 ## 0.12.0 - 2026-10-30
 
 ### Added

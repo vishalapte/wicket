@@ -79,6 +79,7 @@ from wicket.env import (
     identities,
     known_accounts,
     load_account_aliases,
+    require_mail_root,
     resolve_account,
     resolve_archive_dir,
     resolve_duplicates_dir,
@@ -99,6 +100,8 @@ from .lib.fetch import RunHooks, ThreadContext, download, download_years
 from .lib.ingest import Target, ingest_folder, ingest_routed, ingest_staged
 from .lib.renderer.plaintext import busy_lines, fetch_lines, halt_text, ingest_lines
 from .lib.results import (
+    AccountCounts,
+    AccountsView,
     AccountYears,
     BucketStore,
     BucketView,
@@ -714,6 +717,33 @@ def _by_year_view() -> ByYearView:
     }
 
 
+def _accounts_view() -> AccountsView:
+    """Every account (a folder in ~/.config/wicket/accounts): downloaded, excluded, not
+    downloaded and their total, each row sorted by `report_lib.row_state`."""
+    require_mail_root()
+    rows: list[AccountCounts] = []
+    for folder in account_dirs():
+        counts = report_lib.account_counts(
+            resolve_store_dir(folder.name), _excluded(folder.name)
+        )
+        rows.append(
+            {
+                "account": folder.name,
+                "downloaded": counts["downloaded"],
+                "excluded": counts["excluded"],
+                "not_downloaded": counts["not_downloaded"],
+                "total": sum(counts.values()),
+            }
+        )
+    return {
+        "accounts": rows,
+        "downloaded": sum(row["downloaded"] for row in rows),
+        "excluded": sum(row["excluded"] for row in rows),
+        "not_downloaded": sum(row["not_downloaded"] for row in rows),
+        "total": sum(row["total"] for row in rows),
+    }
+
+
 def report_root(
     mail_account: str | None = None,
     senders: bool = False,
@@ -722,7 +752,8 @@ def report_root(
     by_year: bool = False,
 ) -> ReportRoot:
     """Read-only reports over the manifest: a summary, senders, addresses, a bucket's
-    view, or every account by year."""
+    view, every account by year, or, with no view and no ``mail_account``, every
+    account's counts."""
     try:
         if by_year:
             return {"view": "by_year", "by_year": _by_year_view()}
@@ -738,6 +769,8 @@ def report_root(
             }
         if addresses:
             return {"view": "addresses", "addresses": all_addresses(mail_account)}
+        if mail_account is None:
+            return {"view": "accounts", "accounts": _accounts_view()}
         counts = report(mail_account)
         store_dir = resolve_store_dir(resolve_account(mail_account))
     except ValueError as exc:

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from wicket.manifest import shard_path, write_shard
 from wicket.root.lib.report import (
+    account_counts,
     addresses,
     all_addresses,
     bucket_rows,
@@ -159,3 +160,32 @@ def test_by_year_counts_local_and_not_local_per_shard(tmp_path: Path) -> None:
         },
     )
     assert by_year(tmp_path, {"news.example.com"}) == {2025: (1, 1), 2026: (2, 0)}
+
+
+def test_account_counts_sorts_each_row_once(tmp_path: Path) -> None:
+    write_shard(
+        shard_path(tmp_path, 2025),
+        {
+            "1@x": {"id": "1@x", "downloaded": True},
+            "2@x": {"id": "2@x"},  # no from: still not downloaded
+            "3@x": {"id": "3@x", "deleted": True},  # gone before download: none
+            "4@x": {"id": "4@x", "list_id": "news.example.com", "downloaded": True},
+            "5@x": {"id": "5@x", "excluded": "duplicate of 1@x"},
+            "6@x": {"id": "6@x"},  # also in 2026's shard, which wins
+        },
+    )
+    write_shard(
+        shard_path(tmp_path, 2026),
+        {
+            "6@x": {"id": "6@x", "downloaded": True},
+            "7@x": {"id": "7@x", "downloaded": True, "deleted": True},  # only copy
+        },
+    )
+    assert account_counts(tmp_path, {"news.example.com"}) == {
+        "downloaded": 3,
+        "excluded": 2,
+        "not_downloaded": 1,
+    }
+    years = by_year(tmp_path, {"news.example.com"})
+    assert sum(local for local, _ in years.values()) == 3  # the same rule
+    assert sum(not_local for _, not_local in years.values()) == 1

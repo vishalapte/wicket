@@ -102,7 +102,7 @@ its own module: `python -m wicket.alias <list|create|update|delete>` and
 |---|---|
 | `wicket catalog` | Observe the mailbox (headers only) into the manifest, recording **what exists**. |
 | `wicket fetch` | Get full `.eml` for matching messages into the store's `staging/`, **filing nothing**; `wicket ingest --staged` files them. |
-| `wicket report` | Read-only summaries over the manifest (top senders, every address, a bucket across every store, every account by year). No IMAP. |
+| `wicket report` | Read-only summaries over the manifest (every account's counts, one account's summary, top senders, every address, a bucket across every store, every account by year). No IMAP. |
 | `wicket ingest` | The only verb that files. `--staged` files what `fetch` got; `--src` files local `.eml` — a folder (a desktop-client drag-export) or a single message — routing each thread to the account it belongs to, for mailboxes wicket can't reach over IMAP. **Additive**; never deletes an archived message. |
 | `python -m wicket.alias` | Edit `domain-aliases.json`: which domains are really another (`us.icapenergy.com` is `icapenergy.com`). No IMAP. |
 | `python -m wicket.store` | Edit which store mail goes to: a sender domain (`--from`, `domain-routes.json`) or one of your addresses (`--to`, `account-aliases.json`). No IMAP. |
@@ -252,7 +252,11 @@ skipped a busy store, print their summary on stderr with the refusal.
 | `--json` | Print the result as JSON instead of text: the run's counts, `passes` (one row per pass), and the HALT fields. |
 
 **`wicket report`** gives read-only summaries over the manifest (no IMAP, no credentials).
-With no flag, prints a one-screen summary.
+With no flag, one row per account (a folder in `~/.config/wicket/accounts`): downloaded,
+excluded, not downloaded and their total, with a total row. Excluded is a row you excluded or
+one on an excluded list; not downloaded is neither downloaded nor deleted, so a message the
+server deleted before it was downloaded is in no column. With `--mail-account`, that account's
+one-screen summary.
 
 | Flag | Meaning |
 |---|---|
