@@ -12,6 +12,11 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+## 0.14.0 - 2026-11-03
+
+### Changed
+- **The mail root moved from `~/.delphi/mail` to `~/.data/mail`.** A mail root left at `~/.delphi/mail` needs `$WICKET_MAIL_ROOT` set; until then every verb refuses it as absent, exit 2. A leading `~` in `$WICKET_MAIL_ROOT` is now expanded, as the map overrides already were, so a quoted `WICKET_MAIL_ROOT='~/.data/mail'` names the home dir rather than a directory called `~`.
+
 ## 0.13.0 - 2026-11-01
 
 ### Added

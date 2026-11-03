@@ -20,7 +20,7 @@ queryable offline. **Read-only on the mailbox** by design: wicket can never send
 delete, flag, or modify a message. Pure Python standard library (no dependencies),
 an app password instead of OAuth, no cloud project. Secrets live in a file you choose,
 linked from `~/.config/wicket/accounts/<account>/imap.json`; what you keep lands in plain files under the **mail root**
-(`~/.delphi/mail/`, overridable with `$WICKET_MAIL_ROOT`); and a small library lets
+(`~/.data/mail/`, overridable with `$WICKET_MAIL_ROOT`); and a small library lets
 other tools read it.
 
 ## What it does for you
@@ -340,7 +340,7 @@ path.
 |---|---|---|
 | `~/.config/wicket/accounts/<account>/imap.json` | Gmail address + app password, through the link | mode `0600`; seeded on first run; never on the command line. Override the base dir with `--state-dir` (the account is then `<dir>/accounts/<account>/`). |
 | `$WICKET_ACCOUNT` (env) | Default account | Used when `--mail-account` is omitted; else the only folder in `~/.config/wicket/accounts` holding an `imap.json`. |
-| `$WICKET_MAIL_ROOT` (env) | Where the mail tree lives | Default `~/.delphi/mail`. Set it when the tree lives elsewhere (e.g. an encrypted vault that mounts at another path). |
+| `$WICKET_MAIL_ROOT` (env) | Where the mail tree lives | Default `~/.data/mail`. Set it when the tree lives elsewhere (e.g. an encrypted vault that mounts at another path). |
 | `$WICKET_ACCOUNT_ALIASES_FILE` (env) | Override `account-aliases.json`'s location | Any name, any path. Default `<mail-root>/account-aliases.json`. |
 | `$WICKET_DOMAIN_ALIASES_FILE` (env) | Override `domain-aliases.json`'s location | Same shape as above. |
 | `$WICKET_DOMAIN_ROUTES_FILE` (env) | Override `domain-routes.json`'s location | Same shape as above. |
@@ -415,7 +415,7 @@ mail tree itself.
 
 ## Where data lives
 
-All mail wicket writes lives under the **mail root** — `~/.delphi/mail/` by
+All mail wicket writes lives under the **mail root** — `~/.data/mail/` by
 default, or `$WICKET_MAIL_ROOT` — one directory per store. The only other things it
 writes are the **halt dir** and the **log dir**, which hold no mail:
 

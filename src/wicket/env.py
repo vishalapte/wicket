@@ -100,15 +100,17 @@ ALIASES_FILENAME = "domain-aliases.json"
 ACCOUNT_ENV_VAR = "WICKET_ACCOUNT"
 
 # One per-account mail root holding both the year-sharded manifest store and the
-# .eml archive (ADR 0002): ~/.delphi/mail/<account>/{manifest,archive}/.
+# .eml archive (ADR 0002): ~/.data/mail/<account>/{manifest,archive}/.
 # Provider-neutral (credentials live separately under ~/.config/<provider>/).
 #
 # The PHYSICAL location is configuration, not code: $WICKET_MAIL_ROOT overrides
-# it, so the tree can follow an encrypted vault to whatever path it mounts at.
-# wicket is standalone and reads its OWN env var; it never imports delphi or
-# reads $DELPHI_PRIVATE, even though the default path sits under ~/.delphi.
+# it (a leading ~ expanded), so the tree can follow an encrypted vault to whatever
+# path it mounts at. wicket is standalone and reads its OWN env var; it never
+# imports delphi or reads $DELPHI_PRIVATE.
 MAIL_ROOT_ENV_VAR = "WICKET_MAIL_ROOT"
-MAIL_ROOT = Path(os.environ.get(MAIL_ROOT_ENV_VAR) or Path.home() / ".delphi" / "mail")
+MAIL_ROOT = Path(
+    os.environ.get(MAIL_ROOT_ENV_VAR) or Path.home() / ".data" / "mail"
+).expanduser()
 
 # wicket's state base, ``$XDG_STATE_HOME/wicket``: what a run leaves for the next, never
 # mail and never a secret. XDG's state home, so it sits outside both the vault and

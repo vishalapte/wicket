@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -132,3 +135,34 @@ def test_no_store_is_created_when_the_root_is_absent(
     with pytest.raises(ValueError, match="not mounted"):
         env.resolve_account("you@gmail.com")
     assert not root.exists()  # nothing was conjured on the way out
+
+
+# --- where the mail root and the maps are found ----------------------------
+
+
+def _mail_root_in_a_fresh_process(home: Path, mail_root: str | None) -> str:
+    """``env.MAIL_ROOT`` as a new process binds it (it is read once, at import)."""
+    environ = {k: v for k, v in os.environ.items() if not k.startswith("WICKET_")}
+    environ.update(HOME=str(home), PYTHONPATH=str(Path(env.__file__).parents[1]))
+    if mail_root is not None:
+        environ[env.MAIL_ROOT_ENV_VAR] = mail_root
+    done = subprocess.run(
+        [sys.executable, "-c", "from wicket import env; print(env.MAIL_ROOT)"],
+        capture_output=True,
+        text=True,
+        env=environ,
+        check=True,
+        timeout=60,
+    )
+    return done.stdout.strip()
+
+
+def test_the_mail_root_defaults_to_dot_data_mail(tmp_path: Path) -> None:
+    got = _mail_root_in_a_fresh_process(tmp_path, None)
+    assert got == str(tmp_path / ".data" / "mail")
+
+
+def test_a_tilde_in_the_mail_root_override_is_expanded(tmp_path: Path) -> None:
+    # A quoted "~/..." reaches wicket unexpanded; it must still mean the home dir.
+    got = _mail_root_in_a_fresh_process(tmp_path, "~/vault/mail")
+    assert got == str(tmp_path / "vault" / "mail")

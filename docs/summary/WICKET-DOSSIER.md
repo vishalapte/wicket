@@ -6,7 +6,7 @@ generator:
 target:
   repo: wicket
   date: 2026-09-04
-  version: "0.13.0"
+  version: "0.14.0"
 bundle:
   - WICKET.md
   - WICKET-DOSSIER.md
@@ -331,7 +331,7 @@ One runtime: a **CLI, and the library beneath it**. There is no server, no daemo
 | `python -m wicket` | no args: prints subcommand help and exits 0 |
 | `from wicket.root.api import ...` | the library surface; the package root is a namespace, not an API |
 
-**State lives entirely on disk**, in two places that never mix. The **mail root** (`~/.delphi/mail`, override `$WICKET_MAIL_ROOT`) holds every Store and the four maps. `~/.config/wicket/accounts/<account>/imap.json`, a link to the provider's file, holds credentials. Secrets are never inside the data tree, never in the repo, and never on a command line.
+**State lives entirely on disk**, in two places that never mix. The **mail root** (`~/.data/mail`, override `$WICKET_MAIL_ROOT`) holds every Store and the four maps. `~/.config/wicket/accounts/<account>/imap.json`, a link to the provider's file, holds credentials. Secrets are never inside the data tree, never in the repo, and never on a command line.
 
 ### §2.2 Entities
 
@@ -400,7 +400,7 @@ The load-bearing detail:
 
 | Name | Effect |
 |---|---|
-| `$WICKET_MAIL_ROOT` | Where the mail tree lives. Default `~/.delphi/mail`. Exists so the tree can follow an encrypted vault to whatever path it mounts at. |
+| `$WICKET_MAIL_ROOT` | Where the mail tree lives. Default `~/.data/mail`. Exists so the tree can follow an encrypted vault to whatever path it mounts at. |
 | `$WICKET_ACCOUNT` | Default account when `--mail-account` is omitted. Falls back to the only folder in `~/.config/wicket/accounts` holding an `imap.json`; none, or several, refuses (exit 2). |
 | `<mail-root>/account-aliases.json` | Addresses that **are you** → the store that owns them. Exceptions only: an address that already names a store resolves to itself. A primary may be an account address or a bucket name; an alias may be a literal address or a `*@domain` catch-all. |
 | `<mail-root>/domain-routes.json` | Counterparties that are **not you** → where their mail goes. Used only when no mailbox claims the thread. |
