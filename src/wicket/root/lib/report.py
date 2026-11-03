@@ -10,8 +10,10 @@ of its own: ``summary`` counts it separately and no view lists it. ``from`` /
 
 from __future__ import annotations
 
+import os
 from collections import Counter
-from collections.abc import Collection
+from collections.abc import Collection, Iterable
+from datetime import datetime
 from email.utils import getaddresses
 from pathlib import Path
 
@@ -147,6 +149,25 @@ def account_counts(
         "excluded": counts["excluded"],
         "not_downloaded": counts["not_downloaded"],
     }
+
+
+def last_download(dirs: Iterable[Path]) -> str | None:
+    """When the newest ``.eml`` under ``dirs`` was written (its mtime), as
+    ``YYYY-MM-DD HH:MM`` in local time; None when they hold none. A dir that does not
+    exist holds none."""
+    newest = max(
+        (
+            os.stat(os.path.join(folder, name)).st_mtime
+            for directory in dirs
+            for folder, _, names in os.walk(directory)
+            for name in names
+            if name.endswith(".eml")
+        ),
+        default=None,
+    )
+    if newest is None:
+        return None
+    return datetime.fromtimestamp(newest).strftime("%Y-%m-%d %H:%M")
 
 
 def bucket_rows(

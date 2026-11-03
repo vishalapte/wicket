@@ -844,11 +844,28 @@ def test_report_accounts(mail: Path, run: Run, monkeypatch: pytest.MonkeyPatch) 
     del mail
     counts = {"downloaded": 2987, "excluded": 7, "not_downloaded": 254}
     _report(monkeypatch, "account_counts", counts)
+    _report(monkeypatch, "last_download", "2026-11-03 17:01")
     assert run("report") == (
         0,
-        "account        downloaded  excluded  not downloaded  total\n"
-        f"{ME}        2987         7             254   3248\n"
-        "total                2987         7             254   3248\n",
+        "account        downloaded  excluded  not downloaded  total     last download\n"
+        f"{ME}        2987         7             254   3248  2026-11-03 17:01\n"
+        "total                2987         7             254   3248  2026-11-03 17:01\n",
+        "",
+    )
+
+
+def test_report_accounts_no_last_download(
+    mail: Path, run: Run, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    del mail
+    counts = {"downloaded": 0, "excluded": 0, "not_downloaded": 3}
+    _report(monkeypatch, "account_counts", counts)
+    _report(monkeypatch, "last_download", None)
+    assert run("report") == (
+        0,
+        "account        downloaded  excluded  not downloaded  total  last download\n"
+        f"{ME}           0         0               3      3\n"
+        "total                   0         0               3      3\n",
         "",
     )
 

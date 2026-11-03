@@ -279,14 +279,25 @@ def _print_by_year(view: ByYearView) -> None:
 
 
 def _print_accounts(view: AccountsView) -> None:
-    """Accounts in rows; downloaded, excluded, not downloaded and total in columns."""
-    table = [["account", "downloaded", "excluded", "not downloaded", "total"]]
+    """Accounts in rows; downloaded, excluded, not downloaded, total and last download
+    in columns, a last download blank where there is none."""
+    table = [
+        [
+            "account",
+            "downloaded",
+            "excluded",
+            "not downloaded",
+            "total",
+            "last download",
+        ]
+    ]
     total: AccountCounts = {
         "account": "total",
         "downloaded": view["downloaded"],
         "excluded": view["excluded"],
         "not_downloaded": view["not_downloaded"],
         "total": view["total"],
+        "last_download": view["last_download"],
     }
     for row in [*view["accounts"], total]:
         table.append(
@@ -296,6 +307,7 @@ def _print_accounts(view: AccountsView) -> None:
                 str(row["excluded"]),
                 str(row["not_downloaded"]),
                 str(row["total"]),
+                row["last_download"] or "",
             ]
         )
     widths = [max(len(line[i]) for line in table) for i in range(len(table[0]))]
@@ -305,7 +317,7 @@ def _print_accounts(view: AccountsView) -> None:
             "  ".join(
                 [first.ljust(widths[0])]
                 + [cell.rjust(widths[i + 1]) for i, cell in enumerate(rest)]
-            )
+            ).rstrip()
         )
 
 

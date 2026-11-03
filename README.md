@@ -253,10 +253,13 @@ skipped a busy store, print their summary on stderr with the refusal.
 
 **`wicket report`** gives read-only summaries over the manifest (no IMAP, no credentials).
 With no flag, one row per account (a folder in `~/.config/wicket/accounts`): downloaded,
-excluded, not downloaded and their total, with a total row. Excluded is a row you excluded or
-one on an excluded list; not downloaded is neither downloaded nor deleted, so a message the
-server deleted before it was downloaded is in no column. With `--mail-account`, that account's
-one-screen summary.
+excluded, not downloaded, their total and last download, with a total row. Excluded is a row you
+excluded or one on an excluded list; not downloaded is neither downloaded nor deleted, so a message
+the server deleted before it was downloaded is in no column. Last download is when the newest
+`.eml` in the account's `archive/` or `staging/` was written (its file time), `YYYY-MM-DD HH:MM` in
+local time, blank when there is none; the total row shows the latest. A message filed by `ingest`
+is written when it is filed, and one from `ingest --src` counts too. With `--mail-account`, that
+account's one-screen summary.
 
 | Flag | Meaning |
 |---|---|

@@ -86,23 +86,28 @@ class ByYearView(TypedDict):
 
 
 class AccountCounts(TypedDict):
-    """One account's messages: downloaded, excluded, not downloaded, and their total."""
+    """One account's messages: downloaded, excluded, not downloaded, and their total,
+    and when the newest ``.eml`` in its archive or staging was written (``YYYY-MM-DD
+    HH:MM``, local time; None when it holds none)."""
 
     account: str
     downloaded: int
     excluded: int
     not_downloaded: int
     total: int
+    last_download: str | None
 
 
 class AccountsView(TypedDict):
-    """Every account's counts, and the totals across them."""
+    """Every account's counts, and the totals across them; ``last_download`` is the
+    latest of the accounts'."""
 
     accounts: list[AccountCounts]
     downloaded: int
     excluded: int
     not_downloaded: int
     total: int
+    last_download: str | None
 
 
 class CatalogRoot(TypedDict):

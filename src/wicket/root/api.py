@@ -719,7 +719,8 @@ def _by_year_view() -> ByYearView:
 
 def _accounts_view() -> AccountsView:
     """Every account (a folder in ~/.config/wicket/accounts): downloaded, excluded, not
-    downloaded and their total, each row sorted by `report_lib.row_state`."""
+    downloaded and their total, each row sorted by `report_lib.row_state`, and its
+    last download (`report_lib.last_download` over its archive and staging)."""
     require_mail_root()
     rows: list[AccountCounts] = []
     for folder in account_dirs():
@@ -733,6 +734,12 @@ def _accounts_view() -> AccountsView:
                 "excluded": counts["excluded"],
                 "not_downloaded": counts["not_downloaded"],
                 "total": sum(counts.values()),
+                "last_download": report_lib.last_download(
+                    [
+                        resolve_archive_dir(folder.name),
+                        resolve_staging_dir(folder.name),
+                    ]
+                ),
             }
         )
     return {
@@ -741,6 +748,10 @@ def _accounts_view() -> AccountsView:
         "excluded": sum(row["excluded"] for row in rows),
         "not_downloaded": sum(row["not_downloaded"] for row in rows),
         "total": sum(row["total"] for row in rows),
+        "last_download": max(
+            (row["last_download"] for row in rows if row["last_download"]),
+            default=None,
+        ),
     }
 
 

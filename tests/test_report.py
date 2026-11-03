@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+from datetime import datetime
 from pathlib import Path
 
 from wicket.manifest import shard_path, write_shard
@@ -11,6 +13,7 @@ from wicket.root.lib.report import (
     all_addresses,
     bucket_rows,
     by_year,
+    last_download,
     sender_counts,
     summary,
 )
@@ -189,3 +192,23 @@ def test_account_counts_sorts_each_row_once(tmp_path: Path) -> None:
     years = by_year(tmp_path, {"news.example.com"})
     assert sum(local for local, _ in years.values()) == 3  # the same rule
     assert sum(not_local for _, not_local in years.values()) == 1
+
+
+def _file(path: Path, when: datetime) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("x")
+    os.utime(path, (when.timestamp(), when.timestamp()))
+
+
+def test_last_download_is_the_newest_eml_in_local_time(tmp_path: Path) -> None:
+    archive, staging = tmp_path / "archive", tmp_path / "staging"
+    _file(archive / "acme.com" / "2026-10" / "1@x.eml", datetime(2026, 10, 30, 9, 5))
+    _file(staging / "t1" / "2@x@20261103.eml", datetime(2026, 11, 3, 17, 1))
+    _file(archive / "acme.com" / "notes.txt", datetime(2026, 12, 1, 0, 0))  # not .eml
+    assert last_download([archive, staging]) == "2026-11-03 17:01"
+    assert last_download([archive]) == "2026-10-30 09:05"
+
+
+def test_last_download_none_when_no_eml(tmp_path: Path) -> None:
+    (tmp_path / "archive").mkdir()
+    assert last_download([tmp_path / "archive", tmp_path / "staging"]) is None

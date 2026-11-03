@@ -12,6 +12,11 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+## 0.17.0 - 2026-11-03
+
+### Added
+- **`report` shows when each account last got mail.** The time the newest `.eml` in the store's `archive/` or `staging/` was written, as `YYYY-MM-DD HH:MM` in local time; blank for a store with none. A file filed by `ingest --src` counts. Reading every file's time costs about 4 s on each bare `report`.
+
 ### Fixed
 - **The test suite no longer touches the live maps.** In a shell with wicket's variables installed, the tests read and wrote the owner's `domain-aliases.json`, `domain-routes.json` and `excluded-lists.json`; every `WICKET_*` variable is now unset for each test.
 
