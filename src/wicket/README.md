@@ -66,7 +66,7 @@ src/wicket/
     lib/renderer/plaintext.py   every line the verbs print
 ```
 
-Data lives under the **mail root** (`~/.data/mail`, or `$WICKET_MAIL_ROOT`), one
+Data lives under the **mail root** (`$WICKET_DATA_DIR`), one
 directory per **store** — an *account* (a real mailbox) or a *bucket* (a topical
 destination that is no mailbox). wicket never creates a store, and **fails closed**
 when the mail root is absent: that means a locked (Cryptomator) vault, and writing

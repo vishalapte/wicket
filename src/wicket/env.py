@@ -49,11 +49,11 @@ CREDENTIALS_FILENAME = "imap.json"
 ACCOUNT_ALIASES_FILENAME = "account-aliases.json"
 
 # Overrides ACCOUNT_ALIASES_FILENAME's location entirely (a full path, not just a
-# name) — the same escape hatch $WICKET_MAIL_ROOT gives the mail tree itself, for
+# name) — the same escape hatch $WICKET_DATA_DIR gives the mail tree itself, for
 # an owner who wants this one map to live somewhere else (a second vault, a
 # dotfiles repo). Checked by `account_aliases_path`; unset means the default
 # `<mail-root>/account-aliases.json`.
-ACCOUNT_ALIASES_FILE_ENV_VAR = "WICKET_ACCOUNT_ALIASES_FILE"
+ACCOUNT_ALIASES_ENV_VAR = "WICKET_ACCOUNT_ALIASES"
 
 # The counterparty map, and the mirror image of the one above: it lists domains
 # that are NOT you, and the store their mail belongs in ("ikea.com" -> shopping).
@@ -62,17 +62,18 @@ ACCOUNT_ALIASES_FILE_ENV_VAR = "WICKET_ACCOUNT_ALIASES_FILE"
 # counterparty listed as an alias would make the filing rule think it is *you*.
 DOMAIN_ROUTES_FILENAME = "domain-routes.json"
 
-# Path overrides for the two domain maps, same shape as ACCOUNT_ALIASES_FILE_ENV_VAR
+# Path overrides for the two domain maps, same shape as ACCOUNT_ALIASES_ENV_VAR
 # above. Named here (not in `wicket.domains`) so every owner-authored map's
 # filenames AND overrides share one home; `wicket.domains`'s path functions read them.
-DOMAIN_ROUTES_FILE_ENV_VAR = "WICKET_DOMAIN_ROUTES_FILE"
-DOMAIN_ALIASES_FILE_ENV_VAR = "WICKET_DOMAIN_ALIASES_FILE"
+DOMAIN_ROUTES_ENV_VAR = "WICKET_DOMAIN_ROUTES"
+DOMAIN_ALIASES_ENV_VAR = "WICKET_DOMAIN_ALIASES"
 
 # The fourth owner-authored map: mailing lists whose mail is never fetched or filed,
 # ``{"*": [list-id], "<account>": [list-id]}`` ("*" is every account). Read by
 # `wicket.exclusions`; named here so every owner map's filename and override share one home.
 EXCLUDED_LISTS_FILENAME = "excluded-lists.json"
-EXCLUDED_LISTS_FILE_ENV_VAR = "WICKET_EXCLUDED_LISTS_FILE"
+EXCLUDED_LISTS_ENV_VAR = "WICKET_EXCLUDED_LISTS"
+
 
 # An email address. Deliberately permissive in the local part (burner services
 # mint odd ones) and strict in the domain, which is the half that can reach the
@@ -100,16 +101,16 @@ ALIASES_FILENAME = "domain-aliases.json"
 ACCOUNT_ENV_VAR = "WICKET_ACCOUNT"
 
 # One per-account mail root holding both the year-sharded manifest store and the
-# .eml archive (ADR 0002): ~/.data/mail/<account>/{manifest,archive}/.
+# .eml archive (ADR 0002): $WICKET_DATA_DIR/<account>/{manifest,archive}/.
 # Provider-neutral (credentials live separately under ~/.config/<provider>/).
 #
-# The PHYSICAL location is configuration, not code: $WICKET_MAIL_ROOT overrides
+# The PHYSICAL location is configuration, not code: $WICKET_DATA_DIR overrides
 # it (a leading ~ expanded), so the tree can follow an encrypted vault to whatever
 # path it mounts at. wicket is standalone and reads its OWN env var; it never
 # imports delphi or reads $DELPHI_PRIVATE.
-MAIL_ROOT_ENV_VAR = "WICKET_MAIL_ROOT"
+DATA_DIR_ENV_VAR = "WICKET_DATA_DIR"
 MAIL_ROOT = Path(
-    os.environ.get(MAIL_ROOT_ENV_VAR) or Path.home() / ".data" / "mail"
+    os.environ.get(DATA_DIR_ENV_VAR) or Path.home() / ".data" / "mail"
 ).expanduser()
 
 # wicket's state base, ``$XDG_STATE_HOME/wicket``: what a run leaves for the next, never
@@ -222,10 +223,10 @@ def flatten_aliases(
 def account_aliases_path(mail_root: Path | None = None) -> Path:
     """The one home for the account-alias file (``<mail-root>/account-aliases.json``).
 
-    ``$WICKET_ACCOUNT_ALIASES_FILE``, when set, names the file directly (any name,
+    ``$WICKET_ACCOUNT_ALIASES``, when set, names the file directly (any name,
     any location) and wins over ``mail_root``.
     """
-    override = os.environ.get(ACCOUNT_ALIASES_FILE_ENV_VAR)
+    override = os.environ.get(ACCOUNT_ALIASES_ENV_VAR)
     if override:
         return Path(override).expanduser()
     return (mail_root or MAIL_ROOT) / ACCOUNT_ALIASES_FILENAME
@@ -350,7 +351,7 @@ def require_mail_root(mail_root: Path | None = None) -> Path:
             f"mail root {root} does not exist. If it is an encrypted vault, it is "
             f"not mounted — unlock it and retry. wicket will not create it: writing "
             f"to an unmounted vault's mount point would leave your mail in plaintext "
-            f"underneath it. Set ${MAIL_ROOT_ENV_VAR} if the tree lives elsewhere."
+            f"underneath it. Set ${DATA_DIR_ENV_VAR} if the tree lives elsewhere."
         )
     return root
 

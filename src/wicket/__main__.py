@@ -514,7 +514,7 @@ def example_output() -> list[tuple[str, str, str, int]]:
             "catalog: incremental sweep",
             "wicket catalog --mail-account you@example.com",
             "done: observed 128 message(s); wrote 2 year shard(s) under "
-            "~/.data/mail/you@example.com/manifest\n",
+            "$WICKET_DATA_DIR/you@example.com/manifest\n",
             0,
         ),
         (
@@ -536,7 +536,7 @@ def example_output() -> list[tuple[str, str, str, int]]:
         (
             "report: one-screen summary",
             "wicket report --mail-account you@example.com",
-            "manifest: ~/.data/mail/you@example.com/manifest\n"
+            "manifest: $WICKET_DATA_DIR/you@example.com/manifest\n"
             "  messages               3241\n"
             "  downloaded             2987  (held locally)\n"
             "    gone from mailbox      41  (only copy)\n"
@@ -572,7 +572,7 @@ def example_output() -> list[tuple[str, str, str, int]]:
             "error: unknown account",
             "wicket report --mail-account nobody@example.com",
             "unknown account 'nobody@example.com': it has no store under "
-            "~/.data/mail and is not listed in account-aliases.json. If it "
+            "$WICKET_DATA_DIR and is not listed in account-aliases.json. If it "
             "is an address you receive at, add it as an alias of the account "
             "that owns it; if it is genuinely a new mailbox, create its store "
             "directory first.\n",

@@ -6,11 +6,12 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from wicket import env
+from wicket import domains, env, exclusions
 from wicket.env import (
     ACCOUNT_ALIASES_FILENAME,
     account_aliases_path,
@@ -145,7 +146,7 @@ def _mail_root_in_a_fresh_process(home: Path, mail_root: str | None) -> str:
     environ = {k: v for k, v in os.environ.items() if not k.startswith("WICKET_")}
     environ.update(HOME=str(home), PYTHONPATH=str(Path(env.__file__).parents[1]))
     if mail_root is not None:
-        environ[env.MAIL_ROOT_ENV_VAR] = mail_root
+        environ[env.DATA_DIR_ENV_VAR] = mail_root
     done = subprocess.run(
         [sys.executable, "-c", "from wicket import env; print(env.MAIL_ROOT)"],
         capture_output=True,
@@ -166,3 +167,43 @@ def test_a_tilde_in_the_mail_root_override_is_expanded(tmp_path: Path) -> None:
     # A quoted "~/..." reaches wicket unexpanded; it must still mean the home dir.
     got = _mail_root_in_a_fresh_process(tmp_path, "~/vault/mail")
     assert got == str(tmp_path / "vault" / "mail")
+
+
+@pytest.mark.parametrize(
+    ("path_of", "name", "old_name"),
+    [
+        (
+            account_aliases_path,
+            "WICKET_ACCOUNT_ALIASES",
+            "WICKET_ACCOUNT_ALIASES_FILE",
+        ),
+        (
+            domains.domain_routes_path,
+            "WICKET_DOMAIN_ROUTES",
+            "WICKET_DOMAIN_ROUTES_FILE",
+        ),
+        (
+            domains.domain_aliases_path,
+            "WICKET_DOMAIN_ALIASES",
+            "WICKET_DOMAIN_ALIASES_FILE",
+        ),
+        (
+            exclusions.excluded_lists_path,
+            "WICKET_EXCLUDED_LISTS",
+            "WICKET_EXCLUDED_LISTS_FILE",
+        ),
+    ],
+)
+def test_each_map_override_has_its_new_name_and_not_its_old_one(
+    path_of: Callable[[Path], Path],
+    name: str,
+    old_name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(name, raising=False)
+    default = path_of(tmp_path)
+    monkeypatch.setenv(old_name, str(tmp_path / "old.json"))
+    assert path_of(tmp_path) == default  # the old name is not read
+    monkeypatch.setenv(name, str(tmp_path / "new.json"))
+    assert path_of(tmp_path) == tmp_path / "new.json"

@@ -6,7 +6,7 @@ generator:
 target:
   repo: wicket
   date: 2026-09-04
-  version: "0.14.0"
+  version: "0.15.0"
 bundle:
   - WICKET.md
   - WICKET-DOSSIER.md
@@ -331,7 +331,7 @@ One runtime: a **CLI, and the library beneath it**. There is no server, no daemo
 | `python -m wicket` | no args: prints subcommand help and exits 0 |
 | `from wicket.root.api import ...` | the library surface; the package root is a namespace, not an API |
 
-**State lives entirely on disk**, in two places that never mix. The **mail root** (`~/.data/mail`, override `$WICKET_MAIL_ROOT`) holds every Store and the four maps. `~/.config/wicket/accounts/<account>/imap.json`, a link to the provider's file, holds credentials. Secrets are never inside the data tree, never in the repo, and never on a command line.
+**State lives entirely on disk**, in two places that never mix. The **mail root** (`$WICKET_DATA_DIR`) holds every Store and the four maps. `~/.config/wicket/accounts/<account>/imap.json`, a link to the provider's file, holds credentials. Secrets are never inside the data tree, never in the repo, and never on a command line.
 
 ### §2.2 Entities
 
@@ -400,7 +400,7 @@ The load-bearing detail:
 
 | Name | Effect |
 |---|---|
-| `$WICKET_MAIL_ROOT` | Where the mail tree lives. Default `~/.data/mail`. Exists so the tree can follow an encrypted vault to whatever path it mounts at. |
+| `$WICKET_DATA_DIR` | Where the mail tree lives. Exists so the tree can follow an encrypted vault to whatever path it mounts at. |
 | `$WICKET_ACCOUNT` | Default account when `--mail-account` is omitted. Falls back to the only folder in `~/.config/wicket/accounts` holding an `imap.json`; none, or several, refuses (exit 2). |
 | `<mail-root>/account-aliases.json` | Addresses that **are you** → the store that owns them. Exceptions only: an address that already names a store resolves to itself. A primary may be an account address or a bucket name; an alias may be a literal address or a `*@domain` catch-all. |
 | `<mail-root>/domain-routes.json` | Counterparties that are **not you** → where their mail goes. Used only when no mailbox claims the thread. |
@@ -508,7 +508,7 @@ Google does not publish a documented IMAP request limit, but **caps simultaneous
 | Code / message | Meaning | Recommended client action | Origin |
 |---|---|---|---|
 | `AuthError` | App password missing, rejected, or revoked | Re-seed `imap.json`, or regenerate the app password. Under `--non-interactive` this exits non-zero and loudly — intentional, for cron. | upstream |
-| exit 2, `mail root ... does not exist` | The mail root is absent — most likely a locked encrypted vault | Unlock the vault, or set `$WICKET_MAIL_ROOT`. **Do not** create the directory to make the error go away. | library |
+| exit 2, `mail root ... does not exist` | The mail root is absent — most likely a locked encrypted vault | Unlock the vault, or set `$WICKET_DATA_DIR`. **Do not** create the directory to make the error go away. | library |
 | exit 2, `unknown account` | The account has no store and is not in the alias map (probably a typo) | Fix the typo, add an alias, or `mkdir` the store deliberately. | library |
 | exit 2, `account mismatch` | `--mail-account` disagrees with who the folder is addressed to | Re-run with the account it names, or pass `--force` if you meant it. | library |
 | `[ALERT] Too many simultaneous connections` | Above Gmail's ~15-connection cap | Lower `--threads`. | upstream |

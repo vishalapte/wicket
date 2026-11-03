@@ -22,8 +22,8 @@ from pathlib import Path
 
 from wicket.env import (
     ALIASES_FILENAME,
-    DOMAIN_ALIASES_FILE_ENV_VAR,
-    DOMAIN_ROUTES_FILE_ENV_VAR,
+    DOMAIN_ALIASES_ENV_VAR,
+    DOMAIN_ROUTES_ENV_VAR,
     DOMAIN_ROUTES_FILENAME,
     flatten_aliases,
     is_destination,
@@ -39,10 +39,10 @@ WILDCARD_RE = re.compile(r"^\*\.[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 def domain_routes_path(mail_root: Path) -> Path:
     """The one home for the counterparty-routing file.
 
-    ``$WICKET_DOMAIN_ROUTES_FILE``, when set, names the file directly (any name,
+    ``$WICKET_DOMAIN_ROUTES``, when set, names the file directly (any name,
     any location) and wins over ``mail_root``.
     """
-    override = os.environ.get(DOMAIN_ROUTES_FILE_ENV_VAR)
+    override = os.environ.get(DOMAIN_ROUTES_ENV_VAR)
     if override:
         return Path(override).expanduser()
     return mail_root / DOMAIN_ROUTES_FILENAME
@@ -54,10 +54,10 @@ def domain_aliases_path(mail_root: Path) -> Path:
     At the mail root, not under a per-account state dir: a *bucket* (``travel``)
     has no mailbox and therefore no credentials directory, yet it is exactly where
     folding matters most, since airline mail arrives from a different marketing
-    subdomain every time. ``$WICKET_DOMAIN_ALIASES_FILE``, when set, names the
+    subdomain every time. ``$WICKET_DOMAIN_ALIASES``, when set, names the
     file directly and wins over ``mail_root``.
     """
-    override = os.environ.get(DOMAIN_ALIASES_FILE_ENV_VAR)
+    override = os.environ.get(DOMAIN_ALIASES_ENV_VAR)
     if override:
         return Path(override).expanduser()
     return mail_root / ALIASES_FILENAME

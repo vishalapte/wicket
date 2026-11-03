@@ -37,7 +37,7 @@ def _no_real_mail_root(
     A test that needs a mail root sets its own; this only removes the default.
     """
     monkeypatch.setattr(env, "MAIL_ROOT", tmp_path_factory.mktemp("mail-root"))
-    monkeypatch.delenv(env.ACCOUNT_ALIASES_FILE_ENV_VAR, raising=False)
+    monkeypatch.delenv(env.ACCOUNT_ALIASES_ENV_VAR, raising=False)
 
 
 @pytest.fixture(autouse=True)

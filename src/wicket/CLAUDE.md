@@ -62,7 +62,7 @@ duplicate it here. Bound by the racecar standards (resolver:
     header threads; `manifest` for the year-sharded store (ADR 0002);
     `provider` for each provider's dialect and the staged name
     (`Provider.staged_name`/`provider.parse_staged`, writer and reader alike).
-    `env` also owns the **destination rules**: `MAIL_ROOT` (+ `$WICKET_MAIL_ROOT`),
+    `env` also owns the **destination rules**: `MAIL_ROOT` (+ `$WICKET_DATA_DIR`),
     `require_mail_root` (fail closed — an absent root is a locked vault, not an
     empty store), `known_accounts` (stores that exist; skips dotted dirs, so a
     `.git` in the tree is not an account), `account_of` / `Identities` (who is

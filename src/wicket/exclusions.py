@@ -22,7 +22,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from wicket.env import (
-    EXCLUDED_LISTS_FILE_ENV_VAR,
+    EXCLUDED_LISTS_ENV_VAR,
     EXCLUDED_LISTS_FILENAME,
     MAIL_ROOT,
     normalize_account,
@@ -43,9 +43,9 @@ ExcludedLists = dict[str, list[str]]
 def excluded_lists_path(mail_root: Path | None = None) -> Path:
     """The one home for the map (``<mail-root>/excluded-lists.json``).
 
-    ``$WICKET_EXCLUDED_LISTS_FILE``, when set, names the file directly and wins.
+    ``$WICKET_EXCLUDED_LISTS``, when set, names the file directly and wins.
     """
-    override = os.environ.get(EXCLUDED_LISTS_FILE_ENV_VAR)
+    override = os.environ.get(EXCLUDED_LISTS_ENV_VAR)
     if override:
         return Path(override).expanduser()
     return (mail_root or MAIL_ROOT) / EXCLUDED_LISTS_FILENAME

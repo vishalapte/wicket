@@ -12,6 +12,12 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+## 0.15.0 - 2026-11-03
+
+### Changed
+- **BREAKING: the four map-override variables drop `_FILE`.** `$WICKET_ACCOUNT_ALIASES`, `$WICKET_DOMAIN_ROUTES`, `$WICKET_DOMAIN_ALIASES` and `$WICKET_EXCLUDED_LISTS` replace `$WICKET_ACCOUNT_ALIASES_FILE`, `$WICKET_DOMAIN_ROUTES_FILE`, `$WICKET_DOMAIN_ALIASES_FILE` and `$WICKET_EXCLUDED_LISTS_FILE`. The old names are not read: an environment that still exports one gets the default, `<mail root>/<file>`. Rename them where they are set.
+- **BREAKING: `$WICKET_MAIL_ROOT` is renamed `$WICKET_DATA_DIR`.** It names the same directory, the mail root (default `~/.data/mail`), with the suffix `$MERIDIAN_DATA_DIR` uses. The old name is not read: an environment that still exports it gets the default. Rename it where it is set. The docs and the help name `$WICKET_DATA_DIR` rather than restating its default.
+
 ## 0.14.0 - 2026-11-03
 
 ### Changed

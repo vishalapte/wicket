@@ -27,7 +27,7 @@ lifted out of `factotum`; its consumers (factotum, meridian) depend on it. Two
 providers, Gmail and Fastmail (`wicket.provider`), chosen by where an account's
 `imap.json` links (`~/.config/gmail/` or `~/.config/fastmail/`).
 
-Data lives under the **mail root** (`~/.data/mail`, `$WICKET_MAIL_ROOT`), one
+Data lives under the **mail root** (`$WICKET_DATA_DIR`), one
 directory per **store**. A store is an **account** (a real mailbox) or a **bucket**
 (a topical destination that is no mailbox: `travel`, `shopping`). The mailbox
 always wins a message's physical home; a bucket is the home only for mail no

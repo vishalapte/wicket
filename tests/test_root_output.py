@@ -274,7 +274,7 @@ def test_catalog_progress_goes_to_stderr(tmp_path: Path) -> None:
     environ = {k: v for k, v in os.environ.items() if not k.startswith("WICKET_")}
     environ.update(
         HOME=str(home),
-        WICKET_MAIL_ROOT=str(mail),
+        WICKET_DATA_DIR=str(mail),
         XDG_STATE_HOME=str(tmp_path / "xdg"),
     )
     done = subprocess.run(

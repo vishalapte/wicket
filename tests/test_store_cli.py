@@ -146,7 +146,7 @@ def test_the_account_aliases_file_override_is_honoured(
 ) -> None:
     custom = tmp_path / "elsewhere" / "aliases.json"
     custom.parent.mkdir()
-    monkeypatch.setenv(env.ACCOUNT_ALIASES_FILE_ENV_VAR, str(custom))
+    monkeypatch.setenv(env.ACCOUNT_ALIASES_ENV_VAR, str(custom))
     api.create_store("travel", to=["ua@xcv.org"])
     assert json.loads(custom.read_text()) == {"travel": ["ua@xcv.org"]}
     assert _files(root)[1] == {"travel": ["aa@xcv.org"]}

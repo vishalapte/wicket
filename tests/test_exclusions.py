@@ -53,7 +53,7 @@ def _mail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     login.write_text(json.dumps({"email": ME, "app_password": "pw"}), encoding="utf-8")
     (folder / "imap.json").symlink_to(login)
     monkeypatch.delenv(env.ACCOUNT_ENV_VAR, raising=False)
-    monkeypatch.delenv(env.EXCLUDED_LISTS_FILE_ENV_VAR, raising=False)
+    monkeypatch.delenv(env.EXCLUDED_LISTS_ENV_VAR, raising=False)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
     return mail
 

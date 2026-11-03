@@ -96,7 +96,7 @@ def test_an_alias_address_is_you_for_the_self_rule(
 ) -> None:
     aliases = mail / "account-aliases.json"
     aliases.write_text('{"you@gmail.com": ["me@burner.example"]}')
-    monkeypatch.setenv(env.ACCOUNT_ALIASES_FILE_ENV_VAR, str(aliases))
+    monkeypatch.setenv(env.ACCOUNT_ALIASES_ENV_VAR, str(aliases))
     _stage(mail, "1", "a1", frm="me@burner.example", to=ME, mid="note@x")
     _ingest()
     assert _archived(mail) == ["self/2026-07/a1.eml"]
