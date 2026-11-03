@@ -308,7 +308,60 @@ file. `--dry-run` moves nothing.
 The run summary lists each filed `.eml` grouped by its archive directory
 (`<domain>/YYYY-MM/`), so you can see exactly what landed where.
 
-## Where config lives
+## Settings
+
+wicket reads its settings from environment variables, the account folders under
+`~/.config/wicket/accounts`, and four owner-authored maps at the mail root.
+[`defaults.json`](defaults.json) holds wicket's default environment, one variable per
+key. `./install` writes it into `~/.claude/settings.json` "env", so a Claude Code session
+runs wicket with it:
+
+```bash
+./install              # set the variables in settings.json
+./install --dry-run    # print what would be written, write nothing
+```
+
+A null value is skipped, and a key of that name already in settings.json is kept.
+`<KEY>` is replaced with the value of KEY, another key of `defaults.json` (here
+`<WICKET_DATA_DIR>`, the mail root), and `~` is expanded, so every path is written absolute
+(Claude Code does not expand `~` in "env"). Every key must start `WICKET_`, from
+`[project].name`; one that does not refuses the run. Only those keys are set; every other
+variable and every hook is kept, and a second run prints "already up to date".
+`$CLAUDE_CONFIG_DIR` names another config directory. `./install` is the same file, byte for
+byte, as delphi's.
+
+### Environment variables
+
+The variables wicket owns; renaming one is a breaking change to wicket:
+
+| Variable | What | Default | Read at |
+|---|---|---|---|
+| `WICKET_DATA_DIR` | Where the mail tree lives: the **mail root**. Set it when the tree lives elsewhere (e.g. an encrypted vault that mounts at another path). | `~/.data/mail` | `wicket.env` (`MAIL_ROOT`, bound once at import) |
+| `WICKET_ACCOUNT` | The account used when `--mail-account` is omitted. | none; then the only folder in `~/.config/wicket/accounts` holding an `imap.json` | `wicket.env.resolve_account` |
+| `WICKET_ACCOUNT_ALIASES` | Where `account-aliases.json` is: any name, any path. | `<mail-root>/account-aliases.json` | `wicket.env.account_aliases_path` |
+| `WICKET_DOMAIN_ROUTES` | Where `domain-routes.json` is. | `<mail-root>/domain-routes.json` | `wicket.domains.domain_routes_path` |
+| `WICKET_DOMAIN_ALIASES` | Where `domain-aliases.json` is. | `<mail-root>/domain-aliases.json` | `wicket.domains.domain_aliases_path` |
+| `WICKET_EXCLUDED_LISTS` | Where `excluded-lists.json` is. | `<mail-root>/excluded-lists.json` | `wicket.exclusions.excluded_lists_path` |
+| `WICKET_EXCLUDED_SENDERS` | Reserved for sender exclusion, which is not built. | `<mail-root>/excluded_senders.json` | nothing yet (named in `wicket.env`) |
+
+### Dependencies
+
+Repos: [claude](https://github.com/vishalapte/claude).
+
+**[claude](https://github.com/vishalapte/claude)**, not pinned. It ships
+`~/.claude/settings.json`, and wicket's `./install` writes wicket's variables into that file's
+"env", so a Claude Code session runs wicket with them. The dependency is implicit, not
+breaking: wicket runs with none of them set, each falling back to its default above. claude's
+own `install` replaces `settings.json` whole, so run wicket's `./install` after it. wicket
+reads these from that file or your shell and never sets them; claude's `settings.json` sets
+neither today:
+
+| Variable | What | Default | Read at |
+|---|---|---|---|
+| `XDG_STATE_HOME` | The state home; wicket's halt and log dirs are under `$XDG_STATE_HOME/wicket`. | `~/.local/state` | `wicket.env._state_base` |
+| `CLAUDE_CONFIG_DIR` | Claude Code's config directory; `./install` writes its `settings.json`. The same name Claude Code, racecar's and delphi's `./install` read. | `~/.claude` | `install` (`main`) |
+
+### Credentials and accounts
 
 **Secrets** live outside the data tree and are never committed. Each account is a folder,
 `~/.config/wicket/accounts/<account>/`, holding `imap.json`, a link to the provider's file
@@ -339,16 +392,13 @@ path.
 | Path | What | Notes |
 |---|---|---|
 | `~/.config/wicket/accounts/<account>/imap.json` | Gmail address + app password, through the link | mode `0600`; seeded on first run; never on the command line. Override the base dir with `--state-dir` (the account is then `<dir>/accounts/<account>/`). |
-| `$WICKET_ACCOUNT` (env) | Default account | Used when `--mail-account` is omitted; else the only folder in `~/.config/wicket/accounts` holding an `imap.json`. |
-| `$WICKET_DATA_DIR` (env) | Where the mail tree lives | Default `~/.data/mail`. Set it when the tree lives elsewhere (e.g. an encrypted vault that mounts at another path). |
-| `$WICKET_ACCOUNT_ALIASES` (env) | Override `account-aliases.json`'s location | Any name, any path. Default `<mail-root>/account-aliases.json`. |
-| `$WICKET_DOMAIN_ALIASES` (env) | Override `domain-aliases.json`'s location | Same shape as above. |
-| `$WICKET_DOMAIN_ROUTES` (env) | Override `domain-routes.json`'s location | Same shape as above. |
 
 An app password is account-scoped and revocable at
 [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords),
 that is the kill switch. Full security model:
 [`src/wicket/README.md`](src/wicket/README.md).
+
+### The owner maps
 
 **Four owner-authored maps** sit at the mail root. All four are optional, and
 none of them is inferred — an entry exists because you wrote it. They answer four
@@ -407,11 +457,8 @@ side's own rule (`parse_account_aliases`, `parse_domain_aliases`,
 `parse_domain_routes`) before any file is replaced, so a file these write is
 always one `load_account_aliases` etc. can read back. Each file is replaced
 whole; when a command names two files and the second write fails, the first is
-put back. Each of the
-three files' location can be overridden independently — any name, any path —
-with `$WICKET_ACCOUNT_ALIASES`, `$WICKET_DOMAIN_ALIASES`, and
-`$WICKET_DOMAIN_ROUTES`, the same escape hatch `$WICKET_DATA_DIR` gives the
-mail tree itself.
+put back. Each file's location can be overridden, any name, any path: see
+[Environment variables](#environment-variables).
 
 ## Where data lives
 

@@ -1,0 +1,9 @@
+{
+  "WICKET_DATA_DIR": "~/.data/mail",
+  "WICKET_ACCOUNT_ALIASES": "<WICKET_DATA_DIR>/account-aliases.json",
+  "WICKET_DOMAIN_ROUTES": "<WICKET_DATA_DIR>/domain-routes.json",
+  "WICKET_DOMAIN_ALIASES": "<WICKET_DATA_DIR>/domain-aliases.json",
+  "WICKET_EXCLUDED_SENDERS": "<WICKET_DATA_DIR>/excluded_senders.json",
+  "WICKET_EXCLUDED_LISTS": "<WICKET_DATA_DIR>/excluded-lists.json",
+  "WICKET_ACCOUNT": null
+}

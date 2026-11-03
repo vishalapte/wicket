@@ -12,8 +12,12 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+## 0.16.0 - 2026-11-03
+
 ### Added
 - **The names for sender exclusion, reserved.** `$WICKET_EXCLUDED_SENDERS` and `<mail root>/excluded_senders.json` are named in `wicket.env`; sender exclusion is not built, and nothing reads either yet.
+- **README: one `## Settings` section.** Every environment variable wicket owns, with its default and the function that reads it, then its one dependency, the claude repo (implicit: `./install` writes into the `settings.json` it ships), and the two variables wicket reads there, then the account folders and the four maps; `## Install` and `## Where config lives` fold into it.
+- **`./install` writes `defaults.json` into Claude Code's settings.** `defaults.json`, at the repo root, holds wicket's default environment: `WICKET_DATA_DIR`, the five owner-map paths under `<WICKET_DATA_DIR>`, and `WICKET_ACCOUNT` (null); every key is a `WICKET_` variable, so wicket sets no variable it does not own. `./install`, the same file byte for byte as delphi's, sets each non-null one in `~/.claude/settings.json` "env" (`$CLAUDE_CONFIG_DIR` names another config directory), with each `<KEY>` replaced by that key's value and `~` expanded, so every path is absolute; a null is skipped and leaves a key of that name as it is. Every other variable and every hook is kept, a second run prints "already up to date", and `--dry-run` writes nothing. A missing or malformed `defaults.json`, a key without the `WICKET_` prefix, or a placeholder that names no other key, exits 2 before anything is written.
 
 ## 0.15.0 - 2026-11-03
 

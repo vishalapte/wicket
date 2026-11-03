@@ -1,0 +1,242 @@
+#!/usr/bin/env python3
+"""Install this repo's own settings into the local Claude Code config, and nothing else.
+
+The same file, byte for byte, in every repo that ships one. The repo's name is
+`[project].name` in its pyproject.toml, and its prefix is that name in capitals plus
+`_` (delphi -> DELPHI_). Idempotent: a second run writes nothing.
+
+Writes, into $CLAUDE_CONFIG_DIR (default ~/.claude):
+
+1. settings.json "env": every key of this checkout's defaults.json.
+   - Every key must carry the repo's prefix. One that does not refuses the run.
+   - A null value is not written, and a key of that name already set is kept.
+   - `<KEY>` inside a value is the value of KEY, another key of the same file.
+   - `~` is expanded, because Claude Code does not expand it in "env".
+2. settings.json "hooks", from hooks.json when the repo has one: each hook is a script
+   in this checkout. A hook whose command names a script of this checkout is the
+   repo's; one hooks.json no longer declares is removed, and so is a command named
+   in its "retired" list. Every other hook is kept.
+3. <NAME>.md, copied from CLAUDE_<NAME>.md when the repo has one (doc-graph
+   frontmatter removed), and one `@<NAME>.md` line in CLAUDE.md that imports it. The
+   rest of CLAUDE.md is never touched.
+
+The run refuses, exit 2, before writing anything when defaults.json is missing or is
+not a JSON object of string or null values, a key lacks the prefix, a placeholder
+names no string key of the file, or hooks.json is malformed.
+
+hooks.json:
+    {"SessionStart": [{"matchers": ["startup", "resume"], "command": "hooks/x.sh"}],
+     "SessionEnd": [{"matchers": [""], "command": "hooks/y.sh", "timeout": 420}],
+     "retired": [["SessionEnd", "-m delphi.mail pin"]]}
+
+Usage:
+    ./install
+    ./install --dry-run      # print what would be written, write nothing
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+DEFAULTS = ROOT / "defaults.json"
+HOOKS = ROOT / "hooks.json"
+PLACEHOLDER = re.compile(r"<([^<>]*)>")
+
+
+class InstallError(Exception):
+    """This checkout's files cannot be turned into what to write."""
+
+
+def repo_name() -> str:
+    """`[project].name` from this checkout's pyproject.toml."""
+    try:
+        text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    except OSError as exc:
+        raise InstallError(f"cannot read {ROOT / 'pyproject.toml'}: {exc}") from exc
+    section = re.search(r"^\[project\]\s*$(.*?)(?=^\[|\Z)", text, re.M | re.S)
+    found = section and re.search(r'^name\s*=\s*"([^"]+)"', section.group(1), re.M)
+    if not found:
+        raise InstallError("pyproject.toml has no [project] name")
+    return found.group(1)
+
+
+def prefix_of(name: str) -> str:
+    """delphi -> DELPHI_; a dash becomes an underscore."""
+    return re.sub(r"[^A-Za-z0-9]", "_", name).upper() + "_"
+
+
+def load_defaults(prefix: str) -> dict[str, str]:
+    """The env to write: non-null values, placeholders filled, `~` expanded."""
+    try:
+        data = json.loads(DEFAULTS.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise InstallError(f"cannot read {DEFAULTS}: {exc}") from exc
+    if not isinstance(data, dict) or not all(
+        value is None or isinstance(value, str) for value in data.values()
+    ):
+        raise InstallError(f"{DEFAULTS} must be a JSON object of string or null values")
+    foreign = sorted(name for name in data if not name.startswith(prefix))
+    if foreign:
+        raise InstallError(
+            f"{DEFAULTS}: not this repo's ({prefix}*): {', '.join(foreign)}"
+        )
+    out: dict[str, str] = {}
+    for name, value in data.items():
+        if value is None:
+            continue
+        for key in PLACEHOLDER.findall(value):
+            target = data.get(key)
+            if not isinstance(target, str) or PLACEHOLDER.search(target):
+                raise InstallError(
+                    f"{name}: <{key}> names no plain string key of {DEFAULTS}"
+                )
+            value = value.replace(f"<{key}>", target)
+        out[name] = os.path.expanduser(value)
+    return out
+
+
+def shell_path(path: Path) -> str:
+    """`$HOME/...` when under the home directory, so settings.json carries no user name."""
+    try:
+        return "$HOME/" + str(path.relative_to(Path.home().resolve()))
+    except ValueError:
+        return str(path)
+
+
+def load_hooks() -> tuple[list[tuple[str, str, dict]], list[tuple[str, str]]]:
+    """(event, matcher, hook) for every declared hook, and the retired (event, key) pairs."""
+    if not HOOKS.exists():
+        return [], []
+    try:
+        data = json.loads(HOOKS.read_text(encoding="utf-8"))
+        declared = []
+        for event, entries in data.items():
+            if event == "retired":
+                continue
+            for entry in entries:
+                hook = {
+                    "type": "command",
+                    "command": shell_path(ROOT / entry["command"]),
+                }
+                if "timeout" in entry:
+                    hook["timeout"] = int(entry["timeout"])
+                for matcher in entry.get("matchers", [""]):
+                    declared.append((event, str(matcher), hook))
+        retired = [(str(event), str(key)) for event, key in data.get("retired", [])]
+    except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        raise InstallError(f"{HOOKS} is malformed: {exc}") from exc
+    return declared, retired
+
+
+def apply_hooks(settings: dict, declared: list, retired: list) -> None:
+    """Make this repo's hooks exactly `declared`; keep every hook that is not its own."""
+    own = shell_path(ROOT) + "/"
+    events = settings.setdefault("hooks", {})
+    wanted = {(event, matcher, hook["command"]) for event, matcher, hook in declared}
+    for event, groups in list(events.items()):
+        for group in groups:
+            group["hooks"] = [
+                h
+                for h in group.get("hooks", [])
+                if not (
+                    h.get("command", "").startswith(own)
+                    and (event, group.get("matcher", ""), h.get("command"))
+                    not in wanted
+                )
+                and not any(
+                    e == event and key in h.get("command", "") for e, key in retired
+                )
+            ]
+        groups[:] = [g for g in groups if g.get("hooks")]
+        if not groups:
+            del events[event]
+    for event, matcher, hook in declared:
+        groups = events.setdefault(event, [])
+        group = next((g for g in groups if g.get("matcher", "") == matcher), None)
+        if group is None:
+            group = {"matcher": matcher, "hooks": []}
+            groups.append(group)
+        inner = group.setdefault("hooks", [])
+        current = next((h for h in inner if h.get("command") == hook["command"]), None)
+        if current is None:
+            inner.append(dict(hook))
+        elif current != hook:
+            current.clear()
+            current.update(hook)
+    if not events:
+        del settings["hooks"]
+
+
+def claude_md_text(template: Path) -> str:
+    """The template without its doc-graph frontmatter, which is the repo's own."""
+    text = template.read_text(encoding="utf-8")
+    if text.startswith("---\n"):
+        end = text.index("\n---\n", 4)
+        text = text[end + 5 :].lstrip("\n")
+    return text
+
+
+def with_import(claude_md: str, line: str) -> str:
+    """CLAUDE.md with `line` present exactly once."""
+    if line in claude_md.splitlines():
+        return claude_md
+    return (claude_md.rstrip("\n") + "\n\n" if claude_md.strip() else "") + line + "\n"
+
+
+def main(argv: list[str]) -> int:
+    dry_run = argv == ["--dry-run"]
+    if argv and not dry_run:
+        print(
+            f"install: unknown argument {argv[0]!r} (only --dry-run is accepted)",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        name = repo_name()
+        env = load_defaults(prefix_of(name))
+        declared, retired = load_hooks()
+    except InstallError as exc:
+        print(f"install: {exc}", file=sys.stderr)
+        return 2
+
+    config = Path(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude").expanduser()
+    settings_path = config / "settings.json"
+    raw = settings_path.read_text(encoding="utf-8") if settings_path.exists() else ""
+    settings = json.loads(raw) if raw.strip() else {}
+    if env:
+        settings.setdefault("env", {}).update(env)
+    if declared or retired:
+        apply_hooks(settings, declared, retired)
+    writes = []
+    template = ROOT / f"CLAUDE_{name.upper()}.md"
+    if template.exists():
+        doc = config / f"{name.upper()}.md"
+        claude_md = config / "CLAUDE.md"
+        before_md = claude_md.read_text(encoding="utf-8") if claude_md.exists() else ""
+        # The imported file first: CLAUDE.md must never import a file not yet there.
+        before_doc = doc.read_text(encoding="utf-8") if doc.exists() else ""
+        writes.append((doc, before_doc, claude_md_text(template)))
+        writes.append(
+            (claude_md, before_md, with_import(before_md, f"@{name.upper()}.md"))
+        )
+    writes.append((settings_path, raw, json.dumps(settings, indent=2) + "\n"))
+
+    for path, before, after in writes:
+        if before == after:
+            print(f"install: {path} already up to date")
+        elif dry_run:
+            print(f"install: would write {path}")
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(after, encoding="utf-8")
+            print(f"install: {'updated' if before else 'created'} {path}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
