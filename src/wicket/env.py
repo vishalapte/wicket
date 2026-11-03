@@ -74,6 +74,9 @@ DOMAIN_ALIASES_ENV_VAR = "WICKET_DOMAIN_ALIASES"
 EXCLUDED_LISTS_FILENAME = "excluded-lists.json"
 EXCLUDED_LISTS_ENV_VAR = "WICKET_EXCLUDED_LISTS"
 
+# A fifth map's names, reserved: sender exclusion is not built yet, and nothing reads these.
+EXCLUDED_SENDERS_FILENAME = "excluded_senders.json"
+EXCLUDED_SENDERS_ENV_VAR = "WICKET_EXCLUDED_SENDERS"
 
 # An email address. Deliberately permissive in the local part (burner services
 # mint odd ones) and strict in the domain, which is the half that can reach the

@@ -12,6 +12,9 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+### Added
+- **The names for sender exclusion, reserved.** `$WICKET_EXCLUDED_SENDERS` and `<mail root>/excluded_senders.json` are named in `wicket.env`; sender exclusion is not built, and nothing reads either yet.
+
 ## 0.15.0 - 2026-11-03
 
 ### Changed
