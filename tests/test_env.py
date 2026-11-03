@@ -141,6 +141,11 @@ def test_no_store_is_created_when_the_root_is_absent(
 # --- where the mail root and the maps are found ----------------------------
 
 
+def test_no_wicket_variable_reaches_a_test() -> None:
+    # conftest unsets them; an installed shell points them at the owner's live maps.
+    assert [name for name in os.environ if name.startswith("WICKET_")] == []
+
+
 def _mail_root_in_a_fresh_process(home: Path, mail_root: str | None) -> str:
     """``env.MAIL_ROOT`` as a new process binds it (it is read once, at import)."""
     environ = {k: v for k, v in os.environ.items() if not k.startswith("WICKET_")}

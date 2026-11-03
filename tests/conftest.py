@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 
 import pytest
@@ -34,10 +35,13 @@ def _no_real_mail_root(
 ) -> None:
     """Point the mail root at an empty scratch dir, so no test can read or write the real one.
 
-    A test that needs a mail root sets its own; this only removes the default.
+    Every ``WICKET_*`` variable is unset too: an installed shell sets each map's path to
+    the owner's live file, and a path variable outranks the mail root. A test that needs
+    a mail root or a variable sets its own; this only removes the defaults.
     """
     monkeypatch.setattr(env, "MAIL_ROOT", tmp_path_factory.mktemp("mail-root"))
-    monkeypatch.delenv(env.ACCOUNT_ALIASES_ENV_VAR, raising=False)
+    for name in [name for name in os.environ if name.startswith("WICKET_")]:
+        monkeypatch.delenv(name)
 
 
 @pytest.fixture(autouse=True)

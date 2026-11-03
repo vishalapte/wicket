@@ -12,6 +12,9 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+### Fixed
+- **The test suite no longer touches the live maps.** In a shell with wicket's variables installed, the tests read and wrote the owner's `domain-aliases.json`, `domain-routes.json` and `excluded-lists.json`; every `WICKET_*` variable is now unset for each test.
+
 ## 0.16.0 - 2026-11-03
 
 ### Added
