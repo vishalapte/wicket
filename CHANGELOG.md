@@ -12,6 +12,11 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+## 0.18.0 - 2026-11-04
+
+### Added
+- **List mail files under its own folder.** `list-folders.json` at the mail root maps a group address to a name (`{"qse": ["qseprimarycontacts@lists.ercot.com"]}`); a thread whose first message's `To` names one files under `archive/lists/<name>/` in whichever store files it, ranked after the anchor and `--domain` and before self, sent and the domain rule. A row's folder is now read by one rule everywhere (its path without `YYYY-MM/<file>`), so reconcile and later replies keep the two-segment folder; for every existing path it gives the same answer as before.
+
 ## 0.17.0 - 2026-11-03
 
 ### Added

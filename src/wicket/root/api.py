@@ -91,6 +91,7 @@ from wicket.env import (
 from wicket.errors import ApiError
 from wicket.exclusions import excluded_for, excluded_lists_path, load_excluded_lists
 from wicket.filing import AccountFor, build_domain_query
+from wicket.lists import list_folders_path, load_list_folders
 from wicket.manifest import Row, latest_shard_year, load_store
 from wicket.provider import Provider, Search, provider_of
 
@@ -538,6 +539,7 @@ def _target(account: str, accounts: set[str], options: IngestOptions) -> Target:
         filing_domain=options.domain,
         labels=list(options.tags) or None,
         excluded_lists=frozenset(_excluded(account)),
+        list_folders=load_list_folders(list_folders_path(MAIL_ROOT)),
     )
 
 

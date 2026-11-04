@@ -50,6 +50,7 @@ from wicket.filing import (
     Owner,
     anchor_folder,
     file_thread,
+    folder_of,
     opener,
     participants,
     route_threads,
@@ -274,11 +275,15 @@ class Target:
     labels: list[str] | None = None  # --tag: recorded as each new row's labels
     # exclusions.excluded_for: mailing lists whose mail is never filed here.
     excluded_lists: frozenset[str] = frozenset()
+    # lists.load_list_folders: address -> name; a thread to one files under lists/<name>.
+    list_folders: dict[str, str] = field(default_factory=dict)
 
     @property
     def owner(self) -> Owner:
         """Who is *you* in this store, for `wicket.filing`'s rules."""
-        return Owner(self.account, self.identities, self.domain_aliases)
+        return Owner(
+            self.account, self.identities, self.domain_aliases, self.list_folders
+        )
 
 
 @dataclass(frozen=True)
@@ -449,7 +454,7 @@ def _new_rows(
         prior = existing.rows.get(mid)
         if prior is not None:  # observed, not archived: record the file on its row
             rel = str(prior.get("path") or rel)
-            row = {"downloaded": True, "path": rel, "domain": rel.split("/", 1)[0]}
+            row = {"downloaded": True, "path": rel, "domain": folder_of(rel)}
             if not prior.get("path") and placed.filed:
                 row["filed"] = placed.filed
             year = existing.shard_of.get(mid, year)

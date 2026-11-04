@@ -16,6 +16,7 @@ import pytest
 
 import wicket.root.lib.ingest as ingest_lib
 from wicket.env import Identities
+from wicket.filing import folder_of
 from wicket.manifest import Row, load_store, merge_catalog, shard_path, write_shard
 from wicket.root.lib.ingest import Target, ingest_folder
 
@@ -28,7 +29,13 @@ def _account_for(address: str) -> str | None:
     return address if address in (ME, WORK) else None
 
 
-def _target(root: Path, account: str = ME, *, forced: str | None = None) -> Target:
+def _target(
+    root: Path,
+    account: str = ME,
+    *,
+    forced: str | None = None,
+    lists: dict[str, str] | None = None,
+) -> Target:
     return Target(
         store_dir=root / account / "manifest",
         archive_dir=root / account / "archive",
@@ -36,6 +43,7 @@ def _target(root: Path, account: str = ME, *, forced: str | None = None) -> Targ
         identities=Identities(frozenset({ME, WORK, BURNER}), frozenset()),
         domain_aliases={},
         filing_domain=forced,
+        list_folders=lists or {},
     )
 
 
@@ -58,12 +66,16 @@ def _eml(  # pylint: disable=too-many-arguments
 
 
 def _filed(
-    root: Path, *, account: str = ME, forced: str | None = None
+    root: Path,
+    *,
+    account: str = ME,
+    forced: str | None = None,
+    lists: dict[str, str] | None = None,
 ) -> dict[str, object]:
     """Ingest ``root/src`` into ``account`` and return the store's rows by id."""
     ingest_folder(
         src=root / "src",
-        target=_target(root, account, forced=forced),
+        target=_target(root, account, forced=forced, lists=lists),
         account_for=_account_for,
         force=True,
     )
@@ -73,7 +85,7 @@ def _filed(
 def _folder_and_filed(rows: dict[str, object], mid: str) -> tuple[str, object]:
     row = rows[mid]
     assert isinstance(row, dict)
-    return str(row["path"]).split("/", 1)[0], row.get("filed")
+    return folder_of(row["path"]), row.get("filed")
 
 
 def test_a_note_to_self_files_under_self(tmp_path: Path) -> None:
@@ -243,3 +255,64 @@ def test_an_excluded_row_is_skipped_counted_and_kept_at_the_source(
     assert not target.archive_dir.exists()  # not archived
     assert trashed == [[]]  # its source is not trashed
     assert load_store(target.store_dir)["dup@test"] == row
+
+
+# --- the list rule (list-folders.json) ---------------------------------------------
+
+QSE = "qse@lists.ercot.com"
+LISTS = {QSE: "qse", "gfem@corp.com": "gfem"}
+
+
+def test_mail_to_a_mapped_list_files_under_its_list_folder(tmp_path: Path) -> None:
+    _eml(tmp_path / "src", "notice", frm="ops@ercot.com", to=QSE)
+    rows = _filed(tmp_path, lists=LISTS)
+    assert _folder_and_filed(rows, "notice@test") == ("lists/qse", "list")
+
+
+def test_the_list_rule_outranks_self_and_the_domain_rule(tmp_path: Path) -> None:
+    _eml(tmp_path / "src", "post", frm=ME, to=QSE)
+    assert _folder_and_filed(_filed(tmp_path, lists=LISTS), "post@test") == (
+        "lists/qse",
+        "list",
+    )
+
+
+def test_two_mapped_lists_file_under_the_first_in_sorted_to(tmp_path: Path) -> None:
+    _eml(tmp_path / "src", "both", frm="x@acme.com", to=f"{QSE}, gfem@corp.com")
+    rows = _filed(tmp_path, lists=LISTS)
+    assert _folder_and_filed(rows, "both@test") == ("lists/gfem", "list")
+
+
+def test_a_reply_in_a_list_thread_stays_in_the_list_folder(tmp_path: Path) -> None:
+    _eml(tmp_path / "src", "notice", frm="ops@ercot.com", to=QSE)
+    _filed(tmp_path, lists=LISTS)
+    _eml(
+        tmp_path / "src",
+        "reply",
+        frm=ME,
+        to="ops@ercot.com",
+        date="Tue, 07 Jul 2026 09:00:00 +0000",
+        reply_to="notice",
+    )
+    rows = _filed(tmp_path, lists=LISTS)
+    assert _folder_and_filed(rows, "reply@test") == ("lists/qse", "list")
+
+
+def test_without_the_map_list_mail_files_by_domain(tmp_path: Path) -> None:
+    _eml(tmp_path / "src", "notice", frm="ops@ercot.com", to=f"{QSE}, {ME}")
+    assert _folder_and_filed(_filed(tmp_path), "notice@test") == ("ercot.com", "rule")
+
+
+@pytest.mark.parametrize(
+    "path,folder",
+    [
+        ("lists/qse/2026-07/a.eml", "lists/qse"),
+        ("acme.com/2026-07/a.eml", "acme.com"),
+        ("self/2026-07/a.eml", "self"),
+        ("", ""),
+    ],
+)
+def test_a_rows_folder_is_its_path_without_month_and_file(
+    path: str, folder: str
+) -> None:
+    assert folder_of(path) == folder

@@ -6,16 +6,18 @@ records which rule chose it as the row's ``filed``. The rank, first match wins:
 1. **anchor**: a downloaded member of the thread, its ``.eml`` on disk; new members
    join its folder and copy its ``filed`` (nothing when it has none);
 2. **forced**: ``ingest --domain D``;
-3. **self**: the opener is from you and every recipient is you, or there is none;
-4. **sent**: the opener is from you and its ``To``, folded, without your addresses,
+3. **list**: the opener's ``To`` names an address in `wicket.lists`'s map; the thread
+   files under ``lists/<name>`` (the first mapped address in the row's sorted ``to``);
+4. **self**: the opener is from you and every recipient is you, or there is none;
+5. **sent**: the opener is from you and its ``To``, folded, without your addresses,
    spans two or more domains;
-5. **rule**: the computed counterparty domain (`compute_domain`);
-6. **fallback**: your own domain and addresses stripped from ``To``, one domain left;
-7. **unfiled**: ``_unfiled``.
+6. **rule**: the computed counterparty domain (`compute_domain`);
+7. **fallback**: your own domain and addresses stripped from ``To``, one domain left;
+8. **unfiled**: ``_unfiled``.
 
 The **opener** is a thread's earliest-``date`` row across every shard of the store
 (thread ids are per store), so the rule reads the message that started the thread,
-whichever of its members is being filed. Steps 3-7 are `place`: what the maps and
+whichever of its members is being filed. Steps 3-8 are `place`: what the maps and
 identities say, with no anchor and no override.
 
 Also here: the search a domain filter becomes (`build_domain_query`) and the
@@ -27,7 +29,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable, Container, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import getaddresses
 
@@ -38,9 +40,12 @@ from wicket.manifest import Row
 UNFILED = "_unfiled"
 SELF = "self"
 SENT = "sent"
+# The folder under the archive that holds every list folder (`wicket.lists`).
+LISTS = "lists"
 
 # A row's ``filed``: which rank placed it. An anchored member copies its anchor's.
 FILED_RULE = "rule"
+FILED_LIST = "list"
 FILED_FORCED = "forced"
 FILED_SELF = "self"
 FILED_SENT = "sent"
@@ -48,6 +53,7 @@ FILED_FALLBACK = "fallback"
 FILED_UNFILED = "unfiled"
 FILED_KINDS = (
     FILED_RULE,
+    FILED_LIST,
     FILED_FORCED,
     FILED_SELF,
     FILED_SENT,
@@ -201,12 +207,13 @@ class Owner:
     ``account`` is the store's own name (an address, or a bucket's slug);
     ``identities`` is `env.identities` (every address that is you, wildcards too);
     ``domain_aliases`` folds a subdomain onto its primary (``t.delta.com`` ->
-    ``delta.com``).
+    ``delta.com``); ``list_folders`` is `wicket.lists`'s map, ``address -> name``.
     """
 
     account: str
     identities: Container[str]
     domain_aliases: dict[str, str]
+    list_folders: dict[str, str] = field(default_factory=dict)
 
     def __contains__(self, address: object) -> bool:
         if not isinstance(address, str):
@@ -241,12 +248,16 @@ def _fallback(to_addrs: list[str], owner: Owner) -> str | None:
 def place(from_header: str, to_header: str, owner: Owner) -> tuple[str, str]:
     """``(folder, filed)`` for a thread whose opener has these ``From`` and ``To``.
 
-    The rank below the anchor and the override: self, sent, the computed domain,
-    the fallback, ``_unfiled``. Self and sent apply only to an opener from you. "You"
-    is the store's account and every address in ``owner.identities``.
+    The rank below the anchor and the override: list, self, sent, the computed
+    domain, the fallback, ``_unfiled``. Self and sent apply only to an opener from
+    you. "You" is the store's account and every address in ``owner.identities``.
     """
     senders = _parse_header_addresses(from_header)
     to_addrs = _parse_header_addresses(to_header)
+    for address in to_addrs:
+        name = owner.list_folders.get(address)
+        if name is not None:
+            return f"{LISTS}/{name}", FILED_LIST
     if senders and senders[0] in owner:
         others = [a for a in to_addrs if a not in owner]
         if not others:
@@ -270,9 +281,18 @@ def place(from_header: str, to_header: str, owner: Owner) -> tuple[str, str]:
     return UNFILED, FILED_UNFILED
 
 
+def folder_of(path: object) -> str:
+    """A row's folder: its archive path without the trailing ``YYYY-MM/<file>``.
+
+    ``lists/qse/2026-11/a.eml`` is ``lists/qse``; ``acme.com/2026-07/a.eml`` is
+    ``acme.com``. The one rule every reader of a row's folder uses; '' for no path.
+    """
+    return str(path or "").rsplit("/", 2)[0]
+
+
 def anchor_folder(anchor: Row) -> str:
-    """The folder an anchor's thread lives in: its committed path's first segment."""
-    return str(anchor.get("path") or "").split("/", 1)[0]
+    """The folder an anchor's thread lives in (`folder_of` its committed path)."""
+    return folder_of(anchor.get("path"))
 
 
 def file_thread(

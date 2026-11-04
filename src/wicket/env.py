@@ -78,6 +78,12 @@ EXCLUDED_LISTS_ENV_VAR = "WICKET_EXCLUDED_LISTS"
 EXCLUDED_SENDERS_FILENAME = "excluded_senders.json"
 EXCLUDED_SENDERS_ENV_VAR = "WICKET_EXCLUDED_SENDERS"
 
+# The list-folder map: group addresses whose threads file under ``archive/lists/<name>/``,
+# ``{"<name>": [address, ...]}``. Read by `wicket.lists`; named here so every owner map's
+# filename and override share one home.
+LIST_FOLDERS_FILENAME = "list-folders.json"
+LIST_FOLDERS_ENV_VAR = "WICKET_LIST_FOLDERS"
+
 # An email address. Deliberately permissive in the local part (burner services
 # mint odd ones) and strict in the domain, which is the half that can reach the
 # filesystem through the filing rule.

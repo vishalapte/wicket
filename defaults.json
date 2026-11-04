@@ -5,5 +5,6 @@
   "WICKET_DOMAIN_ALIASES": "<WICKET_DATA_DIR>/domain-aliases.json",
   "WICKET_EXCLUDED_SENDERS": "<WICKET_DATA_DIR>/excluded_senders.json",
   "WICKET_EXCLUDED_LISTS": "<WICKET_DATA_DIR>/excluded-lists.json",
+  "WICKET_LIST_FOLDERS": "<WICKET_DATA_DIR>/list-folders.json",
   "WICKET_ACCOUNT": null
 }

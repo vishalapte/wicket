@@ -72,3 +72,27 @@ def test_idempotent(tmp_path: Path) -> None:
     first = shard_path(store, 2024).read_bytes()
     reconcile(store, dest, ME, {})
     assert shard_path(store, 2024).read_bytes() == first
+
+
+def test_a_list_folder_survives_reconcile(tmp_path: Path) -> None:
+    """A filed row's domain is its folder, two segments for a list folder."""
+    store, dest = tmp_path / "store", tmp_path / "dest"
+    write_shard(
+        shard_path(store, 2026),
+        {
+            "a@x": {
+                "id": "a@x",
+                "thread_id": "t",
+                "downloaded": True,
+                "path": "lists/qse/2026-07/1.eml",
+                "domain": "lists/qse",
+                "from": "ops@ercot.com",
+                "to": ["qse@lists.ercot.com"],
+                "date": "2026-07-01T00:00:00+00:00",
+            }
+        },
+    )
+    (dest / "lists" / "qse" / "2026-07").mkdir(parents=True)
+    (dest / "lists" / "qse" / "2026-07" / "1.eml").write_bytes(b"x")
+    reconcile(store, dest, ME, {})
+    assert read_shard(shard_path(store, 2026))["a@x"]["domain"] == "lists/qse"

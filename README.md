@@ -148,14 +148,16 @@ first rule that applies, and each filed row records the rule as `filed`:
 |---|---|---|---|
 | 1 | The thread already has an archived message (only a downloaded row with its `.eml` on disk counts) | that message's folder | copied from it (none if it has none) |
 | 2 | `ingest --domain D` | `D/` | `forced` |
-| 3 | The opener is from you, and every recipient is you, or there is none | `self/` | `self` |
-| 4 | The opener is from you, and its `To`, folded, without your addresses, spans two or more domains | `sent/` | `sent` |
-| 5 | The counterparty: the sender's domain inbound, the one recipient's outbound, folded | `<domain>/` | `rule` |
-| 6 | No usable sender, and one outside domain left in `To` | `<domain>/` | `fallback` |
-| 7 | None of the above | `_unfiled/` | `unfiled` |
+| 3 | The opener's `To` names an address in `list-folders.json` | `lists/<name>/` | `list` |
+| 4 | The opener is from you, and every recipient is you, or there is none | `self/` | `self` |
+| 5 | The opener is from you, and its `To`, folded, without your addresses, spans two or more domains | `sent/` | `sent` |
+| 6 | The counterparty: the sender's domain inbound, the one recipient's outbound, folded | `<domain>/` | `rule` |
+| 7 | No usable sender, and one outside domain left in `To` | `<domain>/` | `fallback` |
+| 8 | None of the above | `_unfiled/` | `unfiled` |
 
 "You" is the store's own account and every address `account-aliases.json` names.
-The rule is the same in every account. A message whose row is `excluded` is
+The rule is the same in every account. When the opener's `To` names two mapped
+addresses, the first in alphabetical order wins. A message whose row is `excluded` is
 skipped and counted, never filed.
 
 ## CLI reference
@@ -314,7 +316,7 @@ The run summary lists each filed `.eml` grouped by its archive directory
 ## Settings
 
 wicket reads its settings from environment variables, the account folders under
-`~/.config/wicket/accounts`, and four owner-authored maps at the mail root.
+`~/.config/wicket/accounts`, and five owner-authored maps at the mail root.
 [`defaults.json`](defaults.json) holds wicket's default environment, one variable per
 key. `./install` writes it into `~/.claude/settings.json` "env", so a Claude Code session
 runs wicket with it:
@@ -345,6 +347,7 @@ The variables wicket owns; renaming one is a breaking change to wicket:
 | `WICKET_DOMAIN_ROUTES` | Where `domain-routes.json` is. | `<mail-root>/domain-routes.json` | `wicket.domains.domain_routes_path` |
 | `WICKET_DOMAIN_ALIASES` | Where `domain-aliases.json` is. | `<mail-root>/domain-aliases.json` | `wicket.domains.domain_aliases_path` |
 | `WICKET_EXCLUDED_LISTS` | Where `excluded-lists.json` is. | `<mail-root>/excluded-lists.json` | `wicket.exclusions.excluded_lists_path` |
+| `WICKET_LIST_FOLDERS` | Where `list-folders.json` is. | `<mail-root>/list-folders.json` | `wicket.lists.list_folders_path` |
 | `WICKET_EXCLUDED_SENDERS` | Reserved for sender exclusion, which is not built. | `<mail-root>/excluded_senders.json` | nothing yet (named in `wicket.env`) |
 
 ### Dependencies
@@ -403,8 +406,8 @@ that is the kill switch. Full security model:
 
 ### The owner maps
 
-**Four owner-authored maps** sit at the mail root. All four are optional, and
-none of them is inferred — an entry exists because you wrote it. They answer four
+**Five owner-authored maps** sit at the mail root. All five are optional, and
+none of them is inferred — an entry exists because you wrote it. They answer five
 different questions, and keeping them apart is load bearing:
 
 | File | Answers | Example |
@@ -413,6 +416,7 @@ different questions, and keeping them apart is load bearing:
 | `<mail-root>/domain-routes.json` | *Which counterparties are **not me**, and where does their mail go?* Used only when no mailbox claims the thread. | `{"shopping": ["ikea.com", "llbean.com"]}` |
 | `<mail-root>/domain-aliases.json` | *What is this domain **called**?* Folds a marketing subdomain onto its primary when filing, so a store does not fragment into one folder per campaign host. Shared by `fetch` and `ingest`; override with `--alias-file`. | `{"delta.com": ["*.delta.com"]}` |
 | `<mail-root>/excluded-lists.json` | *Which **mailing lists** do I never keep?* A list-id (the text in a message's `List-Id` header) under `"*"` is excluded for every account, under an account for that account alone. `fetch` leaves it out of every search; `ingest --staged` and `--src` skip its mail and leave the file where it is; `catalog` still records the whole mailbox, and writes each message's list-id on its row as `list_id` (no key when it has no `List-Id`); `report` leaves out a row whose `list_id` is on the map as it is now, and counts it as excluded. A key that is neither `"*"` nor an account folder holding `imap.json` refuses the run. | `{"*": ["made-of-meat.googlegroups.com"]}` |
+| `<mail-root>/list-folders.json` | *Which **group addresses** get their own folder?* A thread whose first message's `To` names a listed address files under `archive/lists/<name>/`, in whichever store files it. A name is a slug; an address belongs to one name. | `{"qse": ["qseprimarycontacts@lists.ercot.com"]}` |
 
 > A counterparty must **never** go in `account-aliases.json`. That file means "this
 > is me", so listing IKEA there makes every message *from* IKEA look outbound, and
@@ -423,7 +427,8 @@ Domains are folded **before** routes are matched, so `domain-routes.json` lists
 only primaries (`delta.com`) and never has to repeat every subdomain the fold map
 already knows about.
 
-Three nouns edit all four without hand-editing JSON. **`wicket.alias`** edits the
+`list-folders.json` is edited by hand. Three nouns edit the other four without
+hand-editing JSON. **`wicket.alias`** edits the
 fold map; **`wicket.store`** edits both maps that pick a store, one flag per file;
 **`wicket.exclude`** edits the excluded lists (no `--mail-account` is every account,
 `*`):

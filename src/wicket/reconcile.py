@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from wicket.filing import thread_domain
+from wicket.filing import folder_of, thread_domain
 from wicket.manifest import Row, eml_on_disk, read_shard, store_shards, write_shard
 
 
@@ -52,9 +52,9 @@ def reconcile(
             for m in members:
                 prior = m.get("domain")
                 if m.get("downloaded"):
-                    # The .eml path is committed; its first segment is the domain.
+                    # The .eml path is committed; its folder is the domain.
                     path = m.get("path")
-                    domain = str(path).split("/", 1)[0] if path else prior
+                    domain = folder_of(path) if path else prior
                 elif observed:
                     domain = derived  # None when unresolvable
                 else:
