@@ -12,6 +12,11 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+## 0.18.1 - 2026-11-04
+
+### Fixed
+- **A routed `ingest --src` trashes the source of an unrouted message a store already holds.** Before, every message no account claimed kept its file, even when it was already archived, so a re-export left its copies in the folder. The result gains `unrouted_held`, and the text prints `already archived: N of them`; an unrouted message no store holds still keeps its file.
+
 ## 0.18.0 - 2026-11-04
 
 ### Added

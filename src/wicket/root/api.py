@@ -485,7 +485,8 @@ class IngestOptions:
     ``dry_run`` the worker parses and reports what it would do but writes nothing
     and trashes nothing. ``force`` overrides the account-mismatch refusal (single-
     target only). ``to_trash`` moves the source files of messages that are durably
-    archived to the Trash; an unrouted message always keeps its file.
+    archived to the Trash; an unrouted message keeps its file unless a store
+    already holds it.
 
     ``domain`` (the ``--domain`` flag) forces the filing domain for every
     newly-added message, standing in for the computed counterparty; a bare domain

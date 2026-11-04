@@ -196,9 +196,9 @@ def trash(paths: list[Path], trash_dir: Path | None = None) -> int:
     Only ever called for a message that is *durably in a store* (filed by this
     run, or already archived): the archive is the record, the source folder is a
     volatile inbox, and the Trash is recoverable if that judgment is ever wrong.
-    An unroutable message keeps its file, so nothing leaves the folder without a
-    home to go to. Name collisions in the Trash get a numeric suffix rather than
-    clobbering whatever is already there.
+    An unroutable message keeps its file unless a store already holds it, so
+    nothing leaves the folder without a home. Name collisions in the Trash get a
+    numeric suffix rather than clobbering whatever is already there.
     """
     dest = trash_dir or (Path.home() / ".Trash")
     dest.mkdir(parents=True, exist_ok=True)
@@ -630,6 +630,14 @@ def _merge_filed(per_account: list[dict[str, object]]) -> dict[str, list[str]]:
     return filed
 
 
+def _held_anywhere(ids: set[str], targets: dict[str, Target]) -> set[str]:
+    """The ``ids`` some store in ``targets`` already archives (its ``.eml`` on disk)."""
+    held: set[str] = set()
+    for target in targets.values() if ids else ():
+        held |= ids & _load_existing(target.store_dir, target.archive_dir).held
+    return held
+
+
 def ingest_routed(
     *,
     src: Path,
@@ -644,9 +652,10 @@ def ingest_routed(
     ``src`` is a flat folder of ``.eml`` or a single ``.eml``. ``targets`` is
     keyed by account and holds only accounts with a real store, so an account that
     exists solely in the alias map is never a destination. A thread nobody claims
-    is left entirely alone: not filed, and its source files are not trashed. With
-    ``to_trash``, the source files of every message that is durably in a store are
-    moved to the Trash; the unrouted keep theirs. A store whose lock another
+    is left alone: not filed. With ``to_trash``, the source files of every message
+    that is durably in a store are moved to the Trash: what this run filed, and an
+    unrouted message a store already holds (``unrouted_held``); the other unrouted
+    keep theirs. A store whose lock another
     process holds is skipped: its threads are not filed, their source files are not
     trashed, and ``busy`` names it with the holder's pid.
     """
@@ -669,12 +678,16 @@ def ingest_routed(
         except StoreBusy as exc:
             busy.append({"account": account, "pid": exc.pid, "messages": len(share)})
             continue
-        filed: set[str] = got.pop("durable")  # type: ignore[assignment]
-        durable |= filed
+        durable |= got.pop("durable")  # type: ignore[arg-type]
         per_account.append(got)
 
+    held = _held_anywhere(
+        {str(m["id"]) for tid in unrouted for m in members_by_thread[tid]}, targets
+    )
     trashable = (
-        sorted(p for mid in durable for p in files_by_id[mid]) if to_trash else []
+        sorted(p for mid in durable | held for p in files_by_id[mid])
+        if to_trash
+        else []
     )
     stats: dict[str, object] = {
         "files": len(files),
@@ -690,6 +703,7 @@ def ingest_routed(
         "filed": _merge_filed(per_account),
         "unrouted": sum(len(members_by_thread[tid]) for tid in unrouted),
         "unrouted_threads": len(unrouted),
+        "unrouted_held": len(held),
         "busy": busy,
         "trashable": len(trashable),
         "trashed": 0,

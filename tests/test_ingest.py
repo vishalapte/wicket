@@ -440,6 +440,30 @@ def test_archived_sources_are_trashed_and_unrouted_ones_are_not(
     assert (bin_dir / "mine.eml").exists()  # moved, never unlinked
 
 
+def test_an_unrouted_message_a_store_holds_is_trashed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Owner, 2026-11-04: an export's already-archived copies go to the Trash."""
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    first = tmp_path / "first"
+    _eml(first, "known", frm="them@acme.com", to="stranger@nowhere.com")
+    ingest_folder(
+        src=first,
+        target=_target(tmp_path / "mail", account=ME),
+        account_for=_account_for(),
+        force=True,
+    )
+    src = tmp_path / "src"
+    _eml(src, "known", frm="them@acme.com", to="stranger@nowhere.com")
+    _eml(src, "orphan", frm="them@acme.com", to="stranger@nowhere.com")
+
+    stats = _routed(tmp_path, to_trash=True)
+    assert (stats["unrouted"], stats["unrouted_held"], stats["trashed"]) == (2, 1, 1)
+    assert not (src / "known.eml").exists()  # a store holds it -> trashed
+    assert (src / "orphan.eml").exists()  # nobody holds it -> untouched
+    assert (tmp_path / ".Trash" / "known.eml").exists()  # moved, never unlinked
+
+
 def test_dry_run_trashes_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

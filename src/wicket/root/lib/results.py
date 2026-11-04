@@ -227,6 +227,7 @@ class IngestRoot(TypedDict):
     accounts: NotRequired[list[IngestStore]]
     unrouted: NotRequired[int]
     unrouted_threads: NotRequired[int]
+    unrouted_held: NotRequired[int]
     busy: NotRequired[list[BusyStore]]
     trashable: NotRequired[int]
     trashed: NotRequired[int]

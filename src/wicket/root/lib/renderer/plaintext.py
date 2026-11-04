@@ -161,6 +161,8 @@ def ingest_lines(result: IngestRoot) -> list[str]:
             f"  left alone: {result['unrouted']} message(s) addressed to no known "
             "account (add an alias, or create the store, to claim them)"
         )
+    if result.get("unrouted_held"):
+        lines.append(f"  already archived: {result['unrouted_held']} of them")
     if result["to_trash"]:
         moved = "would trash" if result["dry_run"] else "trashed"
         count = result["trashable"] if result["dry_run"] else result["trashed"]

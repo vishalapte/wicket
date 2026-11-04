@@ -138,7 +138,7 @@ home** only for mail no mailbox owns; grouping mailbox-owned mail by topic is a
 **view** (`wicket report --bucket`), never a relocation.
 
 Mail nothing claims is **left alone**: not filed, and its source file is not
-trashed. Create a store (`mkdir <mail-root>/travel`) or add a mapping to claim it.
+trashed unless a store already holds the message. Create a store (`mkdir <mail-root>/travel`) or add a mapping to claim it.
 
 **Which folder.** Inside a store, a thread files under one folder, chosen from its
 **opener** (the thread's earliest-dated row across every shard of the store) by the
