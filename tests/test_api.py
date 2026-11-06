@@ -30,6 +30,7 @@ def _seed(base: Path) -> Path:
         {
             "a@x": {
                 "id": "a@x",
+                "date": "2024-01-01T00:00:00+00:00",
                 "downloaded": True,
                 "domain": "delta.com",
                 "path": "delta.com/2024-03/1.eml",
@@ -38,6 +39,7 @@ def _seed(base: Path) -> Path:
             },
             "b@x": {
                 "id": "b@x",
+                "date": "2024-01-01T00:00:00+00:00",
                 "downloaded": True,
                 "domain": "acme.com",
                 "path": "acme.com/2024-03/2.eml",
@@ -46,6 +48,7 @@ def _seed(base: Path) -> Path:
             },
             "c@x": {
                 "id": "c@x",
+                "date": "2024-01-01T00:00:00+00:00",
                 "downloaded": False,
                 "domain": "delta.com",
                 "from": "news@delta.com",
@@ -358,8 +361,14 @@ def test_sweep_years_incremental_full_and_explicit(tmp_path: Path) -> None:
     # first run (empty store) -> None, so lib.sweep derives the full range
     assert root_api._sweep_years(store, root_api.CatalogOptions()) is None
 
-    write_shard(shard_path(store, 2023), {"a@x": {"id": "a@x"}})
-    write_shard(shard_path(store, 2025), {"b@x": {"id": "b@x"}})
+    write_shard(
+        shard_path(store, 2023),
+        {"a@x": {"id": "a@x", "date": "2023-01-01T00:00:00+00:00"}},
+    )
+    write_shard(
+        shard_path(store, 2025),
+        {"b@x": {"id": "b@x", "date": "2025-01-01T00:00:00+00:00"}},
+    )
     now = datetime.now(timezone.utc).year
 
     # incremental default: latest shard year through the current UTC year

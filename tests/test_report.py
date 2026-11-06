@@ -25,17 +25,24 @@ def test_summary_counts(tmp_path: Path) -> None:
         {
             "1@x": {
                 "id": "1@x",
+                "date": "2024-01-01T00:00:00+00:00",
                 "from": "a@acme.com",
                 "downloaded": True,
                 "deleted": True,
             },
             "2@x": {
                 "id": "2@x",
+                "date": "2024-01-01T00:00:00+00:00",
                 "from": "a@acme.com",
                 "to": ["you@g.com"],
                 "downloaded": True,
             },
-            "3@x": {"id": "3@x", "from": "b@globex.com", "to": ["you@g.com"]},
+            "3@x": {
+                "id": "3@x",
+                "date": "2024-01-01T00:00:00+00:00",
+                "from": "b@globex.com",
+                "to": ["you@g.com"],
+            },
         },
     )
     s = summary(tmp_path)
@@ -58,9 +65,24 @@ def test_sender_counts_descending(tmp_path: Path) -> None:
     write_shard(
         shard_path(tmp_path, 2024),
         {
-            "1@x": {"id": "1@x", "from": "a@acme.com", "to": ["you@gmail.com"]},
-            "2@x": {"id": "2@x", "from": "a@acme.com", "to": ["you@gmail.com"]},
-            "3@x": {"id": "3@x", "from": "Bob <b@globex.com>", "to": ["a@acme.com"]},
+            "1@x": {
+                "id": "1@x",
+                "date": "2024-01-01T00:00:00+00:00",
+                "from": "a@acme.com",
+                "to": ["you@gmail.com"],
+            },
+            "2@x": {
+                "id": "2@x",
+                "date": "2024-01-01T00:00:00+00:00",
+                "from": "a@acme.com",
+                "to": ["you@gmail.com"],
+            },
+            "3@x": {
+                "id": "3@x",
+                "date": "2024-01-01T00:00:00+00:00",
+                "from": "Bob <b@globex.com>",
+                "to": ["a@acme.com"],
+            },
         },
     )
     assert sender_counts(tmp_path) == [("a@acme.com", 2), ("b@globex.com", 1)]
@@ -70,8 +92,18 @@ def test_all_addresses_union_of_from_and_to(tmp_path: Path) -> None:
     write_shard(
         shard_path(tmp_path, 2024),
         {
-            "1@x": {"id": "1@x", "from": "a@acme.com", "to": ["you@gmail.com"]},
-            "2@x": {"id": "2@x", "from": "Bob <b@globex.com>", "to": ["a@acme.com"]},
+            "1@x": {
+                "id": "1@x",
+                "date": "2024-01-01T00:00:00+00:00",
+                "from": "a@acme.com",
+                "to": ["you@gmail.com"],
+            },
+            "2@x": {
+                "id": "2@x",
+                "date": "2024-01-01T00:00:00+00:00",
+                "from": "Bob <b@globex.com>",
+                "to": ["a@acme.com"],
+            },
         },
     )
     assert all_addresses(tmp_path) == [
@@ -91,9 +123,24 @@ def test_bucket_rows_folds_the_domain_and_claims_only_its_own(tmp_path: Path) ->
     write_shard(
         store / "2026.jsonl",
         {
-            "a": {"id": "a", "from": "news@t.delta.com", "downloaded": True},
-            "b": {"id": "b", "from": "offers@ikea.com", "downloaded": True},
-            "c": {"id": "c", "from": "them@acme.com", "downloaded": False},
+            "a": {
+                "id": "a",
+                "date": "2026-01-01T00:00:00+00:00",
+                "from": "news@t.delta.com",
+                "downloaded": True,
+            },
+            "b": {
+                "id": "b",
+                "date": "2026-01-01T00:00:00+00:00",
+                "from": "offers@ikea.com",
+                "downloaded": True,
+            },
+            "c": {
+                "id": "c",
+                "date": "2026-01-01T00:00:00+00:00",
+                "from": "them@acme.com",
+                "downloaded": False,
+            },
         },
     )
 
@@ -107,12 +154,14 @@ def test_an_excluded_row_is_counted_apart_and_listed_nowhere(tmp_path: Path) -> 
         {
             "1@x": {
                 "id": "1@x",
+                "date": "2024-01-01T00:00:00+00:00",
                 "from": "a@acme.com",
                 "to": ["you@g.com"],
                 "downloaded": True,
             },
             "1@x|gmail:2": {
                 "id": "1@x|gmail:2",
+                "date": "2024-01-01T00:00:00+00:00",
                 "from": "copy@dup.com",
                 "to": ["you@g.com"],
                 "excluded": "duplicate of 1@x",
@@ -131,8 +180,17 @@ def test_observed_only_leaves_out_a_message_deleted_before_download(
     write_shard(
         shard_path(tmp_path, 2026),
         {
-            "1@x": {"id": "1@x", "from": "a@acme.com"},
-            "2@x": {"id": "2@x", "from": "a@acme.com", "deleted": True},
+            "1@x": {
+                "id": "1@x",
+                "date": "2026-01-01T00:00:00+00:00",
+                "from": "a@acme.com",
+            },
+            "2@x": {
+                "id": "2@x",
+                "date": "2026-01-01T00:00:00+00:00",
+                "from": "a@acme.com",
+                "deleted": True,
+            },
         },
     )
     s = summary(tmp_path)
@@ -143,20 +201,44 @@ def test_by_year_counts_local_and_not_local_per_shard(tmp_path: Path) -> None:
     write_shard(
         shard_path(tmp_path, 2025),
         {
-            "1@x": {"id": "1@x", "downloaded": True},
-            "2@x": {"id": "2@x"},
-            "3@x": {"id": "3@x", "deleted": True},  # gone before download: neither
-            "4@x": {"id": "4@x", "list_id": "news.example.com"},  # excluded: neither
-            "5@x": {"id": "5@x", "excluded": "duplicate of 1@x"},  # excluded: neither
-            "6@x": {"id": "6@x"},  # also in 2026's shard, which wins
+            "1@x": {
+                "id": "1@x",
+                "date": "2025-01-01T00:00:00+00:00",
+                "downloaded": True,
+            },
+            "2@x": {"id": "2@x", "date": "2025-01-01T00:00:00+00:00"},
+            "3@x": {
+                "id": "3@x",
+                "date": "2025-01-01T00:00:00+00:00",
+                "deleted": True,
+            },  # gone before download: neither
+            "4@x": {
+                "id": "4@x",
+                "date": "2025-01-01T00:00:00+00:00",
+                "list_id": "news.example.com",
+            },  # excluded: neither
+            "5@x": {
+                "id": "5@x",
+                "date": "2025-01-01T00:00:00+00:00",
+                "excluded": "duplicate of 1@x",
+            },  # excluded: neither
+            "6@x": {
+                "id": "6@x",
+                "date": "2025-01-01T00:00:00+00:00",
+            },  # also in 2026's shard, which wins
         },
     )
     write_shard(
         shard_path(tmp_path, 2026),
         {
-            "6@x": {"id": "6@x", "downloaded": True},
+            "6@x": {
+                "id": "6@x",
+                "date": "2026-01-01T00:00:00+00:00",
+                "downloaded": True,
+            },
             "7@x": {
                 "id": "7@x",
+                "date": "2026-01-01T00:00:00+00:00",
                 "downloaded": True,
                 "deleted": True,
             },  # only copy: local
@@ -169,19 +251,51 @@ def test_account_counts_sorts_each_row_once(tmp_path: Path) -> None:
     write_shard(
         shard_path(tmp_path, 2025),
         {
-            "1@x": {"id": "1@x", "downloaded": True},
-            "2@x": {"id": "2@x"},  # no from: still not downloaded
-            "3@x": {"id": "3@x", "deleted": True},  # gone before download: none
-            "4@x": {"id": "4@x", "list_id": "news.example.com", "downloaded": True},
-            "5@x": {"id": "5@x", "excluded": "duplicate of 1@x"},
-            "6@x": {"id": "6@x"},  # also in 2026's shard, which wins
+            "1@x": {
+                "id": "1@x",
+                "date": "2025-01-01T00:00:00+00:00",
+                "downloaded": True,
+            },
+            "2@x": {
+                "id": "2@x",
+                "date": "2025-01-01T00:00:00+00:00",
+            },  # no from: still not downloaded
+            "3@x": {
+                "id": "3@x",
+                "date": "2025-01-01T00:00:00+00:00",
+                "deleted": True,
+            },  # gone before download: none
+            "4@x": {
+                "id": "4@x",
+                "date": "2025-01-01T00:00:00+00:00",
+                "list_id": "news.example.com",
+                "downloaded": True,
+            },
+            "5@x": {
+                "id": "5@x",
+                "date": "2025-01-01T00:00:00+00:00",
+                "excluded": "duplicate of 1@x",
+            },
+            "6@x": {
+                "id": "6@x",
+                "date": "2025-01-01T00:00:00+00:00",
+            },  # also in 2026's shard, which wins
         },
     )
     write_shard(
         shard_path(tmp_path, 2026),
         {
-            "6@x": {"id": "6@x", "downloaded": True},
-            "7@x": {"id": "7@x", "downloaded": True, "deleted": True},  # only copy
+            "6@x": {
+                "id": "6@x",
+                "date": "2026-01-01T00:00:00+00:00",
+                "downloaded": True,
+            },
+            "7@x": {
+                "id": "7@x",
+                "date": "2026-01-01T00:00:00+00:00",
+                "downloaded": True,
+                "deleted": True,
+            },  # only copy
         },
     )
     assert account_counts(tmp_path, {"news.example.com"}) == {

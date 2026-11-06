@@ -238,7 +238,12 @@ def test_an_excluded_row_is_skipped_counted_and_kept_at_the_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target = _target(tmp_path)
-    row: Row = {"id": "dup@test", "msgid": "1a", "excluded": "owner deleted 2026-10-01"}
+    row: Row = {
+        "id": "dup@test",
+        "date": "2026-01-01T00:00:00+00:00",
+        "msgid": "1a",
+        "excluded": "owner deleted 2026-10-01",
+    }
     write_shard(shard_path(target.store_dir, 2026), {"dup@test": row})
     _eml(tmp_path / "src", "dup", frm="news@spam.com", to=ME)
     trashed: list[list[Path]] = []

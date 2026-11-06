@@ -270,9 +270,24 @@ def _rows_on_lists(mail: Path) -> None:
     write_shard(
         shard_path(mail / ME / "manifest", 2026),
         {
-            "a@x": {"id": "a@x", "from": "a@acme.com", "list_id": LIST},
-            "b@x": {"id": "b@x", "from": "b@acme.com", "list_id": "other.example.org"},
-            "c@x": {"id": "c@x", "from": "c@acme.com", "downloaded": True},
+            "a@x": {
+                "id": "a@x",
+                "date": "2026-01-01T00:00:00+00:00",
+                "from": "a@acme.com",
+                "list_id": LIST,
+            },
+            "b@x": {
+                "id": "b@x",
+                "date": "2026-01-01T00:00:00+00:00",
+                "from": "b@acme.com",
+                "list_id": "other.example.org",
+            },
+            "c@x": {
+                "id": "c@x",
+                "date": "2026-01-01T00:00:00+00:00",
+                "from": "c@acme.com",
+                "downloaded": True,
+            },
         },
     )
 

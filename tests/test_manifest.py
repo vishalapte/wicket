@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import stat
 from pathlib import Path
 
@@ -21,8 +22,14 @@ from wicket.manifest import (
 
 
 def test_load_store_merges_all_shards(tmp_path: Path) -> None:
-    write_shard(shard_path(tmp_path, 2023), {"a@x": {"id": "a@x"}})
-    write_shard(shard_path(tmp_path, 2024), {"b@x": {"id": "b@x"}})
+    write_shard(
+        shard_path(tmp_path, 2023),
+        {"a@x": {"id": "a@x", "date": "2023-01-01T00:00:00+00:00"}},
+    )
+    write_shard(
+        shard_path(tmp_path, 2024),
+        {"b@x": {"id": "b@x", "date": "2024-01-01T00:00:00+00:00"}},
+    )
     assert set(load_store(tmp_path)) == {"a@x", "b@x"}
 
 
@@ -50,6 +57,37 @@ def test_write_read_roundtrip_and_idempotent(tmp_path: Path) -> None:
     write_shard(path, read_shard(path))
     assert path.read_bytes() == first  # byte-identical rewrite
     assert oct(path.stat().st_mode)[-3:] == "600"
+
+
+def test_write_orders_rows_by_date_then_id(tmp_path: Path) -> None:
+    path = shard_path(tmp_path, 2026)
+    rows: dict[str, Row] = {
+        "a@x": {"id": "a@x", "date": "2026-11-06T02:53:25+00:00"},
+        "z@x": {"id": "z@x", "date": "2026-01-01T00:00:00+00:00"},
+        "c@x": {"id": "c@x", "date": "2026-10-17T16:16:26+00:00"},
+        "b@x": {"id": "b@x", "date": "2026-10-17T16:16:26+00:00"},
+    }
+    write_shard(path, rows)
+    ids = [json.loads(line)["id"] for line in path.read_text().splitlines()]
+    assert ids == ["z@x", "b@x", "c@x", "a@x"]  # oldest first; a tie in id order
+
+
+@pytest.mark.parametrize(
+    "date",
+    [
+        "2026-11-06T08:23:25+05:30",  # an offset other than UTC
+        "2026-11-06T02:53:25Z",  # UTC, but not the one form
+        "2026-11-06T02:53:25",  # no zone
+        "not a date",
+        None,  # no date at all
+    ],
+)
+def test_write_refuses_a_date_that_is_not_utc(tmp_path: Path, date: object) -> None:
+    path = shard_path(tmp_path, 2026)
+    row: Row = {"id": "a@x"} if date is None else {"id": "a@x", "date": date}
+    with pytest.raises(ValueError, match="is not UTC"):
+        write_shard(path, {"a@x": row})
+    assert not path.exists()  # nothing written
 
 
 def test_read_absent_shard_is_empty(tmp_path: Path) -> None:
@@ -105,8 +143,14 @@ def test_returning_message_clears_deleted() -> None:
 
 def test_latest_shard_year(tmp_path: Path) -> None:
     assert latest_shard_year(tmp_path) is None  # empty store
-    write_shard(shard_path(tmp_path, 2023), {"a@x": {"id": "a@x"}})
-    write_shard(shard_path(tmp_path, 2025), {"b@x": {"id": "b@x"}})
+    write_shard(
+        shard_path(tmp_path, 2023),
+        {"a@x": {"id": "a@x", "date": "2023-01-01T00:00:00+00:00"}},
+    )
+    write_shard(
+        shard_path(tmp_path, 2025),
+        {"b@x": {"id": "b@x", "date": "2025-01-01T00:00:00+00:00"}},
+    )
     assert latest_shard_year(tmp_path) == 2025
 
 

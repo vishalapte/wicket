@@ -149,9 +149,24 @@ def test_got_is_staged_filed_excluded_and_duplicate(tmp_path: Path) -> None:
     write_shard(
         shard_path(store, 2024),
         {
-            "a": {"id": "a", "msgid": "a1", "downloaded": True},
-            "b": {"id": "b", "msgid": "b2", "excluded": "duplicate of a"},
-            "c": {"id": "c", "msgid": "c3", "downloaded": False},
+            "a": {
+                "id": "a",
+                "date": "2024-01-01T00:00:00+00:00",
+                "msgid": "a1",
+                "downloaded": True,
+            },
+            "b": {
+                "id": "b",
+                "date": "2024-01-01T00:00:00+00:00",
+                "msgid": "b2",
+                "excluded": "duplicate of a",
+            },
+            "c": {
+                "id": "c",
+                "date": "2024-01-01T00:00:00+00:00",
+                "msgid": "c3",
+                "downloaded": False,
+            },
         },
     )
     (staging / "77").mkdir(parents=True)
@@ -231,7 +246,15 @@ def _gmail_copy(dest: Path, store: Path, sent: datetime | None = SENT) -> list[R
 def test_held_maps_rows_by_id_with_shard_year(tmp_path: Path) -> None:
     _dest, store = _ingested_store(tmp_path)
     write_shard(
-        store / "notes.jsonl", {"x@y": {"id": "x@y", "msgid": "ab", "downloaded": True}}
+        store / "notes.jsonl",
+        {
+            "x@y": {
+                "id": "x@y",
+                "date": "2024-01-01T00:00:00+00:00",
+                "msgid": "ab",
+                "downloaded": True,
+            }
+        },
     )
     msgids, by_id = _held(store)
     assert msgids == {"068d2a33a1af5856", "ab"}
@@ -387,6 +410,7 @@ def test_a_filed_pair_keeps_its_keys_next_run(tmp_path: Path) -> None:
         (tmp_path / path).write_bytes(b"x")
         rows[str(e["id"])] = {
             "id": e["id"],
+            "date": e["date"],
             "msgid": e["msgid"],
             "downloaded": True,
             "path": path,
@@ -436,7 +460,10 @@ def test_an_excluded_row_is_never_downloaded(tmp_path: Path) -> None:
 def test_a_known_row_carries_its_shard_year(tmp_path: Path) -> None:
     store = tmp_path / "manifest"
     # catalog filed the row in 2023 (a boundary INTERNALDATE); fetch sees 2024
-    write_shard(shard_path(store, 2023), {"r@ba": {"id": "r@ba", "msgid": "18a"}})
+    write_shard(
+        shard_path(store, 2023),
+        {"r@ba": {"id": "r@ba", "date": "2023-01-01T00:00:00+00:00", "msgid": "18a"}},
+    )
     rec = _rec(b"1", "18a", "t1", MAR, "news@ba.com", ME, "<r@ba>", MAR)
     pending = _plan([rec], _ctx(tmp_path, store))
     assert pending[0]["id"] == "r@ba" and pending[0]["shard_year"] == 2023

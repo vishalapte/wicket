@@ -6,7 +6,7 @@ generator:
 target:
   repo: wicket
   date: 2026-09-04
-  version: "0.18.1"
+  version: "0.19.0"
 bundle:
   - WICKET.md
   - WICKET-DOSSIER.md

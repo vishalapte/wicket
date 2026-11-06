@@ -476,7 +476,7 @@ writes are the **halt dir** and the **log dir**, which hold no mail:
 
 | Path | What |
 |---|---|
-| `<mail-root>/<store>/manifest/YYYY.jsonl` | The year-sharded manifest, one JSON row per message (identity, observation, and settlement fields). Override with `--store-dir`. |
+| `<mail-root>/<store>/manifest/YYYY.jsonl` | The year-sharded manifest, one JSON row per message (identity, observation, and settlement fields), oldest `date` (UTC) first and the newest last; a tie goes in `id` order. Override with `--store-dir`. |
 | `<mail-root>/<store>/manifest/.lock` | The store's lock, held by the one process writing it; it names that process's pid. |
 | `<mail-root>/<store>/archive/<folder>/YYYY-MM/<msg-id>.eml` | Filed messages, by folder (counterparty domain, `self`, `sent`, ...) and month. Written only by `ingest`. |
 | `<mail-root>/<store>/staging/<thread-id>/<msgid>@<INTERNALDATE>.eml` | What `fetch` got and `ingest --staged` has not yet filed. |

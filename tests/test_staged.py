@@ -159,7 +159,12 @@ def test_staged_domain_files_every_unanchored_message(mail: Path) -> None:
 
 
 def test_an_excluded_staged_message_is_skipped_counted_and_left(mail: Path) -> None:
-    row: Row = {"id": "a@x", "msgid": "a1", "excluded": "owner deleted 2026-10-01"}
+    row: Row = {
+        "id": "a@x",
+        "date": "2026-01-01T00:00:00+00:00",
+        "msgid": "a1",
+        "excluded": "owner deleted 2026-10-01",
+    }
     write_shard(shard_path(mail / ME / "manifest", 2026), {"a@x": row})
     staged = _stage(mail, "1", "a1", frm="billing@acme.com", to=ME, mid="a@x")
     stats = _ingest()

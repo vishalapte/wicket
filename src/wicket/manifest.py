@@ -1,10 +1,11 @@
 """The unified year-sharded message manifest (ADR 0002).
 
 One JSON Lines shard per UTC year at ``<store-dir>/<YYYY>.jsonl``, one row per
-message keyed by the provider-neutral ``id``. ``catalog`` writes the observation
-fields and ``deleted``; ``ingest`` writes the settlement fields (``downloaded``,
-``path``, ``filed``) as it files a body. A catalog rewrite of a shard refreshes
-observation and preserves settlement, so the two never clobber each other.
+message keyed by the provider-neutral ``id``, oldest ``date`` first. ``catalog``
+writes the observation fields and ``deleted``; ``ingest`` writes the settlement
+fields (``downloaded``, ``path``, ``filed``) as it files a body. A catalog rewrite
+of a shard refreshes observation and preserves settlement, so the two never
+clobber each other.
 
 Also the reader of ``<store>/staging/`` (`staged_files`); the name ``fetch`` gives a
 staged body is its provider's (`wicket.provider`), so writer and reader share one rule.
@@ -22,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Collection, Iterator
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Settlement fields a catalog rewrite carries forward (filing owns them): whether
@@ -81,17 +83,41 @@ def staged_files(staging_dir: Path) -> Iterator[tuple[Path, str]]:
         yield path, path.relative_to(staging_dir).as_posix()
 
 
-def write_shard(path: Path, rows: Shard) -> None:
-    """Atomically replace a shard, rows id-sorted and keys sorted.
+def utc_date(row: Row) -> str:
+    """A row's ``date``, refused unless it is a UTC ISO-8601 string.
 
-    Deterministic so an unchanged store rewrites byte-identically (idempotent).
-    Private mailbox metadata, so the dir is `0700` and the file `0600`.
+    UTC means the form ``datetime.isoformat`` gives a UTC time
+    (``2026-11-06T02:53:25+00:00``). Every date then has one form, so sorting the
+    strings is sorting the times.
     """
+    date = row.get("date")
+    if isinstance(date, str):
+        try:
+            if (
+                datetime.fromisoformat(date).astimezone(timezone.utc).isoformat()
+                == date
+            ):
+                return date
+        except ValueError:
+            pass
+    raise ValueError(f"row {row.get('id')!r}: date {date!r} is not UTC ISO-8601")
+
+
+def write_shard(path: Path, rows: Shard) -> None:
+    """Atomically replace a shard, rows in ``(date, id)`` order and keys sorted.
+
+    The oldest message is the first line and the newest the last; two rows of one
+    ``date`` go in ``id`` order. Every row's ``date`` must be UTC (`utc_date`), or
+    nothing is written. Deterministic so an unchanged store rewrites
+    byte-identically (idempotent). Private mailbox metadata, so the dir is `0700`
+    and the file `0600`.
+    """
+    ordered = sorted(rows.items(), key=lambda item: (utc_date(item[1]), item[0]))
     path.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(path.parent, 0o700)
     tmp = path.with_suffix(path.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8") as handle:
-        for _id, row in sorted(rows.items()):
+        for _id, row in ordered:
             handle.write(json.dumps(row, sort_keys=True) + "\n")
     os.chmod(tmp, 0o600)
     tmp.replace(path)

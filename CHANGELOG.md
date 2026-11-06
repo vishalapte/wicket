@@ -12,6 +12,11 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+## 0.19.0 - 2026-11-06
+
+### Changed
+- **Each manifest shard lists its rows oldest first.** Rows were in Message-ID order; they are now in `date` order (UTC), a tie in `id` order, so the newest mail is the last line. A row whose `date` is missing or not UTC ISO-8601 is refused, and nothing is written. An existing shard takes the new order the next time a verb writes it.
+
 ## 0.18.1 - 2026-11-04
 
 ### Fixed

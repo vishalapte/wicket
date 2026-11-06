@@ -186,7 +186,10 @@ def test_a_resweep_keeps_excluded(tmp_path: Path) -> None:
     }
     write_shard(
         shard_path(tmp_path, 2024),
-        {"r@ba": {"id": "r@ba", "msgid": "18a"}, "r@ba|gmail:19b": row},
+        {
+            "r@ba": {"id": "r@ba", "date": "2024-01-01T00:00:00+00:00", "msgid": "18a"},
+            "r@ba|gmail:19b": row,
+        },
     )
     _merge(
         tmp_path,
