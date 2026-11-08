@@ -12,6 +12,9 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+### Changed
+- **docs**: ADR-MAIL matches delphi's copy again: the store is `$WICKET_DATA_DIR`, references are listed by `delphi refs` and locked by `/enine-mail pin`, and delphi's SessionEnd hook pins only ids new since the last quit.
+
 ## 0.19.0 - 2026-11-06
 
 ### Changed

@@ -6,25 +6,28 @@ bearing: doctrine
 
 # ADR-MAIL: Single-store mail — referenced messages are immutable-locked
 
-- Status: Accepted; implemented in delphi (`delphi.mail.pin`).
+- Status: Accepted; implemented in delphi (`mail pin`), moved 2026-11-01 to the claude
+  repo's `/enine-mail` tool, with delphi listing the references (`delphi refs`). Store
+  moved to `$WICKET_DATA_DIR` 2026-11-03; delphi's private root renamed from
+  `$DELPHI_ROOT` to `$DELPHI_DATA_DIR` 2026-11-08.
 - Date: 2026-07-15 (supersedes the 2026-07-12 two-store symlink/immutable-lock draft)
 - Deciders: Vishal
 - **Shared ADR.** This file is mirrored in both repos — `delphi/docs/adr/ADR-MAIL.md`
   and `wicket/docs/adr/ADR-MAIL.md`. It is the contract between them; edits must be
   applied to both copies. (This revision is applied to both copies, in sync as of
-  2026-07-15.)
+  2026-11-08.)
 
 ## Context
 
-There is **one** mail store: `~/.delphi/mail`. delphi files tracked `.eml` and wicket
-harvests, both into the same tree on one layout —
+There is **one** mail store: `$WICKET_DATA_DIR` (default `~/.data/mail`). delphi files
+tracked `.eml` and wicket harvests, both into the same tree on one layout —
 `<account>/archive/<counterparty-domain>/<YYYY-MM>/<sha1(message-key)[:16]>.eml`.
 Because the filename is the content-derived hash stem, a tracked and a harvested copy
 of one message land on the **same path**: there is nothing to dedup. (meridian is
 flights/hotels; the email copies it makes are its own and are NOT filed here.)
 
 The earlier draft of this ADR solved a *two-store* problem — delphi kept its own archive
-at `~/.delphi/private/mail` holding relative symlinks into wicket's `~/.delphi/mail`,
+at `<private root>/private/mail` holding relative symlinks into wicket's `<private root>/mail`,
 with an immutable-lock pin and a manifest read-contract for dedup. That problem no
 longer exists: one store, one layout, one physical copy by construction. The
 symlink/second-archive machinery is retired.
@@ -34,10 +37,10 @@ referenced anywhere must not be deletable.**
 
 ## Decision
 
-A message in `~/.delphi/mail` is undeletable **iff** something references it.
+A message in `$WICKET_DATA_DIR` is undeletable **iff** something references it.
 Enforcement is the macOS user-immutable flag (`chflags uchg`) set **on the file
-itself** — no second store, no symlinks. `delphi.mail.pin` walks every `mail:`
-reference in the corpus, resolves each to its file, and locks it.
+itself** — no second store, no symlinks. `delphi refs` lists every `mail:`
+reference in the corpus; `/enine-mail pin` resolves each to its file and locks it.
 
 - **Referenced ⇒ locked.** `pin` sets `UF_IMMUTABLE` on every `.eml` a `mail:` entry
   (in `people/`, `events/`, any entity markdown under `DATA_ROOT`) resolves to.
@@ -66,8 +69,8 @@ reference in the corpus, resolves each to its file, and locks it.
 
 ## Mechanics
 
-**pin (`delphi.mail.pin`):**
-1. Scan `DATA_ROOT/**/*.md` frontmatter for `mail:` msgids — the reference set.
+**pin (`delphi refs` | `/enine-mail pin`):**
+1. `delphi refs` scans `DATA_ROOT/**/*.md` frontmatter for `mail:` msgids — the reference set.
 2. `resolve` each (glob the store by the `sha1(message-key)[:16]` stem) → file or miss.
 3. **Hit:** `chflags uchg` (idempotent). **Miss:** record as dangling.
 4. `--check`: no writes; nonzero if any hit is unlocked or any reference is dangling.
@@ -89,8 +92,9 @@ not APFS; BSD file flags are not implemented there, so `chflags uchg` errors or 
 no-ops (the pin does not take). In the single-store model there is no "owned copy"
 fallback to substitute — instead the failure is **surfaced, not hidden**: `pin` re-reads
 the flag and `pin --check` reports the file as UNLOCKED, so a vault that can't hold the
-lock shows up as a gate failure rather than a false guarantee. On plain `~/.delphi`
-(APFS) the lock is real; a vault substitutes encryption-at-rest for the OS lock.
+lock shows up as a gate failure rather than a false guarantee. On plain APFS (the store
+at `$WICKET_DATA_DIR`) the lock is real; a vault substitutes encryption-at-rest for the
+OS lock.
 
 ## Edge cases
 
@@ -98,16 +102,22 @@ lock shows up as a gate failure rather than a false guarantee. On plain `~/.delp
   key, so a `mail:` entry can only reference what `resolve` can find. Duplicate
   Message-IDs → first store hit wins.
 - **Flag portability:** `uchg` is an APFS/HFS+ flag. Time Machine preserves it; `rsync`
-  needs `-X`/`--fileflags`; naive copies drop it. Backups of `~/.delphi` should preserve
+  needs `-X`/`--fileflags`; naive copies drop it. Backups of `$WICKET_DATA_DIR` should preserve
   flags (moot inside a vault).
 - **Owner-clearable:** `uchg` (user-immutable), not `schg` (system-immutable,
   root-only), so delphi releases it without privilege.
 
 ## Cross-repo touchpoints
 
-- **delphi** (`delphi.mail`): `pin` (walk refs → lock; `--check`/`--dry-run`/`--unpin`);
-  `resolve` (Message-ID → path by hash stem); `ingest` (file tracked `.eml` into the
-  shared store, same layout as the harvest).
+- **delphi** (`delphi refs`): walks the corpus and prints every referenced Message-ID.
+- **claude** (`/enine-mail`, `~/.claude/skills/enine-mail/mail.py`): `pin` (the given
+  Message-IDs → lock; `--check`/`--apply`/`--unpin`); `resolve` (Message-ID → path);
+  `ingest` (file tracked `.eml` into the shared store, same layout as the harvest). The
+  delphi SessionEnd hook pipes `delphi refs` into `mail.py pin --apply`, sending only
+  the ids not pinned at an earlier quit (the list it last pinned is kept in
+  `$XDG_STATE_HOME/delphi/pinned-refs.txt`); `mail.py pin --check` over the full
+  `delphi refs` list is the audit. Until 2026-11-01 these were delphi's `delphi.mail`
+  verbs.
 - **wicket:** prune skips `UF_IMMUTABLE` files (one `lstat` guard).
 - **No `import` either way.** delphi and wicket couple only through (a) the shared store
   and its layout and (b) the `uchg` flag convention.
@@ -115,7 +125,8 @@ lock shows up as a gate failure rather than a false guarantee. On plain `~/.delp
 ## Supersedes
 
 The 2026-07-12 draft (two stores + relative symlinks + a manifest read-contract for
-dedup). It was never implemented; consolidating to one store at `~/.delphi/mail` removed
+dedup). It was never implemented; consolidating to one store (then `<private root>/mail`,
+now `$WICKET_DATA_DIR`) removed
 the duplication it was designed to prevent. The immutable-flag pin — the durable part —
 is retained and now applies directly to the single stored file.
 
