@@ -12,12 +12,15 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+## 0.20.1 - 2026-11-14
+
 ### Changed
 - **Ingest and the store keep each rule once.** One row builder, one commit path and one lock rule serve both ingest sources, and `manifest.is_held` and `manifest.read_shards` replace the copies ingest, fetch and catalog each carried. No verb's behaviour or output changes.
 - **The faces, the nouns and the maps keep each job once.** One map path rule, one map loader, one edit-then-check-then-write, one ApiError wrapper, and shared argument blocks serve every noun; `example_output()` and `env.Identities`, which nothing called, are gone. Every verb's text, `--json` and `--help` are unchanged.
 
 ### Fixed
 - **The package's agent rules describe `filing.py` as it is.** They named `compute_domain` and `thread_domain` and a row `domain`, all deleted in 0.20.0; they now name the router, the thread opener and the domain filter.
+- **`held_messages(domains=...)` matches an address written with a display name.** A row holding a raw header such as `Ops <ops@ba.com>` read its domain as `ba.com>` and never matched; each address is now parsed before its domain is folded.
 
 ## 0.20.0 - 2026-11-14
 

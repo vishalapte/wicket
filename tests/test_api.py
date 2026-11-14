@@ -10,7 +10,7 @@ import pytest
 
 import wicket.__main__ as root
 from wicket import env
-from wicket.manifest import message_file, shard_path, write_shard
+from wicket.manifest import message_file, read_shard, shard_path, write_shard
 from wicket.message import message_date, message_stem
 from wicket.root import api as root_api
 from wicket.root.api import (
@@ -82,6 +82,20 @@ def test_held_messages_filters_downloaded_and_domains(
     assert row["id"] == "a@x"
     assert row["stem"] == message_stem(eml.read_bytes())
     assert eml.parent == tmp_path / "you@gmail.com" / "messages" / "2024" / "03"
+
+
+def test_held_messages_matches_an_address_written_with_a_display_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(env, "MAIL_ROOT", _seed(tmp_path))
+    shard = shard_path(tmp_path / "you@gmail.com" / "manifest", 2024)
+    rows = read_shard(shard)
+    rows["b@x"][
+        "from"
+    ] = "Sales <sales@acme.com>"  # a raw header, as an older row holds
+    write_shard(shard, rows)
+    got = list(held_messages(account="you@gmail.com", domains={"acme.com"}))
+    assert [row["id"] for row, _ in got] == ["b@x"]
 
 
 def test_manifest_loads_whole_store(

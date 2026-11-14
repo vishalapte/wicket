@@ -446,12 +446,11 @@ def fetch(
 def _touches(row: Row, domains: set[str], aliases: dict[str, str]) -> bool:
     """Whether any address in the row's ``from``/``to``/``cc``/``bcc``, folded by the
     alias map (`domains.canonical_domain`), is in ``domains``."""
-    for value in (row.get("from"), row.get("to"), row.get("cc"), row.get("bcc")):
-        for address in value if isinstance(value, list) else [value]:
-            _, _, domain = str(address or "").rpartition("@")
-            if domain and canonical_domain(domain.lower(), aliases) in domains:
-                return True
-    return False
+    return any(
+        canonical_domain(address.rpartition("@")[2], aliases) in domains
+        for key in ("from", "to", "cc", "bcc")
+        for address in report_lib.addresses(row.get(key))
+    )
 
 
 def held_messages(
