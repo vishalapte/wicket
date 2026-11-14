@@ -5,23 +5,25 @@ shape, so one engine serves the nouns that edit them (`wicket.alias`, `wicket.st
 `wicket.exclude`). The edits are pure:
 each takes a map and returns a new one, so a caller can check the result with the readers'
 own rules (`env.parse_account_aliases`, `domains.parse_domain_aliases`,
-`domains.parse_domain_routes`) before anything reaches disk. No validation lives here.
+`domains.parse_domain_routes`) before anything reaches disk; `edit` does all three for
+one file. No validation lives here: `edit` takes the reader's rule as an argument.
 """
 
 from __future__ import annotations
 
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
+
+from wicket.env import read_json_map
 
 Map = dict[str, list[str]]
 
 
 def read_map(path: Path) -> Map:
     """The map at ``path``, or ``{}`` when the file does not exist yet."""
-    if not path.exists():
-        return {}
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw = read_json_map(path)
     if not isinstance(raw, dict):
         raise ValueError(f"{path}: top-level value must be an object")
     return raw
@@ -66,6 +68,20 @@ def write_maps(changes: dict[Path, Map]) -> None:
     finally:
         for temp, _ in staged:
             temp.unlink(missing_ok=True)
+
+
+def edit(
+    path: Path, change: Callable[[Map], Map], check: Callable[[Map, Path], object]
+) -> Map:
+    """Read the map at ``path``, apply ``change``, ``check`` the result, then write it.
+
+    ``check`` is the reader's own rule (`domains.parse_domain_aliases`, …), so a file this
+    writes is one the reader accepts; it raises ``ValueError``, and nothing is written.
+    """
+    after = change(read_map(path))
+    check(after, path)
+    write_maps({path: after})
+    return after
 
 
 def create_entry(mapping: Map, primary: str, items: list[str]) -> Map:

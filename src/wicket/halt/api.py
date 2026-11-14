@@ -18,14 +18,15 @@ from .lib import all_accounts, clear_one, rows, set_one
 from .lib.results import ClearHalt, ClearRow, ListHalt, SetHalt
 
 
-def _accounts(mail_account: str | None, all_: bool) -> list[str] | None:
-    """The one account ``mail_account`` names, normalized as text only, else None for
-    ``all_``. Exactly one of the two is required. Nothing outside the state base is read:
-    the noun depends on no mail root, alias file or credential."""
+def _accounts(mail_account: str | None, all_: bool) -> list[str]:
+    """The one account ``mail_account`` names, normalized as text only, else every
+    account for ``all_`` (`lib.all_accounts`). Exactly one of the two is required. Nothing
+    outside the state base and the accounts dir is read: the noun depends on no mail root,
+    alias file or credential."""
     if bool(mail_account) == bool(all_):
         raise ApiError("name exactly one of --mail-account or --all")
     if all_:
-        return None
+        return all_accounts()
     account = normalize_account(mail_account or "")
     if "@" not in account:
         raise ApiError(f"not an email address: {mail_account!r}")
@@ -43,9 +44,7 @@ def set_halt(
 ) -> SetHalt:
     """Halt an account, or every account in ~/.config/wicket/accounts; a HALT already in
     force is kept."""
-    named = _accounts(mail_account, all_)
-    accounts = all_accounts() if named is None else named
-    return {"halts": [set_one(a) for a in accounts]}
+    return {"halts": [set_one(a) for a in _accounts(mail_account, all_)]}
 
 
 def clear_halt(
@@ -55,8 +54,7 @@ def clear_halt(
     each clear is logged. With ``min_``, only a HALT over ``min_`` minutes old."""
     if min_ is not None and min_ < 0:
         raise ApiError(f"--min takes 0 or more minutes, not {min_}")
-    named = _accounts(mail_account, all_)
-    accounts = all_accounts() if named is None else named
+    accounts = _accounts(mail_account, all_)
     cleared: list[ClearRow] = []
     not_halted: list[str] = []
     for account in accounts:

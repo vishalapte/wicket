@@ -15,7 +15,6 @@ import os
 import re
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -93,7 +92,7 @@ BUCKET_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 # Optional alias file consumed by fetch (`wicket.root.api`). Shape:
 #   {"primary.com": ["alias1.com", "alias2.com"], ...}
-# When present, the archive tool treats aliases as the same logical entity
+# When present, fetch treats aliases as the same logical entity
 # as the primary (search expands; a domain filter folds to the primary).
 ALIASES_FILENAME = "domain-aliases.json"
 
@@ -103,7 +102,7 @@ ALIASES_FILENAME = "domain-aliases.json"
 ACCOUNT_ENV_VAR = "WICKET_ACCOUNT"
 
 # One per-account mail root holding both the year-sharded manifest store and the
-# .eml archive (ADR 0002): $WICKET_DATA_DIR/<account>/{manifest,archive}/.
+# message files (ADR 0002): $WICKET_DATA_DIR/<account>/{manifest,messages,staging}/.
 # Provider-neutral (credentials live separately under ~/.config/<provider>/).
 #
 # The PHYSICAL location is configuration, not code: $WICKET_DATA_DIR overrides
@@ -151,9 +150,8 @@ def normalize_account(address: str) -> str:
     """Lowercase and strip Gmail `+tag` aliasing.
 
     Gmail treats `you+anything@gmail.com` as the same mailbox as
-    `you@gmail.com`. Canonicalize so an alias still counts as ACCOUNT in
-    the filing-domain rule and scopes to the same dest/manifest paths
-    in every tool. The one home for this rule.
+    `you@gmail.com`. Canonicalize so an alias still counts as the account and
+    scopes to the same store paths in every tool. The one home for this rule.
     """
     address = address.strip().lower()
     if "@" not in address:
@@ -222,16 +220,32 @@ def flatten_aliases(
     return mapping
 
 
-def account_aliases_path(mail_root: Path | None = None) -> Path:
-    """The one home for the account-alias file (``<mail-root>/account-aliases.json``).
+def map_path(env_var: str, filename: str, mail_root: Path | None = None) -> Path:
+    """Where an owner-authored map is: ``$<env_var>`` when set, else the mail root's file.
 
-    ``$WICKET_ACCOUNT_ALIASES``, when set, names the file directly (any name,
-    any location) and wins over ``mail_root``.
+    The variable names the file directly (any name, any location, a leading ``~``
+    expanded) and wins over ``mail_root``, which defaults to `MAIL_ROOT`. The one home of
+    that rule for all four maps.
     """
-    override = os.environ.get(ACCOUNT_ALIASES_ENV_VAR)
+    override = os.environ.get(env_var)
     if override:
         return Path(override).expanduser()
-    return (mail_root or MAIL_ROOT) / ACCOUNT_ALIASES_FILENAME
+    return (mail_root or MAIL_ROOT) / filename
+
+
+def read_json_map(path: Path) -> object:
+    """The JSON at ``path``, or ``{}`` when the file is absent: every map loader's read.
+
+    The caller's own rule checks what comes back; a malformed file raises ``ValueError``.
+    """
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def account_aliases_path(mail_root: Path | None = None) -> Path:
+    """The account-alias file (``<mail-root>/account-aliases.json``; `map_path`)."""
+    return map_path(ACCOUNT_ALIASES_ENV_VAR, ACCOUNT_ALIASES_FILENAME, mail_root)
 
 
 def load_account_aliases(path: Path | None = None) -> dict[str, str]:
@@ -243,9 +257,7 @@ def load_account_aliases(path: Path | None = None) -> dict[str, str]:
     silent (the map is optional); a malformed one raises.
     """
     file = path or account_aliases_path()
-    if not file.exists():
-        return {}
-    return parse_account_aliases(json.loads(file.read_text(encoding="utf-8")), file)
+    return parse_account_aliases(read_json_map(file), file)
 
 
 def parse_account_aliases(raw: object, path: Path) -> dict[str, str]:
@@ -293,47 +305,6 @@ def account_of(address: str, aliases: dict[str, str], accounts: set[str]) -> str
     return canonical if canonical in accounts else None
 
 
-@dataclass(frozen=True)
-class Identities:
-    """Every address that is *you* — including whole wildcard domains.
-
-    The filing rule asks "which side of this message is the counterparty"; knowing
-    only one address, it mistakes your *other* addresses for counterparties and
-    files a thread under your own burner domain (or not at all). This answers that
-    question. It is a membership test rather than a set because a catch-all
-    (``*@shopping.you.com``) cannot be enumerated. Owner-authored throughout: an
-    address is yours because you listed it or it names your store, never because
-    it was inferred.
-    """
-
-    addresses: frozenset[str]
-    domains: frozenset[str]  # catch-all domains: every address here is yours
-
-    def __contains__(self, address: object) -> bool:
-        if not isinstance(address, str):
-            return False
-        canonical = normalize_account(address)
-        if canonical in self.addresses:
-            return True
-        _, _, domain = canonical.partition("@")
-        return bool(domain) and domain in self.domains
-
-
-def identities(
-    aliases: dict[str, str] | None = None, accounts: set[str] | None = None
-) -> Identities:
-    """Build the identity test from the alias map's keys and your account names."""
-    mapping = load_account_aliases() if aliases is None else aliases
-    mine = known_accounts() if accounts is None else accounts
-    # Keys include the primaries, and a primary may be a bucket ("travel"), which
-    # is a destination and not an address of yours. Only addresses are identities.
-    addresses = {a for a in mapping if _is_address(a)}
-    addresses |= {a for a in mapping.values() if _is_address(a)}
-    addresses |= {a for a in mine if _is_address(a)}
-    domains = {a.removeprefix("*@") for a in mapping if a.startswith("*@")}
-    return Identities(frozenset(addresses), frozenset(domains))
-
-
 def require_mail_root(mail_root: Path | None = None) -> Path:
     """Return the mail root, or raise if it is not there. **Writers FAIL CLOSED.**
 
@@ -358,14 +329,14 @@ def require_mail_root(mail_root: Path | None = None) -> Path:
     return root
 
 
-def known_accounts(mail_root: Path | None = None) -> set[str]:
+def known_accounts() -> set[str]:
     """Accounts that exist: a store directory under the mail root. Nothing else.
 
     A bucket or an alias primary that has no directory is deliberately absent: the
     `mkdir` is the owner's explicit act of creating a destination, and without it
     mail for that primary stays unrouted instead of minting a store.
     """
-    root = require_mail_root(mail_root)
+    root = require_mail_root()
     # Skip dotted directories: the store is often a git repo, and `.git` is not an
     # account. Nothing hidden is a destination.
     return {
@@ -513,9 +484,9 @@ def resolve_duplicates_dir(account: str) -> Path:
     """Per-store duplicates dir (``<mail-root>/.duplicates/<store>``).
 
     The one home for a body set aside as a copy of mail the store already archives,
-    kept at the path it would have had (``<folder>/YYYY-MM/<msgid>.eml``), never
-    unlinked. `wicket.root.lib.fetch` counts what is here as got. Never created
-    here.
+    kept as ``YYYY-MM/<name>.eml`` under it (the provider's name for the message,
+    `Provider.file_stem`), never unlinked. `wicket.root.lib.fetch` counts what is here
+    as got. Never created here.
     """
     return MAIL_ROOT / DUPLICATES_DIRNAME / normalize_account(account)
 

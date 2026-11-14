@@ -9,6 +9,7 @@ the halt dir itself.
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 import wicket.env as env  # pylint: disable=consider-using-from-import
@@ -31,12 +32,17 @@ def all_accounts() -> list[str]:
     return sorted(normalize_account(p.name) for p in env.account_dirs())
 
 
+def _stamp(when: datetime) -> str:
+    """When a HALT was set, as every row carries it: ISO, to the second."""
+    return when.isoformat(timespec="seconds")
+
+
 def rows() -> list[HaltRow]:
     """Every HALT in force, by account."""
     return [
         {
             "account": info.account,
-            "halted": info.halted.isoformat(timespec="seconds"),
+            "halted": _stamp(info.halted),
             "age_seconds": info.age_seconds,
         }
         for info in auth.list_halts()
@@ -44,7 +50,7 @@ def rows() -> list[HaltRow]:
 
 
 def set_one(account: str) -> SetRow:
-    """Halt one account; a HALT in force is kept.
+    """Halt one account (already normalized); a HALT in force is kept.
 
     `auth.write_halt` reads the account off the credential path's directory name and
     never opens the path, so a relative one names the account and touches nothing.
@@ -53,8 +59,8 @@ def set_one(account: str) -> SetRow:
     auth.write_halt(Path(account) / CREDENTIALS_FILENAME, SET_BY_HAND)
     info = auth.read_halt(account)
     return {
-        "account": normalize_account(account),
-        "halted": info.halted.isoformat(timespec="seconds") if info else "",
+        "account": account,
+        "halted": _stamp(info.halted) if info else "",
         "changed": before is None,
     }
 
@@ -74,5 +80,5 @@ def clear_one(account: str, min_: int | None) -> ClearRow | None:
         return None
     return {
         "account": info.account,
-        "halted": info.halted.isoformat(timespec="seconds"),
+        "halted": _stamp(info.halted),
     }

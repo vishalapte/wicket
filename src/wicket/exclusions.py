@@ -15,8 +15,6 @@ Shared layer: imports only `wicket.env`.
 
 from __future__ import annotations
 
-import json
-import os
 import re
 from collections.abc import Iterable
 from pathlib import Path
@@ -24,8 +22,9 @@ from pathlib import Path
 from wicket.env import (
     EXCLUDED_LISTS_ENV_VAR,
     EXCLUDED_LISTS_FILENAME,
-    MAIL_ROOT,
+    map_path,
     normalize_account,
+    read_json_map,
 )
 
 # The key every account reads.
@@ -41,14 +40,8 @@ ExcludedLists = dict[str, list[str]]
 
 
 def excluded_lists_path(mail_root: Path | None = None) -> Path:
-    """The one home for the map (``<mail-root>/excluded-lists.json``).
-
-    ``$WICKET_EXCLUDED_LISTS``, when set, names the file directly and wins.
-    """
-    override = os.environ.get(EXCLUDED_LISTS_ENV_VAR)
-    if override:
-        return Path(override).expanduser()
-    return (mail_root or MAIL_ROOT) / EXCLUDED_LISTS_FILENAME
+    """The map's file (``<mail-root>/excluded-lists.json``; `env.map_path`)."""
+    return map_path(EXCLUDED_LISTS_ENV_VAR, EXCLUDED_LISTS_FILENAME, mail_root)
 
 
 def normalize_list_id(raw: str) -> str:
@@ -99,10 +92,7 @@ def parse_excluded_lists(
 
 def load_excluded_lists(path: Path, accounts: Iterable[str]) -> ExcludedLists:
     """The map at ``path`` by `parse_excluded_lists`, or ``{}`` when the file is absent."""
-    if not path.exists():
-        return {}
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    return parse_excluded_lists(raw, path, accounts)
+    return parse_excluded_lists(read_json_map(path), path, accounts)
 
 
 def excluded_for(account: str, mapping: ExcludedLists) -> list[str]:

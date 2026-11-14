@@ -62,6 +62,19 @@ def subcommands() -> list[tuple[str, str]]:
     ]
 
 
+def _primary(verb: argparse.ArgumentParser, items: bool = True) -> None:
+    """``--primary``, and with ``items`` the repeatable ``--item`` under it."""
+    verb.add_argument(
+        "--primary",
+        required=True,
+        help="The entry's key: the primary domain an alias folds into.",
+    )
+    if items:
+        verb.add_argument(
+            "--item", action="append", help="A value under --primary (repeatable)."
+        )
+
+
 def parser() -> argparse.ArgumentParser:
     """Build the parser without parsing: the audit and --help both read this."""
     p = NounParser(
@@ -75,36 +88,18 @@ def parser() -> argparse.ArgumentParser:
     sub = p.verbs(subcommands(), dest="phase")
 
     p_create = sub.add_parser("create")
-    p_create.add_argument(
-        "--primary",
-        required=True,
-        help="The entry's key: the primary domain an alias folds into.",
-    )
-    p_create.add_argument(
-        "--item", action="append", help="A value under --primary (repeatable)."
-    )
+    _primary(p_create)
     p_create.set_defaults(func=_cmd_create)
 
     p_delete = sub.add_parser("delete")
-    p_delete.add_argument(
-        "--primary",
-        required=True,
-        help="The entry's key: the primary domain an alias folds into.",
-    )
-    p_delete.add_argument(
-        "--item", action="append", help="A value under --primary (repeatable)."
-    )
+    _primary(p_delete)
     p_delete.set_defaults(func=_cmd_delete)
 
     p_list = sub.add_parser("list")
     p_list.set_defaults(func=_cmd_list)
 
     p_update = sub.add_parser("update")
-    p_update.add_argument(
-        "--primary",
-        required=True,
-        help="The entry's key: the primary domain an alias folds into.",
-    )
+    _primary(p_update, items=False)
     p_update.add_argument(
         "--add", action="append", help="A value to add under --primary (repeatable)."
     )

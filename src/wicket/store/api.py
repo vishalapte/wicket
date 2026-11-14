@@ -16,7 +16,7 @@ from pathlib import Path
 import wicket.env as env  # pylint: disable=consider-using-from-import
 from wicket.domains import domain_routes_path, parse_domain_routes
 from wicket.env import account_aliases_path, parse_account_aliases
-from wicket.errors import ApiError
+from wicket.errors import ApiError, refusing
 from wicket.maps import Map, add_items, read_map, remove_items, write_maps
 
 from .lib import row, rows
@@ -30,18 +30,8 @@ Edit = Callable[[Map, str, list[str]], Map]
 
 def _paths() -> tuple[Path, Path]:
     """(domain-routes.json, account-aliases.json) under a mail root that exists."""
-    try:
-        root = env.require_mail_root()
-    except ValueError as exc:
-        raise ApiError(str(exc)) from exc
+    root = env.require_mail_root()
     return domain_routes_path(root), account_aliases_path(root)
-
-
-def _read(path: Path) -> Map:
-    try:
-        return read_map(path)
-    except ValueError as exc:
-        raise ApiError(str(exc)) from exc
 
 
 def _change(
@@ -56,10 +46,10 @@ def _change(
     """
     if not from_ and not to:
         raise ApiError("name at least one --from domain or --to address")
-    routes_path, accounts_path = _paths()
-    routes, accounts = _read(routes_path), _read(accounts_path)
     changes: dict[Path, Map] = {}
-    try:
+    with refusing():
+        routes_path, accounts_path = _paths()
+        routes, accounts = read_map(routes_path), read_map(accounts_path)
         if from_:
             routes = edit(routes, store, from_)
             parse_domain_routes(routes, routes_path)
@@ -68,8 +58,6 @@ def _change(
             accounts = edit(accounts, store, to)
             parse_account_aliases(accounts, accounts_path)
             changes[accounts_path] = accounts
-    except ValueError as exc:
-        raise ApiError(str(exc)) from exc
     write_maps(changes)
     return routes, accounts
 
@@ -78,32 +66,22 @@ def create_store(
     store: str, from_: list[str] | None = None, to: list[str] | None = None
 ) -> CreateStore:
     """Add sender domains and your addresses to a store."""
-    routes, accounts = _change(store, from_, to, add_items)
-    result = row(store, routes, accounts)
-    return {
-        "store": store,
-        "domains": result["domains"],
-        "addresses": result["addresses"],
-    }
+    return row(store, *_change(store, from_, to, add_items))
 
 
 def delete_store(
     store: str, from_: list[str] | None = None, to: list[str] | None = None
 ) -> DeleteStore:
     """Remove the named domains and addresses from a store; refuses when none are named."""
-    routes, accounts = _change(store, from_, to, remove_items)
-    result = row(store, routes, accounts)
-    return {
-        "store": store,
-        "domains": result["domains"],
-        "addresses": result["addresses"],
-    }
+    return row(store, *_change(store, from_, to, remove_items))
 
 
 def list_store() -> ListStore:
     """List every store with its sender domains and owner addresses."""
-    routes_path, accounts_path = _paths()
-    return {"stores": rows(_read(routes_path), _read(accounts_path))}
+    with refusing():
+        routes_path, accounts_path = _paths()
+        routes, accounts = read_map(routes_path), read_map(accounts_path)
+    return {"stores": rows(routes, accounts)}
 
 
 # CLI spelling -> the function it binds. A verb spelled like a keyword or a builtin

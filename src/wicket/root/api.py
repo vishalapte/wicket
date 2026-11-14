@@ -5,10 +5,9 @@ Every surface (this noun's cli, an MCP tool, a REST route) calls these functions
 nothing below them. Each verb is one function returning one result type from
 ``lib.results``, plain JSON. A request the api cannot run raises ``ApiError``.
 
-Each root verb's orchestration is here, moved unchanged from that verb's own api
-module, beside the one request function per verb that ``VERBS`` binds: it takes the
-command line's arguments, calls the orchestration, says each refusal as an
-``ApiError``, and returns the verb's result type.
+Each root verb's orchestration is here, beside the one request function per verb that
+``VERBS`` binds: it takes the command line's arguments, calls the orchestration, says
+each refusal as an ``ApiError``, and returns the verb's result type.
 
 report: resolve the account, summarize the store. Read-only: no IMAP, no credentials.
 Each function resolves the account (`env.resolve_account`), locates its manifest store,
@@ -20,10 +19,10 @@ store and credential paths, seeds credentials (gated on ``interactive``), dispat
 real sweep holds the store's lock (`env.store_lock`) for its whole run; a dry run writes
 nothing and takes none.
 
-fetch: resolve, build query, seed, download. fetch only gets mail into the store's
-staging dir; ``ingest --staged`` files it (plan rule 6). It resolves the account and its
-per-account messages/staging/store/credential paths, builds the Gmail search expression
-from ``domains`` or ``query`` (at most one), seeds credentials (gated on
+fetch: resolve, build the search, seed, download. fetch only gets mail into the store's
+staging dir; ``ingest --staged`` files it. It resolves the account and its per-account
+messages/staging/store/credential paths, turns the one filter given (``domains``,
+``query``, ``last`` or ``years``) into the provider's search, seeds credentials (gated on
 ``interactive``), and dispatches into `lib.fetch.download` (a filter: one pass) or
 `lib.fetch.download_years` (no filter: every year until throttled). A real run holds the
 store's lock (`env.store_lock`) and appends counts and years, never subjects, addresses
@@ -88,7 +87,7 @@ from wicket.env import (
     resolve_store_dir,
     store_lock,
 )
-from wicket.errors import ApiError
+from wicket.errors import ApiError, refusing
 from wicket.exclusions import excluded_for, excluded_lists_path, load_excluded_lists
 from wicket.filing import AccountFor, build_domain_query
 from wicket.manifest import (
@@ -101,7 +100,7 @@ from wicket.provider import Provider, Search, provider_of
 
 from .lib import report as report_lib
 from .lib.catalog import sweep
-from .lib.fetch import RunHooks, ThreadContext, download, download_years
+from .lib.fetch import COUNT_KEYS, RunHooks, ThreadContext, download, download_years
 from .lib.ingest import Target, ingest_folder, ingest_routed, ingest_staged
 from .lib.renderer.plaintext import busy_lines, fetch_lines, halt_text, ingest_lines
 from .lib.results import (
@@ -114,7 +113,7 @@ from .lib.results import (
     CatalogRoot,
     FetchRoot,
     IngestRoot,
-    PassRow,
+    ReportCounts,
     ReportRoot,
 )
 
@@ -312,9 +311,10 @@ def _search(
 ) -> Search | None:
     """Turn the options' filter into the provider's search, or None for no filter.
 
-    At most one of ``domains`` / ``query`` / ``last`` is set (`FetchOptions`). A raw
-    ``query`` passes through; ``domains`` (list or comma-string) expands via the
-    alias map; ``last`` is the provider's since-search. Raises ``ValueError`` if a
+    At most one of ``domains`` / ``query`` / ``last`` / ``years`` is set
+    (`FetchOptions`). A raw ``query`` passes through; ``domains`` (list or comma-string)
+    expands via the alias map; ``last`` is the provider's since-search; ``years`` is no
+    search, so it returns None, as no filter does. Raises ``ValueError`` if a
     domains filter cleans to empty.
     """
     if options.last is not None:
@@ -372,8 +372,8 @@ def fetch(
 
     ``options`` (a `FetchOptions`) carries the filter and paths; at most one of its
     ``domains`` / ``query`` is set, and neither means every year until throttled.
-    Resolves the account and its per-account archive (``<mail-root>/<account>/
-    archive``, which reconcile checks), staging dir (``<mail-root>/<account>/
+    Resolves the account and its per-account messages dir (``<mail-root>/<account>/
+    messages``, which reconcile checks), staging dir (``<mail-root>/<account>/
     staging``, where bodies go), duplicates dir (``<mail-root>/.duplicates/
     <account>``, counted as got), store, and credential file
     (``<state-dir>/accounts/<account>/imap.json``). Loads the
@@ -608,10 +608,12 @@ def _parse_years(raw: str) -> list[int]:
         part = part.strip()
         if part:
             if not re.fullmatch("[0-9]{4}", part) or int(part) < 1970:
-                raise ValueError(f"{part!r} is not a year (four digits, 1970 or later)")
+                raise ApiError(
+                    f"bad --years: {part!r} is not a year (four digits, 1970 or later)"
+                )
             years.add(int(part))
     if not years:
-        raise ValueError("--years was empty")
+        raise ApiError("bad --years: --years was empty")
     return sorted(years)
 
 
@@ -628,12 +630,7 @@ def catalog_root(  # pylint: disable=too-many-arguments
     dry_run: bool = False,
 ) -> CatalogRoot:
     """Observe the mailbox into the year-sharded manifest; headers only, never bodies."""
-    swept = None
-    if years:
-        try:
-            swept = _parse_years(years)
-        except ValueError as exc:
-            raise ApiError(f"bad --years: {exc}") from exc
+    swept = _parse_years(years) if years else None
     try:
         options = CatalogOptions(
             store_dir=store_dir.expanduser() if store_dir else None,
@@ -649,17 +646,12 @@ def catalog_root(  # pylint: disable=too-many-arguments
         return {"account_linked": False, "dry_run": dry_run}  # a no-op, silent
     except (ValueError, StoreBusy, AuthError, imaplib.IMAP4.error) as exc:
         raise _refused(exc) from exc
-    return {
-        "account_linked": True,
-        "dry_run": dry_run,
-        "store_dir": str(stats["store_dir"]),
-        "messages": int(stats["messages"]),
-        "shards": int(stats["shards"]),
-        "removed": int(stats["removed"]),
-        "boundary_drops": int(stats["boundary_drops"]),
-        "parse_skips": int(stats["parse_skips"]),
-        "label_misses": int(stats["label_misses"]),
-    }
+    # In the type's key order, so the JSON prints its keys as the type declares them.
+    keys = [k for k in CatalogRoot.__annotations__ if k in stats]
+    return cast(
+        CatalogRoot,
+        {"account_linked": True, "dry_run": dry_run, **{k: stats[k] for k in keys}},
+    )
 
 
 def _bucket_view(name: str) -> BucketView:
@@ -716,7 +708,7 @@ def _by_year_view() -> ByYearView:
 def _accounts_view() -> AccountsView:
     """Every account (a folder in ~/.config/wicket/accounts): downloaded, excluded, not
     downloaded and their total, each row sorted by `report_lib.row_state`, and its
-    last download (`report_lib.last_download` over its archive and staging)."""
+    last download (`report_lib.last_download` over its messages/ and staging)."""
     require_mail_root()
     rows: list[AccountCounts] = []
     for folder in account_dirs():
@@ -738,17 +730,18 @@ def _accounts_view() -> AccountsView:
                 ),
             }
         )
-    return {
-        "accounts": rows,
-        "downloaded": sum(row["downloaded"] for row in rows),
-        "excluded": sum(row["excluded"] for row in rows),
-        "not_downloaded": sum(row["not_downloaded"] for row in rows),
-        "total": sum(row["total"] for row in rows),
-        "last_download": max(
-            (row["last_download"] for row in rows if row["last_download"]),
-            default=None,
-        ),
-    }
+    counted = ("downloaded", "excluded", "not_downloaded", "total")
+    return cast(
+        AccountsView,
+        {
+            "accounts": rows,
+            **{k: sum(cast(dict[str, int], row)[k] for row in rows) for k in counted},
+            "last_download": max(
+                (row["last_download"] for row in rows if row["last_download"]),
+                default=None,
+            ),
+        },
+    )
 
 
 def report_root(
@@ -761,7 +754,7 @@ def report_root(
     """Read-only reports over the manifest: a summary, senders, addresses, a bucket's
     view, every account by year, or, with no view and no ``mail_account``, every
     account's counts."""
-    try:
+    with refusing():
         if by_year:
             return {"view": "by_year", "by_year": _by_year_view()}
         if bucket:
@@ -780,40 +773,11 @@ def report_root(
             return {"view": "accounts", "accounts": _accounts_view()}
         counts = report(mail_account)
         store_dir = resolve_store_dir(resolve_account(mail_account))
-    except ValueError as exc:
-        raise ApiError(str(exc)) from exc
     return {
         "view": "summary",
         "store_dir": str(store_dir),
-        "counts": {
-            "messages": counts["messages"],
-            "downloaded": counts["downloaded"],
-            "downloaded_gone": counts["downloaded_gone"],
-            "downloaded_present": counts["downloaded_present"],
-            "observed_only": counts["observed_only"],
-            "excluded": counts["excluded"],
-            "senders": counts["senders"],
-            "addresses": counts["addresses"],
-        },
+        "counts": cast(ReportCounts, counts),
     }
-
-
-def _pass_row(row: dict[str, object]) -> PassRow:
-    """One pass of a fetch run, as its result type carries it."""
-    copied: PassRow = {
-        "year": cast(int | None, row["year"]),
-        "pass": cast(int, row["pass"]),
-        "matched": cast(int, row["matched"]),
-        "got": cast(int, row["got"]),
-        "candidates": cast(int, row["candidates"]),
-        "pending": cast(int, row["pending"]),
-        "linked": cast(int, row["linked"]),
-        "downloaded": cast(int, row["downloaded"]),
-        "failed": cast(int, row["failed"]),
-    }
-    if "got_total" in row:
-        copied["got_total"] = cast(int, row["got_total"])
-    return copied
 
 
 def fetch_root(  # pylint: disable=too-many-arguments
@@ -844,12 +808,7 @@ def fetch_root(  # pylint: disable=too-many-arguments
         [v for v in (domains, query, last, years) if v is not None]
     ) > 1:
         raise ApiError("pass at most one of --domains, --query, --last or --years")
-    walked = None
-    if years is not None:
-        try:
-            walked = _parse_years(years)
-        except ValueError as exc:
-            raise ApiError(f"bad --years: {exc}") from exc
+    walked = None if years is None else _parse_years(years)
     try:
         options = FetchOptions(
             domains=domains,
@@ -867,24 +826,20 @@ def fetch_root(  # pylint: disable=too-many-arguments
         return {"account_linked": False, "dry_run": dry_run}  # a no-op, silent
     except (ValueError, StoreBusy, AuthError, imaplib.IMAP4.error) as exc:
         raise _refused(exc) from exc
-    passes = cast(list[dict[str, object]], stats.get("passes", []))
-    result: FetchRoot = {
-        "account_linked": True,
-        "dry_run": dry_run,
-        "filtered": not (domains is None and query is None and last is None),
-        "account": mail_account,
-        "matched": cast(int, stats["matched"]),
-        "got": cast(int, stats["got"]),
-        "candidates": cast(int, stats["candidates"]),
-        "pending": cast(int, stats["pending"]),
-        "linked": cast(int, stats["linked"]),
-        "downloaded": cast(int, stats["downloaded"]),
-        "failed": cast(int, stats["failed"]),
-        "passes": [_pass_row(row) for row in passes],
-        "halted": bool(stats.get("halted")),
-        "halt": cast(str | None, stats.get("halt")),
-        "halt_file": cast(str | None, stats.get("halt_file")),
-    }
+    result = cast(
+        FetchRoot,
+        {
+            "account_linked": True,
+            "dry_run": dry_run,
+            "filtered": not (domains is None and query is None and last is None),
+            "account": mail_account,
+            **{k: stats[k] for k in COUNT_KEYS},
+            "passes": stats.get("passes", []),
+            "halted": bool(stats.get("halted")),
+            "halt": stats.get("halt"),
+            "halt_file": stats.get("halt_file"),
+        },
+    )
     if result["halted"]:
         halt = halt_text(str(stats.get("halt")), str(stats.get("halt_file")))
         raise ApiError("\n".join([*fetch_lines(result), halt]))
@@ -892,7 +847,7 @@ def fetch_root(  # pylint: disable=too-many-arguments
 
 
 def _ingest_stats(stats: dict[str, object]) -> dict[str, object]:
-    """An ingest run's stats as JSON: year keys as strings, each top domain as a row."""
+    """An ingest run's stats as JSON: year keys as strings, in each store's stats too."""
     out = dict(stats)
     if "added_by_year" in out:
         years = cast(dict[int, int], out["added_by_year"])
@@ -926,7 +881,7 @@ def ingest_root(  # pylint: disable=too-many-arguments
         mode = "routed"
     else:
         mode = "single"
-    try:
+    with refusing(ValueError, FileNotFoundError, StoreBusy):
         options = IngestOptions(
             src=src.expanduser() if src else None,
             staged=staged,
@@ -937,8 +892,6 @@ def ingest_root(  # pylint: disable=too-many-arguments
             tags=tuple(tags or ()),
         )
         stats = ingest(mail_account, options=options)
-    except (ValueError, FileNotFoundError, StoreBusy) as exc:
-        raise ApiError(str(exc)) from exc
     result = cast(
         IngestRoot,
         {

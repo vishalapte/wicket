@@ -8,15 +8,13 @@ in the alias file, never inferred. An alias may be a literal domain or the
 wildcard ``*.parent.com``, which folds every subdomain of ``parent.com`` into
 the primary (an owner-authorized subdomain strip, scoped to that parent).
 
-Consumer: fetch, in ``wicket.root.api`` (domain classification + search
-expansion). The module depends on
-nothing above ``config``, so it sits in the shared layer below the tools.
+Consumers: fetch, ingest and report, through ``wicket.root.api``, and the alias and
+store nouns, which check a map through its ``parse_*`` rule before they write it. It
+imports only `wicket.env`, so it sits in the shared layer below the tools.
 """
 
 from __future__ import annotations
 
-import json
-import os
 import re
 from pathlib import Path
 
@@ -27,6 +25,8 @@ from wicket.env import (
     DOMAIN_ROUTES_FILENAME,
     flatten_aliases,
     is_destination,
+    map_path,
+    read_json_map,
 )
 
 # A bare domain: dot-joined [A-Za-z0-9-] labels ending in a 2+ alpha TLD.
@@ -37,15 +37,8 @@ WILDCARD_RE = re.compile(r"^\*\.[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 
 
 def domain_routes_path(mail_root: Path) -> Path:
-    """The one home for the counterparty-routing file.
-
-    ``$WICKET_DOMAIN_ROUTES``, when set, names the file directly (any name,
-    any location) and wins over ``mail_root``.
-    """
-    override = os.environ.get(DOMAIN_ROUTES_ENV_VAR)
-    if override:
-        return Path(override).expanduser()
-    return mail_root / DOMAIN_ROUTES_FILENAME
+    """The counterparty-routing file (``<mail-root>/domain-routes.json``; `env.map_path`)."""
+    return map_path(DOMAIN_ROUTES_ENV_VAR, DOMAIN_ROUTES_FILENAME, mail_root)
 
 
 def domain_aliases_path(mail_root: Path) -> Path:
@@ -54,16 +47,12 @@ def domain_aliases_path(mail_root: Path) -> Path:
     At the mail root, not under a per-account state dir: a *bucket* (``travel``)
     has no mailbox and therefore no credentials directory, yet it is exactly where
     folding matters most, since airline mail arrives from a different marketing
-    subdomain every time. ``$WICKET_DOMAIN_ALIASES``, when set, names the
-    file directly and wins over ``mail_root``.
+    subdomain every time. ``$WICKET_DOMAIN_ALIASES`` overrides it (`env.map_path`).
     """
-    override = os.environ.get(DOMAIN_ALIASES_ENV_VAR)
-    if override:
-        return Path(override).expanduser()
-    return mail_root / ALIASES_FILENAME
+    return map_path(DOMAIN_ALIASES_ENV_VAR, ALIASES_FILENAME, mail_root)
 
 
-def load_domain_routes(path: Path | None) -> dict[str, str]:
+def load_domain_routes(path: Path) -> dict[str, str]:
     """Load ``counterparty domain -> destination``, or ``{}`` when absent.
 
     A *different* rule from the account-alias map, and the distinction is load
@@ -80,9 +69,7 @@ def load_domain_routes(path: Path | None) -> dict[str, str]:
     Keys are bare domains or ``*.parent.com`` wildcards; a destination is an
     account address or a bucket name.
     """
-    if path is None or not path.exists():
-        return {}
-    return parse_domain_routes(json.loads(path.read_text(encoding="utf-8")), path)
+    return parse_domain_routes(read_json_map(path), path)
 
 
 def parse_domain_routes(raw: object, path: Path) -> dict[str, str]:
@@ -150,7 +137,7 @@ def expand_domain(domain: str, aliases: dict[str, str]) -> list[str]:
     return sorted(group)
 
 
-def load_domain_aliases(path: Path | None) -> dict[str, str]:
+def load_domain_aliases(path: Path) -> dict[str, str]:
     """Load alias→primary lookup from a JSON file, or return ``{}``.
 
     File shape: ``{"primary.com": ["alias1.com", "alias2.com"], ...}``.
@@ -159,9 +146,7 @@ def load_domain_aliases(path: Path | None) -> dict[str, str]:
     both a primary and an alias, and no two primaries claim the same
     alias. Missing file is silent (returns ``{}``); malformed file raises.
     """
-    if path is None or not path.exists():
-        return {}
-    return parse_domain_aliases(json.loads(path.read_text(encoding="utf-8")), path)
+    return parse_domain_aliases(read_json_map(path), path)
 
 
 def parse_domain_aliases(raw: object, path: Path) -> dict[str, str]:

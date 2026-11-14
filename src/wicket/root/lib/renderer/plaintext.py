@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import cast
 
 from ..results import (
     AccountCounts,
@@ -107,7 +108,7 @@ def print_fetch(result: FetchRoot) -> None:
 
 
 def _filed_lines(filed: dict[str, list[str]]) -> list[str]:
-    """The filed ``.eml`` under each archive directory, both name-sorted."""
+    """The filed ``.eml`` under each ``messages/`` directory, both name-sorted."""
     lines = []
     for directory in sorted(filed):
         lines.append(f"    {directory}/")
@@ -117,17 +118,8 @@ def _filed_lines(filed: dict[str, list[str]]) -> list[str]:
 
 def _single(result: IngestRoot) -> IngestStore:
     """A single-target run's one store, shaped like one entry of a routed run's list."""
-    return {
-        "account": result["account"],
-        "added": result["added"],
-        "added_by_year": result["added_by_year"],
-        "filed": result["filed"],
-        "skipped": result["skipped"],
-        "excluded": result["excluded"],
-        "excluded_lists": result["excluded_lists"],
-        "copies": result["copies"],
-        "subject_mismatches": result["subject_mismatches"],
-    }
+    found = cast(dict[str, object], result)
+    return cast(IngestStore, {k: found[k] for k in IngestStore.__annotations__})
 
 
 def mismatch_lines(mismatches: list[SubjectMismatch]) -> list[str]:
@@ -259,6 +251,19 @@ def _print_bucket(view: BucketView) -> None:
     )
 
 
+def _print_table(table: list[list[str]]) -> None:
+    """Rows of cells in aligned columns: the first left-justified, the rest right."""
+    widths = [max(len(line[i]) for line in table) for i in range(len(table[0]))]
+    for line in table:
+        first, *rest = line
+        print(
+            "  ".join(
+                [first.ljust(widths[0])]
+                + [cell.rjust(widths[i + 1]) for i, cell in enumerate(rest)]
+            ).rstrip()
+        )
+
+
 def _print_by_year(view: ByYearView) -> None:
     """Accounts in rows, years in columns, each cell ``local/not local``, then totals."""
     years = view["years"]
@@ -284,16 +289,8 @@ def _print_by_year(view: ByYearView) -> None:
             f"{view['local']}/{view['not_local']}",
         ]
     )
-    widths = [max(len(line[i]) for line in table) for i in range(len(table[0]))]
     print("local/not local, by account and year")
-    for line in table:
-        first, *rest = line
-        print(
-            "  ".join(
-                [first.ljust(widths[0])]
-                + [cell.rjust(widths[i + 1]) for i, cell in enumerate(rest)]
-            )
-        )
+    _print_table(table)
 
 
 def _print_accounts(view: AccountsView) -> None:
@@ -309,14 +306,7 @@ def _print_accounts(view: AccountsView) -> None:
             "last download",
         ]
     ]
-    total: AccountCounts = {
-        "account": "total",
-        "downloaded": view["downloaded"],
-        "excluded": view["excluded"],
-        "not_downloaded": view["not_downloaded"],
-        "total": view["total"],
-        "last_download": view["last_download"],
-    }
+    total = cast(AccountCounts, {**view, "account": "total"})
     for row in [*view["accounts"], total]:
         table.append(
             [
@@ -328,15 +318,7 @@ def _print_accounts(view: AccountsView) -> None:
                 row["last_download"] or "",
             ]
         )
-    widths = [max(len(line[i]) for line in table) for i in range(len(table[0]))]
-    for line in table:
-        first, *rest = line
-        print(
-            "  ".join(
-                [first.ljust(widths[0])]
-                + [cell.rjust(widths[i + 1]) for i, cell in enumerate(rest)]
-            ).rstrip()
-        )
+    _print_table(table)
 
 
 def print_report(result: ReportRoot) -> None:

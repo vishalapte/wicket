@@ -62,6 +62,35 @@ def subcommands() -> list[tuple[str, str]]:
     ]
 
 
+def _entries(verb: argparse.ArgumentParser) -> None:
+    """``--store`` and the entries it gets or loses: ``--from`` domains, ``--to`` addresses."""
+    verb.add_argument(
+        "--store",
+        required=True,
+        help=(
+            "The store the entries belong to: an account address or a "
+            "bucket name, such as travel or shopping."
+        ),
+    )
+    verb.add_argument(
+        "--from",
+        dest="from_",
+        action="append",
+        help=(
+            "A sender domain whose mail goes to --store "
+            "(domain-routes.json; repeatable)."
+        ),
+    )
+    verb.add_argument(
+        "--to",
+        action="append",
+        help=(
+            "One of your addresses whose mail goes to --store "
+            "(account-aliases.json; repeatable)."
+        ),
+    )
+
+
 def parser() -> argparse.ArgumentParser:
     """Build the parser without parsing: the audit and --help both read this."""
     p = NounParser(
@@ -76,59 +105,11 @@ def parser() -> argparse.ArgumentParser:
     sub = p.verbs(subcommands(), dest="phase")
 
     p_create = sub.add_parser("create")
-    p_create.add_argument(
-        "--store",
-        required=True,
-        help=(
-            "The store the entries belong to: an account address or a "
-            "bucket name, such as travel or shopping."
-        ),
-    )
-    p_create.add_argument(
-        "--from",
-        dest="from_",
-        action="append",
-        help=(
-            "A sender domain whose mail goes to --store "
-            "(domain-routes.json; repeatable)."
-        ),
-    )
-    p_create.add_argument(
-        "--to",
-        action="append",
-        help=(
-            "One of your addresses whose mail goes to --store "
-            "(account-aliases.json; repeatable)."
-        ),
-    )
+    _entries(p_create)
     p_create.set_defaults(func=_cmd_create)
 
     p_delete = sub.add_parser("delete")
-    p_delete.add_argument(
-        "--store",
-        required=True,
-        help=(
-            "The store the entries belong to: an account address or a "
-            "bucket name, such as travel or shopping."
-        ),
-    )
-    p_delete.add_argument(
-        "--from",
-        dest="from_",
-        action="append",
-        help=(
-            "A sender domain whose mail goes to --store "
-            "(domain-routes.json; repeatable)."
-        ),
-    )
-    p_delete.add_argument(
-        "--to",
-        action="append",
-        help=(
-            "One of your addresses whose mail goes to --store "
-            "(account-aliases.json; repeatable)."
-        ),
-    )
+    _entries(p_delete)
     p_delete.set_defaults(func=_cmd_delete)
 
     p_list = sub.add_parser("list")

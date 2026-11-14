@@ -71,6 +71,27 @@ def subcommands() -> list[tuple[str, str]]:
     ]
 
 
+def _target(verb: argparse.ArgumentParser) -> None:
+    """``--list`` and the ``--mail-account`` it is excluded for (none: every account)."""
+    verb.add_argument(
+        "--list",
+        dest="list_",
+        required=True,
+        help=(
+            "A mailing list's List-Id (made-of-meat.googlegroups.com): "
+            "its mail is never fetched or filed."
+        ),
+    )
+    verb.add_argument(
+        "--mail-account",
+        help=(
+            "The account (a folder holding imap.json in "
+            "~/.config/wicket/accounts) the list is excluded for; without it, "
+            "every account (*)."
+        ),
+    )
+
+
 def parser() -> argparse.ArgumentParser:
     """Build the parser without parsing: the audit and --help both read this."""
     p = NounParser(
@@ -84,43 +105,11 @@ def parser() -> argparse.ArgumentParser:
     sub = p.verbs(subcommands(), dest="phase")
 
     p_create = sub.add_parser("create")
-    p_create.add_argument(
-        "--list",
-        dest="list_",
-        required=True,
-        help=(
-            "A mailing list's List-Id (made-of-meat.googlegroups.com): "
-            "its mail is never fetched or filed."
-        ),
-    )
-    p_create.add_argument(
-        "--mail-account",
-        help=(
-            "The account (a folder holding imap.json in "
-            "~/.config/wicket/accounts) the list is excluded for; without it, "
-            "every account (*)."
-        ),
-    )
+    _target(p_create)
     p_create.set_defaults(func=_cmd_create)
 
     p_delete = sub.add_parser("delete")
-    p_delete.add_argument(
-        "--list",
-        dest="list_",
-        required=True,
-        help=(
-            "A mailing list's List-Id (made-of-meat.googlegroups.com): "
-            "its mail is never fetched or filed."
-        ),
-    )
-    p_delete.add_argument(
-        "--mail-account",
-        help=(
-            "The account (a folder holding imap.json in "
-            "~/.config/wicket/accounts) the list is excluded for; without it, "
-            "every account (*)."
-        ),
-    )
+    _target(p_delete)
     p_delete.set_defaults(func=_cmd_delete)
 
     p_list = sub.add_parser("list")

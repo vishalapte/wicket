@@ -17,14 +17,14 @@ from collections.abc import Callable
 from pathlib import Path
 
 import wicket.env as env  # pylint: disable=consider-using-from-import
-from wicket.errors import ApiError
+from wicket.errors import refusing
 from wicket.exclusions import (
     EVERY_ACCOUNT,
     excluded_lists_path,
     normalize_list_id,
     parse_excluded_lists,
 )
-from wicket.maps import Map, add_items, read_map, remove_items, write_maps
+from wicket.maps import Map, add_items, edit, read_map, remove_items
 
 from .lib import rows
 from .lib.results import CreateExclude, DeleteExclude, ListExclude
@@ -35,17 +35,7 @@ from .lib.results import CreateExclude, DeleteExclude, ListExclude
 
 def _path() -> Path:
     """excluded-lists.json under a mail root that exists (a locked vault refuses)."""
-    try:
-        return excluded_lists_path(env.require_mail_root())
-    except ValueError as exc:
-        raise ApiError(str(exc)) from exc
-
-
-def _read(path: Path) -> Map:
-    try:
-        return read_map(path)
-    except ValueError as exc:
-        raise ApiError(str(exc)) from exc
+    return excluded_lists_path(env.require_mail_root())
 
 
 def _key(mail_account: str | None) -> str:
@@ -55,37 +45,32 @@ def _key(mail_account: str | None) -> str:
     )
 
 
-def _commit(path: Path, before: Map, edit: Callable[[Map], Map]) -> Map:
-    """Apply ``edit`` in memory, check the result as the reader would, then write it."""
-    try:
-        after = edit(before)
-        accounts = [p.name for p in env.account_dirs()]
-        parse_excluded_lists(after, path, accounts)
-    except ValueError as exc:
-        raise ApiError(str(exc)) from exc
-    write_maps({path: after})
-    return after
+def _check(mapping: Map, path: Path) -> None:
+    """The reader's rule, against the accounts that exist now."""
+    parse_excluded_lists(mapping, path, [p.name for p in env.account_dirs()])
 
 
 def create_exclude(list_: str, mail_account: str | None = None) -> CreateExclude:
     """Exclude a mailing list, for every account, or for --mail-account alone."""
-    path, key = _path(), _key(mail_account)
-    item = normalize_list_id(list_)
-    after = _commit(path, _read(path), lambda m: add_items(m, key, [item]))
+    key, item = _key(mail_account), normalize_list_id(list_)
+    with refusing():
+        after = edit(_path(), lambda m: add_items(m, key, [item]), _check)
     return {"account": key, "lists": after[key]}
 
 
 def delete_exclude(list_: str, mail_account: str | None = None) -> DeleteExclude:
     """Stop excluding a mailing list, for every account, or for --mail-account alone."""
-    path, key = _path(), _key(mail_account)
-    item = normalize_list_id(list_)
-    after = _commit(path, _read(path), lambda m: remove_items(m, key, [item]))
+    key, item = _key(mail_account), normalize_list_id(list_)
+    with refusing():
+        after = edit(_path(), lambda m: remove_items(m, key, [item]), _check)
     return {"account": key, "lists": after.get(key, [])}
 
 
 def list_exclude() -> ListExclude:
     """List every excluded mailing list, by account (* is every account)."""
-    return {"excluded": rows(_read(_path()))}
+    with refusing():
+        mapping = read_map(_path())
+    return {"excluded": rows(mapping)}
 
 
 # CLI spelling -> the function it binds. A verb spelled like a keyword or a builtin

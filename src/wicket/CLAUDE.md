@@ -45,7 +45,9 @@ duplicate it here. Bound by the racecar standards (resolver:
     Their api reads the maps (`maps.read_map`), applies the edit in memory
     (`maps.add_items`/`remove_items`/…), checks the result with the reader's own
     rule (`env.parse_account_aliases`, `domains.parse_domain_routes`,
-    `domains.parse_domain_aliases`), and only then writes (`maps.write_maps`).
+    `domains.parse_domain_aliases`), and only then writes (`maps.write_maps`);
+    `maps.edit` does the four for one file, and `errors.refusing` turns the
+    reader's `ValueError` into the `ApiError` the face prints.
     `store` writes domain-routes.json for `--from` and account-aliases.json for
     `--to`, both or neither.
   - `filing.py` (package root, one layer above the shared modules): which store a
@@ -68,8 +70,7 @@ duplicate it here. Bound by the racecar standards (resolver:
     `env` also owns the **destination rules**: `MAIL_ROOT` (+ `$WICKET_DATA_DIR`),
     `require_mail_root` (fail closed — an absent root is a locked vault, not an
     empty store), `known_accounts` (stores that exist; skips dotted dirs, so a
-    `.git` in the tree is not an account), `account_of` / `Identities` (who is
-    *me*), and `flatten_aliases` (the one home for the alias-file rule, which
+    `.git` in the tree is not an account), `account_of` (who is *me*), and `flatten_aliases` (the one home for the alias-file rule, which
     `domains` reuses for its two maps). `env` also owns the **halt dir** and the
     **log dir**, never one dir (`resolve_halt_path`: `$XDG_STATE_HOME/wicket/
     halt/<account>`; `resolve_log_path`: `.../log/<account>.log`, written only by

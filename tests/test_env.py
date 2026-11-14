@@ -15,12 +15,11 @@ from wicket import domains, env, exclusions
 from wicket.env import (
     ACCOUNT_ALIASES_FILENAME,
     account_aliases_path,
-    identities,
     load_account_aliases,
     resolve_account,
 )
 
-# --- account aliases, identities, and the closed-account guard -------------
+# --- account aliases and the closed-account guard -------------
 
 
 def _aliases(root: Path, mapping: dict[str, list[str]]) -> Path:
@@ -52,25 +51,6 @@ def test_load_account_aliases_rejects_non_address(tmp_path: Path) -> None:
     _aliases(tmp_path, {"a@x.com": ["not-an-address"]})
     with pytest.raises(ValueError, match="invalid alias address"):
         load_account_aliases(account_aliases_path(tmp_path))
-
-
-def test_identities_covers_aliases_accounts_and_wildcard_domains(
-    tmp_path: Path,
-) -> None:
-    mapping = load_account_aliases(
-        _aliases(
-            tmp_path,
-            {"travel": ["hyatt@xcv.org"], "shopping": ["*@shop.you.com"]},
-        )
-        / ACCOUNT_ALIASES_FILENAME
-    )
-    mine = identities(mapping, accounts={"you@gmail.com", "travel", "shopping"})
-
-    assert "hyatt@xcv.org" in mine  # a listed burner
-    assert "you@gmail.com" in mine  # a store you own, never listed in the file
-    assert "anything@shop.you.com" in mine  # any address under a catch-all
-    assert "them@acme.com" not in mine  # a counterparty
-    assert "travel" not in mine.addresses  # a bucket is a destination, not an address
 
 
 def test_resolve_account_maps_an_alias_to_its_primary(

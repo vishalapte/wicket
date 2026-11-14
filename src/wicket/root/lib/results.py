@@ -87,8 +87,8 @@ class ByYearView(TypedDict):
 
 class AccountCounts(TypedDict):
     """One account's messages: downloaded, excluded, not downloaded, and their total,
-    and when the newest ``.eml`` in its archive or staging was written (``YYYY-MM-DD
-    HH:MM``, local time; None when it holds none)."""
+    and when the newest ``.eml`` in its ``messages/`` or staging was written
+    (``YYYY-MM-DD HH:MM``, local time; None when it holds none)."""
 
     account: str
     downloaded: int
@@ -150,10 +150,11 @@ PassRow = TypedDict(
 class FetchRoot(TypedDict):
     """What ``wicket fetch`` returns: the run's counts, one row per pass, and its HALT.
 
-    ``filtered`` is true for a ``--domains`` or ``--query`` run (one pass, ``year``
-    null), false for a run over every year. ``account`` is the account as named, or
-    null. A returned result never has ``halted`` true: a run that halts is refused. As
-    for catalog, ``account_linked`` false carries no other key but ``dry_run``.
+    ``filtered`` is true for a ``--domains``, ``--query`` or ``--last`` run (one pass,
+    ``year`` null), false for a run over every year or the ``--years`` named.
+    ``account`` is the account as named, or null. A returned result never has ``halted``
+    true: a run that halts is refused. As for catalog, ``account_linked`` false carries
+    no other key but ``dry_run``.
     """
 
     account_linked: bool

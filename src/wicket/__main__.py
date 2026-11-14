@@ -14,11 +14,12 @@ verb takes ``--json``: the api result as JSON, the shape ``output()`` publishes,
 the text view.
 
 The owner-authored maps are nouns, each its own node: `python -m wicket.alias`
-(domain-aliases.json) and `python -m wicket.store` (domain-routes.json and
-account-aliases.json). So is the HALT, `python -m wicket.halt`, the one door that sets
-and clears it (each logged), and the account, `python -m wicket.account`, a folder in
-~/.config/wicket/accounts holding an imap.json link. This node lists the four in
-`commands()` beside its verbs; a bare `python -m wicket` prints them, runnable as printed.
+(domain-aliases.json), `python -m wicket.store` (domain-routes.json and
+account-aliases.json) and `python -m wicket.exclude` (excluded-lists.json). So is the
+HALT, `python -m wicket.halt`, the one door that sets and clears it (each logged), and
+the account, `python -m wicket.account`, a folder in ~/.config/wicket/accounts holding an
+imap.json link. This node lists the five in `commands()` beside its verbs; a bare
+`python -m wicket` prints them, runnable as printed.
 ``main()`` is ``lib.cli.run``: an ``ApiError`` the api raises is printed on stderr and its
 ``exit_code`` returned.
 """
@@ -87,6 +88,11 @@ def _print_commands() -> None:
     print_commands(__package__ or "wicket", commands(), subcommands())
 
 
+def _interactive(args: argparse.Namespace) -> bool:
+    """Whether the face may prompt for credentials: a tty, and no --non-interactive."""
+    return (not args.non_interactive) and sys.stdin.isatty()
+
+
 def _cmd_catalog(args: argparse.Namespace) -> int:
     result = api.catalog_root(
         mail_account=args.mail_account,
@@ -96,7 +102,7 @@ def _cmd_catalog(args: argparse.Namespace) -> int:
         store_dir=args.store_dir,
         state_dir=args.state_dir,
         threads=args.threads,
-        interactive=(not args.non_interactive) and sys.stdin.isatty(),
+        interactive=_interactive(args),
         dry_run=args.dry_run,
     )
     return json_renderer.show(args, result, plaintext.print_catalog)
@@ -113,7 +119,7 @@ def _cmd_fetch(args: argparse.Namespace) -> int:
         alias_file=args.alias_file,
         state_dir=args.state_dir,
         threads=args.threads,
-        interactive=(not args.non_interactive) and sys.stdin.isatty(),
+        interactive=_interactive(args),
         dry_run=args.dry_run,
     )
     return json_renderer.show(args, result, plaintext.print_fetch)
@@ -151,6 +157,16 @@ def subcommands() -> list[tuple[str, str]]:
         ("report", "Read-only reports over the manifest (senders, addresses)"),
         ("ingest", "Additively file .eml into the manifest + messages/"),
     ]
+
+
+def _non_interactive(verb: argparse.ArgumentParser) -> None:
+    """``--non-interactive``, as catalog and fetch take it."""
+    verb.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="Never prompt for credentials; fail loudly if imap.json is "
+        "missing or rejected (for cron/launchd).",
+    )
 
 
 def parser() -> argparse.ArgumentParser:  # pylint: disable=too-many-statements
@@ -230,12 +246,7 @@ def parser() -> argparse.ArgumentParser:  # pylint: disable=too-many-statements
         "the past does not change; use --full to rebuild or after deleting old "
         "mail.",
     )
-    p_catalog.add_argument(
-        "--non-interactive",
-        action="store_true",
-        help="Never prompt for credentials; fail loudly if imap.json is "
-        "missing or rejected (for cron/launchd).",
-    )
+    _non_interactive(p_catalog)
     p_catalog.set_defaults(func=_cmd_catalog)
 
     p_fetch = sub.add_parser(
@@ -292,7 +303,7 @@ def parser() -> argparse.ArgumentParser:  # pylint: disable=too-many-statements
         default=None,
         help="Account that scopes the staging dir and the manifest store "
         "(<mail-root>/<account>/). `+tag` aliases are normalized "
-        "automatically. Default: $WICKET_ACCOUNT, else the only account folder.",
+        f"automatically. Default: ${ACCOUNT_ENV_VAR}, else the only account folder.",
     )
     p_fetch.add_argument(
         "--alias-file",
@@ -301,7 +312,7 @@ def parser() -> argparse.ArgumentParser:  # pylint: disable=too-many-statements
         help="JSON file of domain aliases, shape "
         '{"primary.com": ["alias1.com", "alias2.com"]}. '
         "Search expands to include aliases; a domain filter folds to the "
-        "primary. Default: <state-dir>/domain-aliases.json (silently "
+        "primary. Default: <mail-root>/domain-aliases.json (silently "
         "skipped if absent).",
     )
     p_fetch.add_argument(
@@ -325,12 +336,7 @@ def parser() -> argparse.ArgumentParser:  # pylint: disable=too-many-statements
         action="store_true",
         help="Print the plan; download nothing; write nothing.",
     )
-    p_fetch.add_argument(
-        "--non-interactive",
-        action="store_true",
-        help="Never prompt for credentials; fail loudly if imap.json is "
-        "missing or rejected (for cron/launchd).",
-    )
+    _non_interactive(p_fetch)
     p_fetch.set_defaults(func=_cmd_fetch)
 
     p_report = sub.add_parser(
@@ -404,7 +410,7 @@ def parser() -> argparse.ArgumentParser:  # pylint: disable=too-many-statements
         "--staged",
         action="store_true",
         help="File what `wicket fetch` got into <mail-root>/<account>/staging/ "
-        "for one account (--mail-account, $WICKET_ACCOUNT, or the only account "
+        f"for one account (--mail-account, ${ACCOUNT_ENV_VAR}, or the only account "
         "folder): "
         "no routing, no account check, nothing to trash. A body the store already "
         "archives under another name goes to <mail-root>/.duplicates/<account>/.",
@@ -478,86 +484,6 @@ def main(argv: list[str] | None = None) -> int:
 def output() -> list[tuple[dict[str, object], dict[str, object]]]:
     """(params, schema) per verb, generated from each api function's return type."""
     return [({"phase": verb}, returns(fn)) for verb, fn in sorted(api.VERBS.items())]
-
-
-def example_output() -> list[tuple[str, str, str, int]]:
-    """Illustrative sample transcripts for the CLI-docs generator (arch-python/CLI.md).
-
-    Never executed, never real: every account, domain, path and count below is
-    fabricated. One scenario per verb (catalog/fetch/report/ingest), one for the
-    store and halt nouns, plus the shape a bad `--mail-account` actually reports, so a reader sees a
-    representative range without pulling any figure from an actual mailbox.
-    """
-    return [
-        (
-            "catalog: incremental sweep",
-            "wicket catalog --mail-account you@example.com",
-            "done: observed 128 message(s); wrote 2 year shard(s) under "
-            "$WICKET_DATA_DIR/you@example.com/manifest\n",
-            0,
-        ),
-        (
-            "fetch: dry run",
-            "wicket fetch --domains acme.com,globex.com --dry-run "
-            "--mail-account you@example.com",
-            "done (dry-run): 14 to download, 3 already got. Nothing written.\n",
-            0,
-        ),
-        (
-            "ingest: file what fetch staged",
-            "wicket ingest --staged --mail-account you@example.com",
-            "staged: 14 file(s); filed 14 to you@example.com (2026:14)\n"
-            "  by rule: rule 11, self 1, sent 2\n"
-            "    acme.example/2026-07/\n"
-            "      18f2a3b4c5d6e7f8.eml\n",
-            0,
-        ),
-        (
-            "report: one-screen summary",
-            "wicket report --mail-account you@example.com",
-            "manifest: $WICKET_DATA_DIR/you@example.com/manifest\n"
-            "  messages               3241\n"
-            "  downloaded             2987  (held locally)\n"
-            "    gone from mailbox      41  (only copy)\n"
-            "    still in mailbox     2946\n"
-            "  observed only            254  (not held)\n"
-            "  distinct senders         318\n"
-            "  distinct addresses      512\n",
-            0,
-        ),
-        (
-            "ingest: routed local export",
-            "wicket ingest --src ~/Downloads/export",
-            "read: 40 file(s), 37 unique, 3 in-folder dup(s)\n"
-            "  added 22 to you@example.com (2026:22); 9 already archived\n"
-            "  added 6 to travel (2026:6)\n"
-            "  trashed: 37 source file(s) -> ~/.Trash\n",
-            0,
-        ),
-        (
-            "store: list each store's senders and addresses",
-            "python -m wicket.store list",
-            "travel\n  from: example-air.test\n  to:   reservations@example-travel.test\n",
-            0,
-        ),
-        (
-            "halt: list halted accounts",
-            "python -m wicket.halt list",
-            "account          halted                age\n"
-            "you@example.com  2026-10-27 08:00 IST  3h12m\n",
-            0,
-        ),
-        (
-            "error: unknown account",
-            "wicket report --mail-account nobody@example.com",
-            "unknown account 'nobody@example.com': it has no store under "
-            "$WICKET_DATA_DIR and is not listed in account-aliases.json. If it "
-            "is an address you receive at, add it as an alias of the account "
-            "that owns it; if it is genuinely a new mailbox, create its store "
-            "directory first.\n",
-            2,
-        ),
-    ]
 
 
 if __name__ == "__main__":

@@ -20,20 +20,12 @@ class StoreRow(TypedDict):
     addresses: list[str]
 
 
-class CreateStore(TypedDict):
+class CreateStore(StoreRow):
     """What ``store create`` returns: the store's entries after the addition."""
 
-    store: str
-    domains: list[str]
-    addresses: list[str]
 
-
-class DeleteStore(TypedDict):
+class DeleteStore(StoreRow):
     """What ``store delete`` returns: the store's entries left after the removal."""
-
-    store: str
-    domains: list[str]
-    addresses: list[str]
 
 
 class ListStore(TypedDict):

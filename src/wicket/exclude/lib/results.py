@@ -19,18 +19,12 @@ class ExcludeRow(TypedDict):
     lists: list[str]
 
 
-class CreateExclude(TypedDict):
+class CreateExclude(ExcludeRow):
     """What ``exclude create`` returns: the entry after the list was added."""
 
-    account: str
-    lists: list[str]
 
-
-class DeleteExclude(TypedDict):
+class DeleteExclude(ExcludeRow):
     """What ``exclude delete`` returns: what is left in the entry (empty when it is gone)."""
-
-    account: str
-    lists: list[str]
 
 
 class ListExclude(TypedDict):

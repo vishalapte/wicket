@@ -19,18 +19,12 @@ class AliasRow(TypedDict):
     domains: list[str]
 
 
-class CreateAlias(TypedDict):
+class CreateAlias(AliasRow):
     """What ``alias create`` returns: the entry it added."""
 
-    primary: str
-    domains: list[str]
 
-
-class DeleteAlias(TypedDict):
+class DeleteAlias(AliasRow):
     """What ``alias delete`` returns: what is left under the primary (empty when it is gone)."""
-
-    primary: str
-    domains: list[str]
 
 
 class ListAlias(TypedDict):
@@ -39,8 +33,5 @@ class ListAlias(TypedDict):
     aliases: list[AliasRow]
 
 
-class UpdateAlias(TypedDict):
+class UpdateAlias(AliasRow):
     """What ``alias update`` returns: the entry after the change."""
-
-    primary: str
-    domains: list[str]
