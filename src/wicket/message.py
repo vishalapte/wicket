@@ -15,8 +15,12 @@ One home (ADR 0002) for the things the unified manifest needs:
     belong together, from ``References``/``In-Reply-To`` and Outlook's
     ``Thread-Index``;
   * the **mailbox key** (``mailbox_key``), which gives every message of a mailbox
-    its own row when two share a Message-ID, and ``local_msgid``, the name ingest
-    gives a file, by which an ingest row is recognized.
+    its own row when two share a Message-ID, and ``local_msgid``, the ``msgid`` ingest
+    gives a row of a local export, by which an ingest row is recognized;
+  * the **file name and month** (``message_stem``, ``message_date``): where a
+    message's one file lives under ``messages/`` (ADR-MAIL, 2026-11-14), read from
+    the message itself so every copy of it in one store lands on one path;
+  * the **attachment names** (``attachment_names``) a row records.
 
 Pure stdlib beside `wicket.provider`: this sits in the shared layer below the verbs
 and is imported by ``root.lib.catalog``, ``root.lib.fetch`` and ``root.lib.ingest``.
@@ -26,35 +30,19 @@ from __future__ import annotations
 
 import base64
 import binascii
+import email.header
 import email.message
 import email.parser
 import email.policy
 import email.utils
 import hashlib
+import re
+import urllib.parse
 from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from typing import NamedTuple
 
 from wicket.provider import Provider
-
-# Field ownership (ADR 0002 §2). Module-level tuples, not enums.
-IDENTITY_FIELDS = ("id", "msgid", "thread_id", "account")
-# ``list_id`` is written only when the message has a List-Id header (never null).
-OBSERVATION_FIELDS = (
-    "date",
-    "from",
-    "to",
-    "subject",
-    "size",
-    "labels",
-    "list_id",
-    "deleted",
-)
-SETTLEMENT_FIELDS = ("downloaded", "path", "filed")
-DERIVED_FIELDS = ("domain",)
-# Set only by the owner's cleanup, never by a verb: ``excluded`` holds why a
-# message on the mailbox is not kept locally (``"duplicate of <row id>"``).
-OWNER_FIELDS = ("excluded",)
 
 MailRow = dict[str, object]
 
@@ -121,17 +109,152 @@ def sent_date(header: object) -> datetime | None:
         return None
     try:
         parsed = email.utils.parsedate_to_datetime(str(header))
-    except (TypeError, ValueError):
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except (
+        TypeError,
+        ValueError,
+        OverflowError,
+    ):  # OverflowError: a year past 9999 in UTC
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+
+
+# --- the file: its stem and its month (ADR-MAIL, 2026-11-14) ---------------
+
+
+def _header_block(raw: bytes) -> email.message.Message:
+    """A message's headers, raw values (``compat32``), the body not parsed."""
+    return email.parser.BytesHeaderParser(policy=email.policy.compat32).parsebytes(raw)
+
+
+def _utc_stamp(when: datetime | None) -> str:
+    return when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if when else ""
+
+
+def message_stem(raw: bytes) -> str:
+    """The 16-hex name of a message's one file: a hash of the message, not the provider.
+
+    ``sha1(message-id + "\n" + date + "\n" + from)[:16]``: the normalized
+    ``Message-ID`` (`normalize_message_id`), the ``Date:`` header in UTC
+    (``YYYY-MM-DDTHH:MM:SSZ``) and the ``From:`` addr-spec in lower case. A header
+    that is missing, or a ``Date:`` that cannot be read, contributes ``""``. Two
+    copies of one message get one stem whichever provider or export they came from.
+    ``raw`` may be a whole message or its header block.
+    """
+    headers = _header_block(raw)
+    message_id = normalize_message_id(message_id_of(raw)) or ""
+    date = _utc_stamp(sent_date(headers.get("Date")))
+    _, sender = email.utils.parseaddr(str(headers.get("From", "") or ""))
+    text = f"{message_id}\n{date}\n{sender.strip().lower()}"
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+
+
+def received_date(raw: bytes) -> datetime | None:
+    """The topmost ``Received:`` header's timestamp (RFC 5322 §3.6.7), UTC; None if none."""
+    for value in _header_block(raw).get_all("Received", [])[:1]:
+        _, _, stamp = str(value).rpartition(";")
+        return sent_date(stamp.strip())
+    return None
+
+
+def message_date(raw: bytes, fallback: datetime) -> datetime:
+    """``MESSAGE_DATE``: the month a message's file is filed under, as UTC.
+
+    RFC 5322 is canon: the ``Date:`` header, the origination date. Only for a
+    message whose ``Date:`` is missing or unreadable, the topmost ``Received:``,
+    else ``fallback`` (the provider's INTERNALDATE, or a local export's file time).
+    """
+    when = sent_date(_header_block(raw).get("Date")) or received_date(raw) or fallback
+    return when.astimezone(timezone.utc)
+
+
+def address_list(values: Iterable[object]) -> list[str]:
+    """The sorted, de-duplicated, lower-case addr-specs in header ``values``."""
+    return sorted(
+        {
+            addr.strip().lower()
+            for _, addr in email.utils.getaddresses([str(v) for v in values if v])
+            if addr.strip()
+        }
+    )
+
+
+def rfc2231_param(params: dict[str, str], base: str) -> str | None:
+    """MIME parameter ``base`` from ``params`` (lower-case keys), RFC 2231 decoded.
+
+    ``base``, else ``base*`` (``charset'lang'%XX``), else the ``base*0``, ``base*1``
+    ... continuations joined. The decoder catalog applies to ``BODYSTRUCTURE``'s
+    parameters; ingest's MIME walk gets the same from
+    `email.message.Message.get_filename`, and a parity test holds them equal.
+    """
+    if base in params:
+        return params[base]
+    if f"{base}*" in params:
+        return _decode_2231(params[f"{base}*"])
+    parts = sorted(
+        (int(m.group(1)), key.endswith("*"), value)
+        for key, value in params.items()
+        if (m := re.fullmatch(rf"{re.escape(base)}\*(\d+)\*?", key))
+    )
+    if not parts:
+        return None
+    joined = "".join(value for _, _, value in parts)
+    return _decode_2231(joined) if parts[0][1] else joined
+
+
+def _decode_2231(value: str) -> str:
+    """An RFC 2231 extended value (``charset'lang'%XX...``) as text."""
+    charset, _, text = value.split("'", 2) if value.count("'") >= 2 else ("", "", value)
+    try:
+        return urllib.parse.unquote_to_bytes(text).decode(charset or "utf-8", "replace")
+    except LookupError:  # an unknown charset: the bytes as UTF-8
+        return urllib.parse.unquote_to_bytes(text).decode("utf-8", "replace")
+
+
+def attachment_name(value: object) -> str | None:
+    """One attachment file name, normalized: RFC 2047 encoded-words decoded, trimmed.
+
+    The one rule for what a name is, applied to ingest's MIME walk
+    (`attachment_names`) and to catalog's ``BODYSTRUCTURE``, so the row reads the same
+    whichever verb wrote it. None for an empty name.
+    """
+    text = str(value or "")
+    if "=?" in text:
+        try:
+            text = str(email.header.make_header(email.header.decode_header(text)))
+        except (ValueError, LookupError, UnicodeDecodeError):
+            pass  # an encoded-word that does not decode is kept as written
+    text = " ".join(text.split())
+    return text or None
+
+
+def attachment_names(msg: email.message.Message) -> list[str]:
+    """The file name of every leaf part that carries one, in the message's order.
+
+    A part's name is its ``Content-Disposition`` ``filename``, else its
+    ``Content-Type`` ``name`` (`email.message.Message.get_filename`, which decodes
+    RFC 2231), then `attachment_name`. A ``message/rfc822`` part is walked into, not
+    named. Catalog applies the same rule to ``BODYSTRUCTURE``.
+    """
+    names: list[str] = []
+    for part in msg.walk():
+        if part.is_multipart():
+            continue
+        try:
+            name = attachment_name(part.get_filename())
+        except (TypeError, ValueError, LookupError):
+            name = None
+        if name is not None:
+            names.append(name)
+    return names
 
 
 def local_msgid(key: str) -> str:
-    """Compact 16-hex archive filename for a portable key (Gmail X-GM-MSGID parity).
+    """Compact 16-hex ``msgid`` for a portable key (Gmail X-GM-MSGID parity).
 
-    The name ingest gives a file it files. Deterministic (same key -> same name,
+    The ``msgid`` ingest gives a row of a local export (its file is named by
+    `message_stem`). Deterministic (same key -> same name,
     so re-runs are idempotent) and collision-safe at this scale; the full key
     stays the manifest ``id``. A row whose ``msgid`` is this name of its own
     ``id`` is an ingest row: no Gmail id has been recorded on it.

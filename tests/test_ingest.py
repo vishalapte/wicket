@@ -12,8 +12,15 @@ from pathlib import Path
 
 import pytest
 
-from wicket.env import Identities, account_of
-from wicket.manifest import load_store, read_shard, shard_path, write_shard
+from wicket.env import account_of
+from wicket.manifest import (
+    load_store,
+    message_files,
+    read_shard,
+    shard_path,
+    write_shard,
+)
+from wicket.message import message_stem
 from wicket.root.lib.ingest import (
     Target,
     check_account_matches,
@@ -40,12 +47,6 @@ def _account_for(accounts: set[str] | None = None) -> AccountFor:
     return lambda address: account_of(address, ALIASES, live)
 
 
-def _identities() -> Identities:
-    return Identities(
-        frozenset({ME, WORK, "burner@duck.com"}), frozenset({"shop.you.com"})
-    )
-
-
 def _eml(folder: Path, name: str, *, frm: str, to: str, cc: str = "") -> Path:
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{name}.eml"
@@ -62,25 +63,13 @@ def _eml(folder: Path, name: str, *, frm: str, to: str, cc: str = "") -> Path:
     return path
 
 
-FOLDS = {"*.delta.com": "delta.com", "delta.com": "delta.com"}
-
-
 def _target(
-    root: Path,
-    account: str = ME,
-    identities: Identities | None = None,
-    folds: dict[str, str] | None = None,
-    *,
-    filing_domain: str | None = None,
-    labels: list[str] | None = None,
+    root: Path, account: str = ME, *, labels: list[str] | None = None
 ) -> Target:
     return Target(
         store_dir=root / account / "manifest",
-        archive_dir=root / account / "archive",
+        messages_dir=root / account / "messages",
         account=account,
-        identities=_identities() if identities is None else identities,
-        domain_aliases=FOLDS if folds is None else folds,
-        filing_domain=filing_domain,
         labels=labels,
     )
 
@@ -143,48 +132,13 @@ def test_ingest_folder_refuses_a_mismatch_and_force_overrides(tmp_path: Path) ->
 
     with pytest.raises(ValueError, match="account mismatch"):
         ingest_folder(src=src, target=target, account_for=_account_for())
-    assert not target.archive_dir.exists()  # refused before anything was written
+    assert not target.messages_dir.exists()  # refused before anything was written
 
     stats = ingest_folder(
         src=src, target=target, account_for=_account_for(), force=True
     )
     assert stats["added"] == 1
     assert stats["warning"]  # forced, but the complaint is still surfaced
-
-
-# --- identity-aware filing ------------------------------------------------
-
-
-def test_outbound_to_a_burner_files_under_the_counterparty(tmp_path: Path) -> None:
-    src = tmp_path / "src"
-    # You wrote to a client and to a burner of your own. Without the identity
-    # set, that is two external domains, so the thread files nowhere (_unfiled);
-    # with it, the burner is you and the client is the counterparty.
-    _eml(src, "a", frm=ME, to="client@acme.com, burner@duck.com")
-
-    stats = ingest_folder(src=src, target=_target(tmp_path), account_for=_account_for())
-    assert stats["added"] == 1
-    assert (tmp_path / ME / "archive" / "acme.com").is_dir()
-    assert not (tmp_path / ME / "archive" / "duck.com").exists()
-    assert stats["unfiled"] == 0
-
-
-def test_without_the_identity_set_the_same_thread_files_as_sent(tmp_path: Path) -> None:
-    # The pre-alias behavior, pinned: this is the defect the identity set fixes.
-    # The burner reads as a second counterparty domain, so the thread is not filed
-    # under acme.com; since the sent rule (plan rule 8) that is sent/, not _unfiled/.
-    src = tmp_path / "src"
-    _eml(src, "a", frm=ME, to="client@acme.com, burner@duck.com")
-
-    bare = Identities(frozenset({ME}), frozenset())  # no burner, no catch-all
-    stats = ingest_folder(
-        src=src,
-        target=_target(tmp_path, identities=bare),
-        account_for=_account_for(),
-    )
-    assert not (tmp_path / ME / "archive" / "acme.com").exists()
-    assert (tmp_path / ME / "archive" / "sent").is_dir()
-    assert stats["by_rule"] == {"sent": 1}
 
 
 # --- additivity (the property the whole verb rests on) --------------------
@@ -228,7 +182,7 @@ def test_dry_run_writes_nothing(tmp_path: Path) -> None:
         src=src, target=_target(tmp_path), account_for=_account_for(), dry_run=True
     )
     assert stats["added"] == 1
-    assert not (tmp_path / ME / "archive").exists()
+    assert not (tmp_path / ME / "messages").exists()
     assert not (tmp_path / ME / "manifest").exists()
 
 
@@ -246,7 +200,6 @@ def _observed(target: Target, year: int, **fields: object) -> None:
         "labels": ["acme"],
         "deleted": False,
         "downloaded": False,
-        "domain": "acme.com",
     }
     row.update(fields)
     write_shard(shard_path(target.store_dir, year), {"a@test": row})
@@ -266,25 +219,27 @@ def test_an_observed_row_gets_the_file_and_keeps_its_observation(
     assert (stats["added"], stats["skipped"]) == (1, 0)
     row = read_shard(shard_path(target.store_dir, 2025))["a@test"]
     assert row["downloaded"] is True
-    assert (target.archive_dir / str(row["path"])).is_file()
-    assert str(row["path"]).startswith("acme.com/2026-07/")
+    stem = message_stem((src / "a.eml").read_bytes())
+    assert row["stem"] == stem
+    assert (target.messages_dir / "2026" / "07" / f"{stem}.eml").is_file()
     # The observation is untouched, so fetch's msgid check now sees it as held.
     assert row["msgid"] == "1a0f296bf69d52b0" and row["labels"] == ["acme"]
     assert row["date"] == "2025-07-06T09:00:04+00:00" and row["thread_id"] == "1765"
     assert not shard_path(target.store_dir, 2026).exists()  # no second row
 
 
-def test_a_row_whose_file_is_gone_is_restored_at_its_path(tmp_path: Path) -> None:
+def test_a_row_whose_file_is_gone_is_restored_at_its_stem(tmp_path: Path) -> None:
     src = tmp_path / "src"
     _eml(src, "a", frm="them@acme.com", to=ME)
     target = _target(tmp_path)
     ingest_folder(src=src, target=target, account_for=_account_for())
     row = load_store(target.store_dir)["a@test"]
-    (target.archive_dir / str(row["path"])).unlink()
+    held = message_files(target.messages_dir)[str(row["stem"])]
+    held.unlink()
 
     again = ingest_folder(src=src, target=target, account_for=_account_for())
     assert again["added"] == 1
-    assert (target.archive_dir / str(row["path"])).is_file()
+    assert held.is_file()  # the same messages/YYYY/MM/<stem>.eml
     assert load_store(target.store_dir)["a@test"] == row
 
 
@@ -297,7 +252,7 @@ def test_an_id_held_in_either_shard_is_skipped(tmp_path: Path) -> None:
 
     again = ingest_folder(src=src, target=target, account_for=_account_for())
     assert (again["added"], again["skipped"]) == (0, 1)
-    assert len(list(target.archive_dir.rglob("*.eml"))) == 1  # no second copy
+    assert len(list(target.messages_dir.rglob("*.eml"))) == 1  # no second copy
 
 
 def test_two_colon_ids_are_two_messages(tmp_path: Path) -> None:
@@ -536,52 +491,6 @@ def test_a_counterparty_route_matches_a_subdomain(tmp_path: Path) -> None:
     assert by_account == {"shopping": 1}
 
 
-def test_a_counterparty_is_not_an_identity(tmp_path: Path) -> None:
-    # The whole reason the two maps are separate: if ikea.com were in the alias
-    # map it would count as *you*, the message would look outbound, and it would
-    # file under the recipient's domain instead of ikea.com.
-    src = tmp_path / "src"
-    _eml(src, "a", frm="offers@ikea.com", to=ME)
-
-    targets = {a: _target(tmp_path / "mail", account=a) for a in ACCOUNTS}
-    ingest_routed(
-        src=src,
-        targets=targets,
-        account_for=_account_for(),
-        route_for=_route_for(ROUTES),
-        to_trash=False,
-    )
-    # The mailbox owns it, and inside that store it files under the counterparty.
-    assert (tmp_path / "mail" / ME / "archive" / "ikea.com").is_dir()
-    assert not (tmp_path / "mail" / ME / "archive" / "gmail.com").exists()
-
-
-# --- subdomain folding (ingest used to ignore domain-aliases entirely) ----
-
-
-def test_a_marketing_subdomain_folds_to_its_primary(tmp_path: Path) -> None:
-    # Without the fold map a bucket fragments: t.delta.com, email.delta.com,
-    # mail.delta.com, one folder per campaign host.
-    src = tmp_path / "src"
-    _eml(src, "a", frm="offers@t.delta.com", to=ME)
-
-    stats = ingest_folder(src=src, target=_target(tmp_path), account_for=_account_for())
-    assert stats["added"] == 1
-    assert (tmp_path / ME / "archive" / "delta.com").is_dir()
-    assert not (tmp_path / ME / "archive" / "t.delta.com").exists()
-
-
-def test_without_the_fold_map_the_subdomain_stands(tmp_path: Path) -> None:
-    # The pre-fix behavior, pinned.
-    src = tmp_path / "src"
-    _eml(src, "a", frm="offers@t.delta.com", to=ME)
-
-    ingest_folder(
-        src=src, target=_target(tmp_path, folds={}), account_for=_account_for()
-    )
-    assert (tmp_path / ME / "archive" / "t.delta.com").is_dir()
-
-
 # --- a single .eml is a folder of one -------------------------------------
 
 
@@ -592,7 +501,7 @@ def test_src_may_be_one_eml_file(tmp_path: Path) -> None:
     stats = ingest_folder(src=one, target=_target(tmp_path), account_for=_account_for())
     assert stats["files"] == 1
     assert stats["added"] == 1
-    assert (tmp_path / ME / "archive" / "acme.com").is_dir()
+    assert len(message_files(tmp_path / ME / "messages")) == 1
 
 
 def test_a_routed_run_takes_one_eml_file_too(tmp_path: Path) -> None:
@@ -604,7 +513,7 @@ def test_a_routed_run_takes_one_eml_file_too(tmp_path: Path) -> None:
         account_for=_account_for(),
     )
     assert stats["unrouted"] == 0
-    assert (tmp_path / WORK / "archive" / "acme.com").is_dir()
+    assert len(message_files(tmp_path / WORK / "messages")) == 1
 
 
 def test_a_file_that_is_not_an_eml_is_refused(tmp_path: Path) -> None:
@@ -646,65 +555,6 @@ def test_an_exchange_bracketed_message_id_keys_instead_of_crashing(
     assert stats["added"] == 1
 
 
-# --- forced filing domain (--domain) --------------------------------------
-
-
-def test_forced_domain_overrides_the_computed_counterparty(tmp_path: Path) -> None:
-    src = tmp_path / "src"
-    _eml(src, "a", frm="them@acme.com", to=ME)
-
-    stats = ingest_folder(
-        src=src,
-        target=_target(tmp_path, filing_domain="vendor.com"),
-        account_for=_account_for(),
-    )
-    assert stats["added"] == 1
-    assert (tmp_path / ME / "archive" / "vendor.com").is_dir()
-    assert not (tmp_path / ME / "archive" / "acme.com").exists()
-
-
-def test_forced_domain_rescues_what_would_be_unfiled(tmp_path: Path) -> None:
-    # Outbound to two distinct externals computes to no domain (_unfiled); the
-    # forced domain gives the whole run one home instead.
-    src = tmp_path / "src"
-    _eml(src, "a", frm=ME, to="one@alpha.com, two@beta.com")
-
-    stats = ingest_folder(
-        src=src,
-        target=_target(tmp_path, filing_domain="vendor.com"),
-        account_for=_account_for(),
-    )
-    assert stats["unfiled"] == 0
-    assert (tmp_path / ME / "archive" / "vendor.com").is_dir()
-
-
-def test_forced_domain_yields_to_an_archived_thread_anchor(tmp_path: Path) -> None:
-    # First file the root under its computed domain, then ingest a reply with a
-    # forced domain: the reply must stay with its thread, not split to vendor.com.
-    src = tmp_path / "src"
-    _eml(src, "root", frm="them@acme.com", to=ME)
-    ingest_folder(src=src, target=_target(tmp_path), account_for=_account_for())
-
-    reply = src / "reply.eml"
-    reply.write_text(
-        "Message-ID: <reply@test>\n"
-        "In-Reply-To: <root@test>\n"
-        "From: them@acme.com\n"
-        f"To: {ME}\n"
-        "Date: Tue, 07 Jul 2026 09:00:00 +0000\n"
-        "Subject: re\n\nbody\n",
-        encoding="utf-8",
-    )
-    stats = ingest_folder(
-        src=src,
-        target=_target(tmp_path, filing_domain="vendor.com"),
-        account_for=_account_for(),
-    )
-    assert stats["added"] == 1  # only the reply is new
-    assert (tmp_path / ME / "archive" / "acme.com").is_dir()
-    assert not (tmp_path / ME / "archive" / "vendor.com").exists()
-
-
 # --- tags (--tag -> labels) -----------------------------------------------
 
 
@@ -743,11 +593,11 @@ def test_filed_lists_filenames_grouped_by_directory(tmp_path: Path) -> None:
 
     stats = ingest_folder(src=src, target=_target(tmp_path), account_for=_account_for())
     filed: dict[str, list[str]] = stats["filed"]  # type: ignore[assignment]
-    assert list(filed) == ["acme.com/2026-07"]  # one domain/month directory
-    names = filed["acme.com/2026-07"]
-    assert len(names) == 2
-    assert all(n.endswith(".eml") for n in names)
-    assert names == sorted(names)  # name-sorted, so a rerun renders the same
+    assert list(filed) == ["2026/07"]  # one messages/ month directory
+    names = filed["2026/07"]
+    assert names == sorted(
+        f"{message_stem(p.read_bytes())}.eml" for p in src.glob("*.eml")
+    )  # each file by its stem, name-sorted, so a rerun renders the same
 
 
 def test_dry_run_reports_filed_without_writing(tmp_path: Path) -> None:
@@ -758,8 +608,8 @@ def test_dry_run_reports_filed_without_writing(tmp_path: Path) -> None:
         src=src, target=_target(tmp_path), account_for=_account_for(), dry_run=True
     )
     filed: dict[str, list[str]] = stats["filed"]  # type: ignore[assignment]
-    assert list(filed) == ["acme.com/2026-07"]
-    assert not (tmp_path / ME / "archive").exists()  # nothing actually written
+    assert list(filed) == ["2026/07"]
+    assert not (tmp_path / ME / "messages").exists()  # nothing actually written
 
 
 def test_routed_filed_is_one_index_across_accounts(tmp_path: Path) -> None:
@@ -769,9 +619,12 @@ def test_routed_filed_is_one_index_across_accounts(tmp_path: Path) -> None:
 
     stats = _routed(tmp_path, to_trash=False)
     filed: dict[str, list[str]] = stats["filed"]  # type: ignore[assignment]
-    # Both accounts' folders appear in the single top-level index.
-    assert set(filed) == {"acme.com/2026-07", "globex.com/2026-07"}
-    assert all(len(names) == 1 for names in filed.values())
+    # Both accounts' files appear in the single top-level index, under one month.
+    assert filed == {
+        "2026/07": sorted(
+            f"{message_stem(p.read_bytes())}.eml" for p in src.glob("*.eml")
+        )
+    }
 
 
 # --- the summary the owner reads ------------------------------------------
@@ -803,6 +656,8 @@ def test_render_names_the_already_archived_share(
             "excluded": 0,
             "excluded_lists": 0,
             "filed": {},
+            "copies": 0,
+            "subject_mismatches": [],
             "accounts": [
                 {
                     "account": ME,
@@ -810,11 +665,10 @@ def test_render_names_the_already_archived_share(
                     "skipped": 3,
                     "excluded": 0,
                     "excluded_lists": 0,
-                    "unfiled": 0,
                     "added_by_year": {"2026": 4},
-                    "top_domains": [],
-                    "by_rule": {},
                     "filed": {},
+                    "copies": 0,
+                    "subject_mismatches": [],
                 }
             ],
         }

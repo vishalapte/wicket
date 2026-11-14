@@ -71,6 +71,7 @@ from wicket.manifest import (
     Shard,
     eml_on_disk,
     merge_catalog,
+    message_files,
     read_shard,
     shard_path,
     store_shards,
@@ -79,9 +80,12 @@ from wicket.manifest import (
 from wicket.message import (
     KeyRequest,
     MailRow,
+    address_list,
+    attachment_name,
     mailbox_keys,
     message_id_of,
     message_key,
+    rfc2231_param,
     sent_date,
 )
 from wicket.provider import GMAIL, Provider
@@ -91,14 +95,21 @@ _SIZE_RE = re.compile(rb"RFC822\.SIZE\s+(\d+)")
 _INTERNALDATE_RE = re.compile(rb'INTERNALDATE\s+"([^"]+)"')
 # The headers catalog reads. The FETCH and the marker its reply carries are both made from
 # this one tuple, so they cannot drift apart.
-_HEADER_FIELDS = ("FROM", "TO", "SUBJECT", "MESSAGE-ID", "DATE", "LIST-ID")
+_HEADER_FIELDS = ("FROM", "TO", "CC", "BCC", "SUBJECT", "MESSAGE-ID", "DATE", "LIST-ID")
 _HEADER_ITEM = f"HEADER.FIELDS ({' '.join(_HEADER_FIELDS)})"
 _HEADER_LITERAL_MARKER = f"BODY[{_HEADER_ITEM}]".encode("ascii")
+# A literal's ``{size}`` at the end of the segment that announces it.
+_LITERAL_SIZE_RE = re.compile(rb"\{\d+\}\s*$")
 # Progress, one line per step; the CLI's `main()` shows it on stderr.
 logger = logging.getLogger(__name__)
 
 
 # --- IMAP plumbing -------------------------------------------------------
+
+
+def _quoted(literal: bytes) -> bytes:
+    """An IMAP literal as a quoted string, so the parsers see one token, not ``{n}``."""
+    return b'"' + literal.replace(b"\\", b"\\\\").replace(b'"', b'\\"') + b'"'
 
 
 def _chunked(items: list[bytes], size: int) -> Iterator[list[bytes]]:
@@ -196,9 +207,10 @@ def _parse_labels(meta: bytes, item: str) -> list[str] | None:
 
 def _parse_header_block(
     header_block: bytes,
-) -> tuple[str, list[str], str, str, datetime | None, str]:
-    """Return ``(from_address, to_addresses, subject, message_id, sent, list_id)`` from a
-    raw FROM+TO+SUBJECT+MESSAGE-ID+DATE+LIST-ID header block.
+) -> tuple[str, list[str], str, str, datetime | None, str, list[str], list[str]]:
+    """Return ``(from_address, to_addresses, subject, message_id, sent, list_id, cc,
+    bcc)`` from a raw header block (`_HEADER_FIELDS`). ``cc`` and ``bcc`` are sorted
+    lower-case addr-specs (`message.address_list`), like ``to``.
 
     ``email.policy.default`` unfolds continuation lines and decodes RFC 2047
     encoded-words, so the subject is plain Unicode and addresses survive a
@@ -223,7 +235,111 @@ def _parse_header_block(
     message_id = message_id_of(header_block)
     sent = sent_date(parsed.get("Date"))
     list_id = normalize_list_id(str(parsed.get("List-Id", "") or ""))
-    return from_addr.strip().lower(), to_addrs, subject, message_id, sent, list_id
+    cc = address_list(parsed.get_all("Cc", []))
+    bcc = address_list(parsed.get_all("Bcc", []))
+    return (
+        from_addr.strip().lower(),
+        to_addrs,
+        subject,
+        message_id,
+        sent,
+        list_id,
+        cc,
+        bcc,
+    )
+
+
+# --- BODYSTRUCTURE: the attachment names (ADR 0002 §5, amended 2026-11-14) ---------
+
+_BODYSTRUCTURE_RE = re.compile(rb"\bBODYSTRUCTURE\s+\(")
+_TOKEN_RE = re.compile(rb'\s*(?:(\()|(\))|"((?:[^"\\]|\\.)*)"|([^\s()"]+))')
+
+
+def _sexpr(data: bytes, start: int) -> tuple[list[object], int]:
+    """The parenthesized IMAP list opening at ``data[start]``, as nested lists.
+
+    A quoted string is unescaped and decoded (UTF-8, a bad byte becoming U+FFFD);
+    ``NIL`` is None; any other atom is kept as text. Raises ``ValueError`` when the
+    list does not close.
+    """
+    stack: list[list[object]] = []
+    i = start
+    while True:
+        match = _TOKEN_RE.match(data, i)
+        if match is None:
+            raise ValueError("unbalanced BODYSTRUCTURE")
+        i = match.end()
+        opening, closing, quoted, atom = match.groups()
+        if opening:
+            stack.append([])
+            continue
+        if closing:
+            done = stack.pop()
+            if not stack:
+                return done, i
+            stack[-1].append(done)
+            continue
+        if quoted is not None:
+            value: object = re.sub(rb"\\(.)", rb"\1", quoted).decode("utf-8", "replace")
+        else:
+            text = atom.decode("utf-8", "replace")
+            value = None if text.upper() == "NIL" else text
+        stack[-1].append(value)
+
+
+def _params(value: object) -> dict[str, str]:
+    """An IMAP parameter list (``("name" "a.pdf" ...)``) as lower-case keys to values."""
+    if not isinstance(value, list):
+        return {}
+    pairs = zip(value[0::2], value[1::2])
+    return {str(k).lower(): str(v) for k, v in pairs if k is not None and v is not None}
+
+
+def _part_names(node: list[object], names: list[str]) -> None:
+    """Append the file name of each leaf part under ``node``, in order.
+
+    The rule `message.attachment_names` applies to a parsed message: the
+    disposition's ``filename``, else the type's ``name``; a ``message/rfc822`` part is
+    walked into (its body is element 8), never named itself.
+    """
+    if node and isinstance(node[0], list):  # multipart: its parts, then the subtype
+        for child in node:
+            if not isinstance(child, list):
+                break
+            _part_names(child, names)
+        return
+    kind = [str(x or "").lower() for x in node[:2]]
+    enveloped = kind in (["message", "rfc822"], ["message", "global"])
+    if enveloped and len(node) > 8 and isinstance(node[8], list):
+        _part_names(node[8], names)
+        return
+    # The disposition follows the fields each type adds: text has a line count;
+    # message/rfc822 and message/global an envelope, a body and a line count.
+    at = 9 if kind[:1] == ["text"] else 11 if enveloped else 8
+    disposition = node[at] if len(node) > at else None
+    found = None
+    if isinstance(disposition, list) and len(disposition) > 1:
+        found = rfc2231_param(_params(disposition[1]), "filename")
+    if found is None and len(node) > 2:
+        found = rfc2231_param(_params(node[2]), "name")
+    name = attachment_name(found)
+    if name is not None:
+        names.append(name)
+
+
+def _attachments(meta: bytes) -> list[str] | None:
+    """The attachment names a FETCH reply's ``BODYSTRUCTURE`` declares; None if absent
+    or unreadable (an honest gap, as for labels)."""
+    match = _BODYSTRUCTURE_RE.search(meta)
+    if match is None:
+        return None
+    try:
+        tree, _ = _sexpr(meta, match.end() - 1)
+    except (ValueError, IndexError):
+        return None
+    names: list[str] = []
+    _part_names(tree, names)
+    return names
 
 
 def _finalize_record(
@@ -243,8 +359,8 @@ def _finalize_record(
     internal_dt = parse_internaldate(date_match.group(1))
     if internal_dt is None:
         return None
-    from_addr, to_addrs, subject, message_id, sent, list_id = _parse_header_block(
-        header_block
+    from_addr, to_addrs, subject, message_id, sent, list_id, cc, bcc = (
+        _parse_header_block(header_block)
     )
     labels_item = provider.labels_item
     row: dict[str, object] = {
@@ -257,8 +373,11 @@ def _finalize_record(
         "size": int(size_match.group(1)),
         "from": from_addr,
         "to": to_addrs,
+        "cc": cc,
+        "bcc": bcc,
         "subject": subject,
         "labels": _parse_labels(meta, labels_item) if labels_item else None,
+        "attachments": _attachments(meta),
         "_sent": sent,
     }
     if list_id:
@@ -271,7 +390,7 @@ def _fetch_items(provider: Provider) -> str:
     labels = f" {provider.labels_item}" if provider.labels_item else ""
     return (
         f"({provider.id_item} {provider.thread_item} RFC822.SIZE INTERNALDATE"
-        f"{labels} BODY.PEEK[{_HEADER_ITEM}])"
+        f"{labels} BODYSTRUCTURE BODY.PEEK[{_HEADER_ITEM}])"
     )
 
 
@@ -301,9 +420,11 @@ def _fetch_rows_batch(
     header_block = b""
     for item in data:
         if isinstance(item, tuple):
-            meta += item[0]
             if _HEADER_LITERAL_MARKER in item[0]:
+                meta += item[0]
                 header_block = item[1]
+            else:  # another literal (a file name, a label): inline it, quoted
+                meta += _LITERAL_SIZE_RE.sub(b"", item[0]) + _quoted(item[1])
         elif isinstance(item, bytes):
             meta += item
             if item.endswith(b")"):
@@ -394,7 +515,7 @@ def _sweep_year(
 def _merge_observed(  # pylint: disable=too-many-arguments
     *,
     store_dir: Path,
-    archive_dir: Path | None,
+    messages_dir: Path | None,
     observed: list[dict[str, object]],
     swept: set[int],
     dry_run: bool,
@@ -420,12 +541,10 @@ def _merge_observed(  # pylint: disable=too-many-arguments
             rows[id_] = row
             year_of[id_] = year
 
+    files = message_files(messages_dir) if messages_dir is not None else {}
+
     def held(row: MailRow) -> bool:
-        return (
-            bool(row.get("downloaded"))
-            and archive_dir is not None
-            and eml_on_disk(row, archive_dir)
-        )
+        return bool(row.get("downloaded")) and eml_on_disk(row, files)
 
     requests = [
         KeyRequest(
@@ -473,7 +592,7 @@ def sweep(  # pylint: disable=too-many-arguments
     years: list[int] | None,
     dry_run: bool,
     threads: int = DEFAULT_THREADS,
-    archive_dir: Path | None = None,
+    messages_dir: Path | None = None,
     provider: Provider = GMAIL,
 ) -> dict[str, int]:
     """Run one inventory sweep, one worker (and IMAP connection) per year.
@@ -493,7 +612,7 @@ def sweep(  # pylint: disable=too-many-arguments
     instead of blocking a worker thread on a prompt. A full sweep derives
     the year range from the oldest message's UTC year through the current
     UTC year (stale-shard removal outside that range is not yet implemented).
-    ``archive_dir`` lets keying tell a held ingest row (its ``.eml`` on disk),
+    ``messages_dir`` lets keying tell a held ingest row (its ``.eml`` on disk),
     which a mailbox copy links to; without it no row counts as held. ``mailbox`` None
     is the provider's all-mail folder.
     """
@@ -558,7 +677,7 @@ def sweep(  # pylint: disable=too-many-arguments
             swept.add(futures[future])
     shards = _merge_observed(
         store_dir=store_dir,
-        archive_dir=archive_dir,
+        messages_dir=messages_dir,
         observed=observed,
         swept=swept,
         dry_run=dry_run,

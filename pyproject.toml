@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wicket"
-version = "0.19.0"
+version = "0.20.0"
 description = "Portable, read-only mail tooling over IMAP: catalog a mailbox into a year-sharded manifest, fetch matching .eml by counterparty domain, and report over the manifest. Gmail today, Fastmail planned."
 requires-python = ">=3.12"
 authors = [{ name = "Vishal Apte", email = "vishal@enine.com" }]
@@ -152,7 +152,7 @@ exclude_lines = [
 root_package = "wicket"
 
 [[tool.importlinter.contracts]]
-name = "wicket layering (four verbs and four nouns over the shared store)"
+name = "wicket layering (four verbs and five nouns over the shared store)"
 type = "layers"
 layers = [
   "wicket.__main__",
@@ -162,6 +162,6 @@ layers = [
   "wicket.root.lib.results",
   "wicket.reconcile",
   "wicket.filing",
-  "wicket.auth | wicket.domains | wicket.message | wicket.manifest | wicket.maps | wicket.exclusions | wicket.lists",
+  "wicket.auth | wicket.domains | wicket.message | wicket.manifest | wicket.maps | wicket.exclusions",
   "wicket.env | wicket.errors | wicket.schema | wicket.lib | wicket.provider",
 ]

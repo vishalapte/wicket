@@ -79,7 +79,7 @@ def _creds(tmp_path: Path) -> Path:
 
 def _ctx(tmp_path: Path, *, dry_run: bool = False) -> fetch_lib.ThreadContext:
     return fetch_lib.ThreadContext(
-        dest=tmp_path / "archive",
+        dest=tmp_path / "messages",
         account=ME,
         domain_aliases={},
         dry_run=dry_run,
@@ -258,7 +258,7 @@ def test_a_short_body_is_never_written_and_halts(tmp_path: Path) -> None:
     assert [e["uid"] for e in result.written] == [b"8"]
     staged = sorted(p.name for p in (tmp_path / "staging").rglob("*.eml"))
     assert staged == ["8.eml"]
-    assert not (tmp_path / "archive").exists()  # fetch files nothing
+    assert not (tmp_path / "messages").exists()  # fetch files nothing
     assert result.halt is not None
     assert _halt_file().read_text() == ""
     assert "HALT set short body: 2 message(s)" in _log()

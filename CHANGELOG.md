@@ -12,12 +12,15 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+## 0.20.0 - 2026-11-14
+
 ### Removed
 - **Code that only served finished transitions.** `fetch --target` and `FetchOptions.dest` existed to refuse a destination after the fetch/ingest split; argparse now refuses the flag like any unknown one. A store's manifest dir is read for `YYYY.jsonl` shards only, so no caller filters other files out. Tests that pinned three renamed flags, the old `WICKET_*_FILE` names and the old account layout are gone.
 
 ### Changed
 - **docs**: ADR-MAIL matches delphi's copy again: the store is `$WICKET_DATA_DIR`, references are listed by `delphi refs` and locked by `/enine-mail pin`, and delphi's SessionEnd hook pins only ids new since the last quit.
 - **ADR-MAIL and ADR 0002 record the 2026-11-14 store decisions.** A message is one file per account at `messages/YYYY/MM/<stem>.eml`, its stem a hash of its Message-ID, Date and From; a row lists `cc`, `bcc` and `attachments`; there are no folders, links or filing rank; and duplication is decided within an account only.
+- **One file per message, under `messages/`.** A message's one file is `<store>/messages/YYYY/MM/<stem>.eml`: the stem hashes its Message-ID, Date and From, so every copy in one store lands on one path and is stored once, and `YYYY/MM` is its own `Date:` (else its topmost `Received:`). A row records `stem` and lists `cc`, `bcc` and `attachments` (catalog fetches `BODYSTRUCTURE`). There are no folders, so the filing rank, the row fields `domain` and `filed`, `ingest --domain` and `list-folders.json` are gone; `held_messages(domains=...)` matches any address on the row. A second copy is not filed again and is reported when its Subject differs; a staged one is set aside and its row marked excluded. Every store was moved by a one-time migration on 2026-11-14.
 
 ## 0.19.0 - 2026-11-06
 

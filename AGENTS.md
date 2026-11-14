@@ -15,8 +15,9 @@ year-sharded manifest: `catalog` (observe the mailbox into the manifest) and
 `fetch` (get `.eml` into the store's `staging/`; it files nothing), both read-only
 on the mailbox over IMAP; `report` (manifest summaries and bucket views, no IMAP);
 and `ingest`, the only verb that files (`--staged`: what fetch got; `--src`: a local
-`.eml` export, routed per thread, for a mailbox IMAP cannot reach). Every filing
-rule lives in `wicket.filing`. Five nouns: `python -m wicket.alias` and
+`.eml` export, routed per thread, for a mailbox IMAP cannot reach), writing each
+message once to `<store>/messages/YYYY/MM/<stem>.eml`. Every filing rule lives in
+`wicket.filing`. Five nouns: `python -m wicket.alias` and
 `python -m wicket.store` edit three of the owner-authored maps,
 `python -m wicket.exclude` the fourth (mailing lists never fetched or filed),
 `python -m wicket.halt` lists, sets and clears an account's HALT (each logged), and

@@ -51,7 +51,7 @@ ln -s ~/.config/gmail/you@gmail.com/imap.json ~/.config/wicket/accounts/you@gmai
 #    ~/.config/wicket/accounts/you@gmail.com/imap.json, through the link.
 wicket catalog --mail-account you@gmail.com
 
-# 2. Download full .eml for one or more sender domains, filed under <domain>/YYYY-MM/.
+# 2. Get full .eml for one or more sender domains into staging/; ingest --staged files them.
 #    Omit --domains to get every message, year by year, until Gmail throttles.
 wicket fetch --mail-account you@gmail.com --domains chase.com,amazon.com
 
@@ -140,25 +140,21 @@ home** only for mail no mailbox owns; grouping mailbox-owned mail by topic is a
 Mail nothing claims is **left alone**: not filed, and its source file is not
 trashed unless a store already holds the message. Create a store (`mkdir <mail-root>/travel`) or add a mapping to claim it.
 
-**Which folder.** Inside a store, a thread files under one folder, chosen from its
-**opener** (the thread's earliest-dated row across every shard of the store) by the
-first rule that applies, and each filed row records the rule as `filed`:
+**Where the file goes, and which label.** Inside a store a message has one file,
+`<store>/messages/YYYY/MM/<stem>.eml`, written once and never moved (ADR-MAIL,
+2026-11-14). The stem is `sha1(message-id + "\n" + date + "\n" + from)[:16]` over the
+normalized `Message-ID`, the `Date:` header in UTC and the `From:` address in lower case
+(a missing or unreadable header contributes nothing), so every copy of one message in a
+store lands on one path and is stored once; a second copy is not filed again, and the
+run reports it when its `Subject` differs. `YYYY/MM` is the message's own `Date:`, else
+its topmost `Received:`, else the provider's date. There are no folders: a folder view
+is a query over the row's `from`, `to`, `cc`, `bcc` and `attachments`.
 
-| Rank | Rule | Folder | `filed` |
-|---|---|---|---|
-| 1 | The thread already has an archived message (only a downloaded row with its `.eml` on disk counts) | that message's folder | copied from it (none if it has none) |
-| 2 | `ingest --domain D` | `D/` | `forced` |
-| 3 | The opener's `To` names an address in `list-folders.json` | `lists/<name>/` | `list` |
-| 4 | The opener is from you, and every recipient is you, or there is none | `self/` | `self` |
-| 5 | The opener is from you, and its `To`, folded, without your addresses, spans two or more domains | `sent/` | `sent` |
-| 6 | The counterparty: the sender's domain inbound, the one recipient's outbound, folded | `<domain>/` | `rule` |
-| 7 | No usable sender, and one outside domain left in `To` | `<domain>/` | `fallback` |
-| 8 | None of the above | `_unfiled/` | `unfiled` |
-
-"You" is the store's own account and every address `account-aliases.json` names.
-The rule is the same in every account. When the opener's `To` names two mapped
-addresses, the first in alphabetical order wins. A message whose row is `excluded` is
-skipped and counted, never filed.
+A message is linked to every domain it touches through its row's `from`, `to`, `cc`
+and `bcc`; there is no filing rank and no single `domain`. A filter by domain
+(`held_messages(domains=...)`) matches a row when any of those addresses, folded by
+`domain-aliases.json`, is in the set. A message whose row is `excluded` is skipped and
+counted, never filed.
 
 ## CLI reference
 
@@ -184,7 +180,7 @@ Idempotent, incremental by default.
 
 **`wicket fetch`** gets `.eml` for matching messages into
 `<mail-root>/<account>/staging/<thread-id>/<msgid>@<INTERNALDATE>.eml` and **files nothing**:
-`wicket ingest --staged` files them into the archive, and until then they are not in
+`wicket ingest --staged` files them into `messages/`, and until then they are not in
 `report` or `held_messages`. A message already **got** (filed, staged, excluded, or set aside
 under `<mail-root>/.duplicates/<account>/`) is never downloaded again. Pass at most one of
 `--domains` / `--query` / `--last`; with one, fetch runs one pass over it.
@@ -257,7 +253,7 @@ With no flag, one row per account (a folder in `~/.config/wicket/accounts`): dow
 excluded, not downloaded, their total and last download, with a total row. Excluded is a row you
 excluded or one on an excluded list; not downloaded is neither downloaded nor deleted, so a message
 the server deleted before it was downloaded is in no column. Last download is when the newest
-`.eml` in the account's `archive/` or `staging/` was written (its file time), `YYYY-MM-DD HH:MM` in
+`.eml` in the account's `messages/` or `staging/` was written (its file time), `YYYY-MM-DD HH:MM` in
 local time, blank when there is none; the total row shows the latest. A message filed by `ingest`
 is written when it is filed, and one from `ingest --src` counts too. With `--mail-account`, that
 account's one-screen summary.
@@ -271,18 +267,21 @@ account's one-screen summary.
 | `--mail-account ACCOUNT` | Scopes the manifest store. Default `$WICKET_ACCOUNT`, else the only account folder. |
 | `--json` | Print the result as JSON instead of text: `view` (`summary`, `senders`, `addresses`, `bucket`, `by_year`) and that view's data. |
 
-**`wicket ingest`** is the only verb that files: it moves a body into the archive and
-records `downloaded`, `path` and `filed` on its row. No IMAP, no credentials, no prompt.
+**`wicket ingest`** is the only verb that files: it writes a body to
+`messages/YYYY/MM/<stem>.eml` and records `downloaded` and `stem` on its row
+(and `cc`, `bcc`, `attachments` on a row it creates). No IMAP, no credentials, no prompt.
 **Additive:** a message already archived is left untouched, only new ones are filed,
-and no archived message is ever deleted. Re-running is idempotent. Each thread files
-by the rank in [Where a message goes](#where-a-message-goes).
+and no archived message is ever deleted. Re-running is idempotent.
 
 `--staged` files what `fetch` got for one account. It holds the store's lock,
-reconciles first, then writes each row before it moves the body into `archive/`, so a
-crash in between is repaired by the next run. A staged body whose message is already
-archived with the same bytes is removed; one that would land on a different file is
-refused and kept; one the store archives under another name (a local export of the same
-message) is set aside under `<mail-root>/.duplicates/<account>/<folder>/YYYY-MM/<msgid>.eml`.
+reconciles first, then writes each row before it writes the body into `messages/`, so
+a crash in between is repaired by the next run. A staged body whose message is already
+archived with the same bytes is removed, and one with other bytes is refused and kept.
+One whose stem the store already holds under another row (a local export of the same
+message, or a second mailbox copy) is set aside under
+`<mail-root>/.duplicates/<account>/<label>/YYYY-MM/<msgid>.eml` and its row is marked
+`excluded: "duplicate of <row id>"`, so fetch never gets it again. A file another tool
+filed into `messages/` with no row is taken by the message's row, never overwritten.
 A file in `staging/` that is not a staged name is reported and left. An empty staging
 dir is a no-op. Cron runs `fetch` and then `ingest --staged`.
 
@@ -302,15 +301,14 @@ file. `--dry-run` moves nothing.
 | `--staged` | File what `wicket fetch` got into `<mail-root>/<account>/staging/` for one account (`--mail-account`, `$WICKET_ACCOUNT`, or the only account folder). No routing, no account check, nothing trashed. |
 | `--mail-account ACCOUNT` | Send **every** thread to this one store instead of routing each. A *destination, not a filter*: it does not select which messages are ingested, so naming the wrong one files the whole folder into the wrong store. Refused when the folder is plainly addressed elsewhere (see `--force`). Omit it to route. |
 | `--source {local}` | Export profile. Only `local` today (RFC822 `.eml` on disk); reserves the flag for future kinds. |
-| `--domain DOMAIN` | File every newly-added message under this one domain folder (`<domain>/YYYY-MM/`), overriding the self, sent and counterparty rules; with `--staged`, every staged message of the account. A *destination, not a filter*: it does not select which messages are ingested. A bare domain like `acme.com`. A reply that joins an already-archived thread still files with its thread, so this only redirects mail with no archived home yet. |
 | `--tag TAG` | A tag recorded in the manifest `labels` for every newly-added message (a flat export carries no provider labels); repeatable (`--tag a --tag b`). Applied only to mail filed this run; archived rows are untouched. |
 | `--force` | Ingest anyway when `--mail-account` disagrees with the folder's recipients. |
 | `--no-delete` | Leave the source folder untouched (do not move archived `.eml` to `~/.Trash`). |
 | `--dry-run` | Parse and report what would be added; write nothing, trash nothing. |
 | `--json` | Print the result as JSON instead of text: `mode` (`staged`, `routed`, `single`), `dry_run`, `to_trash`, and that mode's stats. |
 
-The run summary lists each filed `.eml` grouped by its archive directory
-(`<domain>/YYYY-MM/`), so you can see exactly what landed where.
+The run summary lists each filed `.eml` grouped by its directory (`YYYY/MM/`), so you
+can see exactly what landed where, and every second copy whose `Subject` differs.
 
 ## Settings
 
@@ -346,7 +344,6 @@ The variables wicket owns; renaming one is a breaking change to wicket:
 | `WICKET_DOMAIN_ROUTES` | Where `domain-routes.json` is. | `<mail-root>/domain-routes.json` | `wicket.domains.domain_routes_path` |
 | `WICKET_DOMAIN_ALIASES` | Where `domain-aliases.json` is. | `<mail-root>/domain-aliases.json` | `wicket.domains.domain_aliases_path` |
 | `WICKET_EXCLUDED_LISTS` | Where `excluded-lists.json` is. | `<mail-root>/excluded-lists.json` | `wicket.exclusions.excluded_lists_path` |
-| `WICKET_LIST_FOLDERS` | Where `list-folders.json` is. | `<mail-root>/list-folders.json` | `wicket.lists.list_folders_path` |
 | `WICKET_EXCLUDED_SENDERS` | Reserved for sender exclusion, which is not built. | `<mail-root>/excluded_senders.json` | nothing yet (named in `wicket.env`) |
 
 ### Dependencies
@@ -415,7 +412,6 @@ different questions, and keeping them apart is load bearing:
 | `<mail-root>/domain-routes.json` | *Which counterparties are **not me**, and where does their mail go?* Used only when no mailbox claims the thread. | `{"shopping": ["ikea.com", "llbean.com"]}` |
 | `<mail-root>/domain-aliases.json` | *What is this domain **called**?* Folds a marketing subdomain onto its primary when filing, so a store does not fragment into one folder per campaign host. Shared by `fetch` and `ingest`; override with `--alias-file`. | `{"delta.com": ["*.delta.com"]}` |
 | `<mail-root>/excluded-lists.json` | *Which **mailing lists** do I never keep?* A list-id (the text in a message's `List-Id` header) under `"*"` is excluded for every account, under an account for that account alone. `fetch` leaves it out of every search; `ingest --staged` and `--src` skip its mail and leave the file where it is; `catalog` still records the whole mailbox, and writes each message's list-id on its row as `list_id` (no key when it has no `List-Id`); `report` leaves out a row whose `list_id` is on the map as it is now, and counts it as excluded. A key that is neither `"*"` nor an account folder holding `imap.json` refuses the run. | `{"*": ["made-of-meat.googlegroups.com"]}` |
-| `<mail-root>/list-folders.json` | *Which **group addresses** get their own folder?* A thread whose first message's `To` names a listed address files under `archive/lists/<name>/`, in whichever store files it. A name is a slug; an address belongs to one name. | `{"qse": ["qseprimarycontacts@lists.ercot.com"]}` |
 
 > A counterparty must **never** go in `account-aliases.json`. That file means "this
 > is me", so listing IKEA there makes every message *from* IKEA look outbound, and
@@ -426,7 +422,7 @@ Domains are folded **before** routes are matched, so `domain-routes.json` lists
 only primaries (`delta.com`) and never has to repeat every subdomain the fold map
 already knows about.
 
-`list-folders.json` is edited by hand. Three nouns edit the other four without
+Three nouns edit the four maps without
 hand-editing JSON. **`wicket.alias`** edits the
 fold map; **`wicket.store`** edits both maps that pick a store, one flag per file;
 **`wicket.exclude`** edits the excluded lists (no `--mail-account` is every account,
@@ -477,9 +473,9 @@ writes are the **halt dir** and the **log dir**, which hold no mail:
 |---|---|
 | `<mail-root>/<store>/manifest/YYYY.jsonl` | The year-sharded manifest, one JSON row per message (identity, observation, and settlement fields), oldest `date` (UTC) first and the newest last; a tie goes in `id` order. Override with `--store-dir`. |
 | `<mail-root>/<store>/manifest/.lock` | The store's lock, held by the one process writing it; it names that process's pid. |
-| `<mail-root>/<store>/archive/<folder>/YYYY-MM/<msg-id>.eml` | Filed messages, by folder (counterparty domain, `self`, `sent`, ...) and month. Written only by `ingest`. |
+| `<mail-root>/<store>/messages/YYYY/MM/<stem>.eml` | Filed messages, one file per message, named by its stem and filed under its own month; never moved. Written only by `ingest`. |
 | `<mail-root>/<store>/staging/<thread-id>/<msgid>@<INTERNALDATE>.eml` | What `fetch` got and `ingest --staged` has not yet filed. |
-| `<mail-root>/.duplicates/<store>/<folder>/YYYY-MM/<msgid>.eml` | Copies of mail the store already archives under another name. Never unlinked; `fetch` counts them as got. |
+| `<mail-root>/.duplicates/<store>/<label>/YYYY-MM/<msgid>.eml` | Copies of mail the store already holds. Never unlinked; `fetch` counts them as got. |
 | `~/.local/state/wicket/halt/<account>` | The account's HALT (`$XDG_STATE_HOME/wicket/halt/`): present means halted. Written and removed only by `wicket.auth`. |
 | `~/.local/state/wicket/log/<account>.log` | The account's log: fetch's counts and years, and every HALT set and cleared. Never a subject, another address, a path or a secret. |
 
@@ -502,7 +498,7 @@ underneath the vault. So every verb refuses, and creates nothing, when the mail
 root is absent.
 
 The manifest is a rebuildable cache: `downloaded` is ground-truthed against the
-`.eml` on disk and the filing domain is derived from observation, so the whole
+`.eml` on disk, so the whole
 store can be reconstructed from mailbox + disk by re-running the verbs (ADR
 [`0002`](docs/adr/0002-unified-message-manifest.md)).
 
@@ -524,7 +520,7 @@ from wicket.root.api import catalog
 from wicket.root.api import fetch, FetchOptions, held_messages
 from wicket.root.api import report, manifest, bucket_rows
 from wicket.root.api import ingest, IngestOptions
-from wicket.env import resolve_archive_dir
+from wicket.env import resolve_messages_dir
 
 # drive the verbs (each returns a stats dict; non-interactive by default)
 catalog(account="you@gmail.com")                    # observe into the manifest
@@ -547,7 +543,7 @@ for row, eml in held_messages(domains={"delta.com", "united.com"}):
     itinerary = parse_flight(eml.read_bytes())      # the consumer's own parser
 
 rows = manifest()                  # the whole year-sharded store, {id: row}
-archive = resolve_archive_dir("you@gmail.com")
+messages = resolve_messages_dir("you@gmail.com")  # <store>/messages/YYYY/MM/<stem>.eml
 ```
 
 `FetchOptions` takes no `dest`: fetch files nothing, and a destination is refused

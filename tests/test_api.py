@@ -10,7 +10,8 @@ import pytest
 
 import wicket.__main__ as root
 from wicket import env
-from wicket.manifest import shard_path, write_shard
+from wicket.manifest import message_file, shard_path, write_shard
+from wicket.message import message_date, message_stem
 from wicket.root import api as root_api
 from wicket.root.api import (
     all_addresses,
@@ -22,9 +23,24 @@ from wicket.root.api import (
 from wicket.root.lib.fetch import ThreadContext
 
 
+def _held(messages: Path, mid: str, sender: str) -> tuple[str, Path]:
+    """Write a held message's one file under ``messages/``; its stem and path."""
+    raw = (
+        f"Message-ID: <{mid}>\nFrom: {sender}\nTo: you@gmail.com\n"
+        "Date: Fri, 01 Mar 2024 09:00:00 +0000\nSubject: s\n\nbody\n"
+    ).encode()
+    stem = message_stem(raw)
+    path = message_file(messages, stem, message_date(raw, datetime.now(timezone.utc)))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
+    return stem, path
+
+
 def _seed(base: Path) -> Path:
     acct = "you@gmail.com"
     store = base / acct / "manifest"
+    stem_a, _ = _held(base / acct / "messages", "a@x", "fares@delta.com")
+    stem_b, _ = _held(base / acct / "messages", "b@x", "sales@acme.com")
     write_shard(
         shard_path(store, 2024),
         {
@@ -32,8 +48,7 @@ def _seed(base: Path) -> Path:
                 "id": "a@x",
                 "date": "2024-01-01T00:00:00+00:00",
                 "downloaded": True,
-                "domain": "delta.com",
-                "path": "delta.com/2024-03/1.eml",
+                "stem": stem_a,
                 "from": "fares@delta.com",
                 "to": ["you@gmail.com"],
             },
@@ -41,8 +56,7 @@ def _seed(base: Path) -> Path:
                 "id": "b@x",
                 "date": "2024-01-01T00:00:00+00:00",
                 "downloaded": True,
-                "domain": "acme.com",
-                "path": "acme.com/2024-03/2.eml",
+                "stem": stem_b,
                 "from": "sales@acme.com",
                 "to": ["you@gmail.com"],
             },
@@ -50,7 +64,6 @@ def _seed(base: Path) -> Path:
                 "id": "c@x",
                 "date": "2024-01-01T00:00:00+00:00",
                 "downloaded": False,
-                "domain": "delta.com",
                 "from": "news@delta.com",
                 "to": ["you@gmail.com"],
             },
@@ -67,7 +80,8 @@ def test_held_messages_filters_downloaded_and_domains(
     assert len(got) == 1  # b@x is acme.com, c@x is not downloaded
     row, eml = got[0]
     assert row["id"] == "a@x"
-    assert eml == tmp_path / "you@gmail.com" / "archive" / "delta.com/2024-03/1.eml"
+    assert row["stem"] == message_stem(eml.read_bytes())
+    assert eml.parent == tmp_path / "you@gmail.com" / "messages" / "2024" / "03"
 
 
 def test_manifest_loads_whole_store(
@@ -345,7 +359,7 @@ def test_fetch_wires_query_and_paths(
     assert seen["interactive"] is False  # default
     ctx: ThreadContext = seen["ctx"]  # type: ignore[assignment]
     assert ctx.dry_run is True
-    assert ctx.dest == tmp_path / "mail" / "you@gmail.com" / "archive"  # reconciled
+    assert ctx.dest == tmp_path / "mail" / "you@gmail.com" / "messages"  # reconciled
     assert ctx.staging_dir == tmp_path / "mail" / "you@gmail.com" / "staging"
     assert ctx.duplicates_dir == tmp_path / "mail" / ".duplicates" / "you@gmail.com"
     assert "acme.com" in str(seen["search"])

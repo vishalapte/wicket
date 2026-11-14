@@ -1,3 +1,4 @@
+# pylint: disable=too-many-lines  # one module per verb's worker/api; split is follow-up work
 """The wicket api: the one place a request becomes a decision.
 
 Every surface (this noun's cli, an MCP tool, a REST route) calls these functions and
@@ -21,7 +22,7 @@ nothing and takes none.
 
 fetch: resolve, build query, seed, download. fetch only gets mail into the store's
 staging dir; ``ingest --staged`` files it (plan rule 6). It resolves the account and its
-per-account archive/staging/store/credential paths, builds the Gmail search expression
+per-account messages/staging/store/credential paths, builds the Gmail search expression
 from ``domains`` or ``query`` (at most one), seeds credentials (gated on
 ``interactive``), and dispatches into `lib.fetch.download` (a filter: one pass) or
 `lib.fetch.download_years` (no filter: every year until throttled). A real run holds the
@@ -31,7 +32,7 @@ or paths, to the account's log (`env.append_log`: ``log/<account>.log`` under
 credentials) lives here too.
 
 ingest: resolve paths, dispatch to the worker. Read-only on any mailbox: ingest reads
-``.eml`` already on disk and files them additively into the manifest + archive, so there
+``.eml`` already on disk and files them additively into the manifest + messages/, so there
 is no IMAP and no credentials to seed (like `report`). Three modes. ``--staged`` files
 what ``fetch`` got into one account's ``staging/``: one store, no routing, no account
 check, because a mailbox's own mail belongs to that mailbox. A local export (``--src``)
@@ -60,7 +61,7 @@ from typing import Iterator, cast
 
 from wicket.auth import AuthError, Halted, load_credentials
 from wicket.domains import (
-    DOMAIN_RE,
+    canonical_domain,
     domain_aliases_path,
     domain_routes_path,
     load_domain_aliases,
@@ -76,13 +77,12 @@ from wicket.env import (
     account_dirs,
     account_of,
     append_log,
-    identities,
     known_accounts,
     load_account_aliases,
     require_mail_root,
     resolve_account,
-    resolve_archive_dir,
     resolve_duplicates_dir,
+    resolve_messages_dir,
     resolve_staging_dir,
     resolve_state_dir,
     resolve_store_dir,
@@ -91,8 +91,12 @@ from wicket.env import (
 from wicket.errors import ApiError
 from wicket.exclusions import excluded_for, excluded_lists_path, load_excluded_lists
 from wicket.filing import AccountFor, build_domain_query
-from wicket.lists import list_folders_path, load_list_folders
-from wicket.manifest import Row, latest_shard_year, load_store
+from wicket.manifest import (
+    Row,
+    latest_shard_year,
+    load_store,
+    message_files,
+)
 from wicket.provider import Provider, Search, provider_of
 
 from .lib import report as report_lib
@@ -261,7 +265,7 @@ def catalog(
             years=_sweep_years(store, opts),
             dry_run=opts.dry_run,
             threads=opts.threads,
-            archive_dir=store.parent / "archive",  # the store's own archive
+            messages_dir=store.parent / "messages",  # the store's own message files
             provider=provider,
         )
         return {**stats, "store_dir": str(store)}
@@ -396,7 +400,7 @@ def fetch(
 
     store = resolve_store_dir(resolved)
     ctx = ThreadContext(
-        dest=resolve_archive_dir(resolved),
+        dest=resolve_messages_dir(resolved),
         account=resolved,
         domain_aliases=domain_aliases,
         dry_run=options.dry_run,
@@ -439,25 +443,41 @@ def fetch(
     return stats
 
 
+def _touches(row: Row, domains: set[str], aliases: dict[str, str]) -> bool:
+    """Whether any address in the row's ``from``/``to``/``cc``/``bcc``, folded by the
+    alias map (`domains.canonical_domain`), is in ``domains``."""
+    for value in (row.get("from"), row.get("to"), row.get("cc"), row.get("bcc")):
+        for address in value if isinstance(value, list) else [value]:
+            _, _, domain = str(address or "").rpartition("@")
+            if domain and canonical_domain(domain.lower(), aliases) in domains:
+                return True
+    return False
+
+
 def held_messages(
     account: str | None = None, domains: set[str] | None = None
 ) -> Iterator[tuple[Row, Path]]:
-    """Yield ``(row, eml_path)`` for every downloaded message.
+    """Yield ``(row, eml_path)`` for every downloaded message the store keeps.
 
-    Read-only (no IMAP, no credentials). Optionally restrict to a set of filing
-    ``domains`` (e.g. the airline domains a travel parser cares about). The
-    caller reads and parses the ``.eml``.
+    Read-only (no IMAP, no credentials). Optionally restrict to the rows that touch
+    one of ``domains`` (e.g. the airline domains a travel parser cares about): any
+    address in ``from``/``to``/``cc``/``bcc``, folded by ``domain-aliases.json``. The
+    caller reads and parses the ``.eml``. A row marked ``excluded`` is skipped, and
+    the file is found by the row's ``stem`` under ``messages/``.
     """
     resolved = resolve_account(account)
-    archive = resolve_archive_dir(resolved)
-    for row in load_store(resolve_store_dir(resolved)).values():
-        if not row.get("downloaded"):
+    store = resolve_store_dir(resolved)
+    rows = load_store(store)
+    files = message_files(resolve_messages_dir(resolved))
+    aliases = load_domain_aliases(domain_aliases_path(MAIL_ROOT)) if domains else {}
+    for row in rows.values():
+        if not row.get("downloaded") or row.get("excluded"):
             continue
-        if domains is not None and row.get("domain") not in domains:
+        if domains is not None and not _touches(row, domains, aliases):
             continue
-        path = row.get("path")
-        if path:
-            yield row, archive / str(path)
+        path = files.get(str(row.get("stem") or ""))
+        if path is not None:
+            yield row, path
 
 
 @dataclass(frozen=True)
@@ -475,10 +495,8 @@ class IngestOptions:
     archived to the Trash; an unrouted message keeps its file unless a store
     already holds it.
 
-    ``domain`` (the ``--domain`` flag) forces the filing domain for every
-    newly-added message, standing in for the computed counterparty; a bare domain
-    like ``acme.com``, validated in `ingest`. ``tags`` (the ``--tag`` flag) are
-    recorded as each new row's ``labels``. Both touch only mail filed this run.
+    ``tags`` (the ``--tag`` flag) are recorded as each new row's ``labels``, only on
+    mail filed this run.
     """
 
     src: Path | None = None
@@ -487,7 +505,6 @@ class IngestOptions:
     dry_run: bool = False
     force: bool = False
     to_trash: bool = False
-    domain: str | None = None
     tags: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -517,17 +534,13 @@ def _router(accounts: set[str]) -> AccountFor:
     return route
 
 
-def _target(account: str, accounts: set[str], options: IngestOptions) -> Target:
+def _target(account: str, options: IngestOptions) -> Target:
     return Target(
         store_dir=resolve_store_dir(account),
-        archive_dir=resolve_archive_dir(account),
+        messages_dir=resolve_messages_dir(account),
         account=account,
-        identities=identities(load_account_aliases(), accounts),
-        domain_aliases=load_domain_aliases(domain_aliases_path(MAIL_ROOT)),
-        filing_domain=options.domain,
         labels=list(options.tags) or None,
         excluded_lists=frozenset(_excluded(account)),
-        list_folders=load_list_folders(list_folders_path(MAIL_ROOT)),
     )
 
 
@@ -535,21 +548,14 @@ def ingest(account: str | None = None, *, options: IngestOptions) -> dict[str, o
     """File the new ``.eml`` under ``options.src`` (routed or into one account), or staged.
 
     With ``options.staged``, ``account`` resolves as every verb resolves it
-    (`env.resolve_account`) and that one store's staged mail is filed. Raises
-    ``ValueError`` when ``options.domain`` is not a bare domain: it becomes
-    an archive path segment, so a malformed one (or a path-traversal attempt) is
-    refused here, at the boundary that accepts owner input, before the worker.
+    (`env.resolve_account`) and that one store's staged mail is filed.
     """
-    if options.domain is not None and not DOMAIN_RE.match(options.domain):
-        raise ValueError(
-            f"invalid --domain {options.domain!r}: expected a bare domain like acme.com"
-        )
     account_for, accounts = _resolver()
 
     if options.staged:
         resolved = resolve_account(account)
         return ingest_staged(
-            target=_target(resolved, accounts, options),
+            target=_target(resolved, options),
             staging_dir=resolve_staging_dir(resolved),
             duplicates_dir=resolve_duplicates_dir(resolved),
             dry_run=options.dry_run,
@@ -559,7 +565,7 @@ def ingest(account: str | None = None, *, options: IngestOptions) -> dict[str, o
     if account is None:
         return ingest_routed(
             src=src,
-            targets={a: _target(a, accounts, options) for a in sorted(accounts)},
+            targets={a: _target(a, options) for a in sorted(accounts)},
             account_for=account_for,
             route_for=_router(accounts),
             dry_run=options.dry_run,
@@ -569,7 +575,7 @@ def ingest(account: str | None = None, *, options: IngestOptions) -> dict[str, o
     resolved = resolve_account(account)
     return ingest_folder(
         src=src,
-        target=_target(resolved, accounts, options),
+        target=_target(resolved, options),
         account_for=account_for,
         dry_run=options.dry_run,
         force=options.force,
@@ -726,7 +732,7 @@ def _accounts_view() -> AccountsView:
                 "total": sum(counts.values()),
                 "last_download": report_lib.last_download(
                     [
-                        resolve_archive_dir(folder.name),
+                        resolve_messages_dir(folder.name),
                         resolve_staging_dir(folder.name),
                     ]
                 ),
@@ -891,9 +897,6 @@ def _ingest_stats(stats: dict[str, object]) -> dict[str, object]:
     if "added_by_year" in out:
         years = cast(dict[int, int], out["added_by_year"])
         out["added_by_year"] = {str(year): count for year, count in years.items()}
-    if "top_domains" in out:
-        top = cast(list[tuple[str, int]], out["top_domains"])
-        out["top_domains"] = [{"domain": d, "count": n} for d, n in top]
     if "accounts" in out:
         accounts = cast(list[dict[str, object]], out["accounts"])
         out["accounts"] = [_ingest_stats(account) for account in accounts]
@@ -906,14 +909,13 @@ def ingest_root(  # pylint: disable=too-many-arguments
     src: Path | None = None,
     staged: bool = False,
     source: str = "local",
-    domain: str | None = None,
     tags: list[str] | None = None,
     no_delete: bool = False,
     force: bool = False,
     dry_run: bool = False,
 ) -> IngestRoot:
     """Additively file what fetch staged, or a local .eml folder, into the manifest and
-    archive.
+    messages/.
 
     A routed run that skips a store another process holds is refused: the ``ApiError``
     says what it filed, then each busy store.
@@ -932,7 +934,6 @@ def ingest_root(  # pylint: disable=too-many-arguments
             dry_run=dry_run,
             force=force,
             to_trash=not no_delete,
-            domain=domain,
             tags=tuple(tags or ()),
         )
         stats = ingest(mail_account, options=options)

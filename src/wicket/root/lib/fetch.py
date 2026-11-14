@@ -67,6 +67,7 @@ from wicket.manifest import (
     Row,
     eml_on_disk,
     merge_settlement,
+    message_files,
     read_shard,
     shard_path,
     staged_files,
@@ -233,8 +234,8 @@ def _fetch_bodies_batch(
 class ThreadContext:
     """Per-run parameters shared, read-only, by planning and workers.
 
-    ``dest`` is the archive (reconcile checks ``downloaded`` against it, and a link
-    needs its copy there); ``staging_dir`` is where bodies are written;
+    ``dest`` is the store's ``messages/`` (reconcile checks ``downloaded`` against
+    it, and a link needs its copy there); ``staging_dir`` is where bodies are written;
     ``duplicates_dir`` holds copies set aside, which count as got; ``provider`` is
     the account's mail provider (`wicket.provider`). ``account`` is who is *you*
     when reconcile derives a domain: the account, as ingest --staged reconciles
@@ -406,9 +407,10 @@ def _mailbox_keys(
     Message-ID in one run get two keys, the first to arrive keeping the bare one.
     """
     work: dict[str, MailRow] = {id_: row for id_, (row, _year) in rows.items()}
+    files = message_files(dest)
 
     def held(row: MailRow) -> bool:
-        return bool(row.get("downloaded")) and eml_on_disk(row, dest)
+        return bool(row.get("downloaded")) and eml_on_disk(row, files)
 
     requests = [
         KeyRequest(
@@ -785,9 +787,8 @@ def _prepare(ctx: ThreadContext) -> None:
     """
     if ctx.staging_dir is None and not ctx.dry_run:
         raise ValueError("fetch needs a staging dir to write into")
-    ctx.dest.mkdir(parents=True, exist_ok=True)
     if ctx.store_dir is not None and not ctx.dry_run:
-        reconcile(ctx.store_dir, ctx.dest, ctx.account, ctx.domain_aliases)
+        reconcile(ctx.store_dir, ctx.dest)
 
 
 def download(

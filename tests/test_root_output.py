@@ -494,14 +494,13 @@ def _filed(account: str = ME, **over: object) -> Stats:
     stats: Stats = {
         "account": account,
         "added": 2,
-        "unfiled": 0,
         "added_by_year": {2026: 2},
-        "top_domains": [("acme.com", 2)],
-        "by_rule": {"rule": 2},
-        "filed": {"acme.com/2026-07": ["a1.eml", "a2.eml"]},
+        "filed": {"2026/07": ["a1.eml", "a2.eml"]},
         "skipped": 0,
         "excluded": 0,
         "excluded_lists": 0,
+        "copies": 0,
+        "subject_mismatches": [],
     }
     return {**stats, **over}
 
@@ -517,7 +516,9 @@ def _routed(**over: object) -> Stats:
         "skipped": 0,
         "excluded": 0,
         "excluded_lists": 0,
-        "filed": {"acme.com/2026-07": ["a1.eml", "a2.eml"]},
+        "filed": {"2026/07": ["a1.eml", "a2.eml"]},
+        "copies": 0,
+        "subject_mismatches": [],
         "unrouted": 0,
         "unrouted_threads": 0,
         "busy": [],
@@ -557,7 +558,7 @@ def _staged(**over: object) -> Stats:
     return {**stats, **over}
 
 
-FILED = "    acme.com/2026-07/\n      a1.eml\n      a2.eml\n"
+FILED = "    2026/07/\n      a1.eml\n      a2.eml\n"
 
 
 def _ingest(
@@ -593,7 +594,7 @@ def test_ingest_routed_dry_run_left_alone_and_counts(
     del mail
     stats = _routed(
         dup=1,
-        accounts=[_filed(skipped=3, excluded=1, unfiled=1)],
+        accounts=[_filed(skipped=3, excluded=1)],
         unrouted=2,
         unrouted_threads=1,
         trashable=4,
@@ -603,8 +604,9 @@ def test_ingest_routed_dry_run_left_alone_and_counts(
     assert run("ingest", "--src", str(tmp_path), "--dry-run") == (
         0,
         "read: 3 file(s), 3 unique, 1 in-folder dup(s)\n"
-        f"  would add 2 to {ME} (2026:2); 3 already archived; 1 excluded, skipped; "
-        "1 unfiled\n" + FILED + "  left alone: 2 message(s) addressed to no known "
+        f"  would add 2 to {ME} (2026:2); 3 already archived; 1 excluded, skipped\n"
+        + FILED
+        + "  left alone: 2 message(s) addressed to no known "
         "account (add an alias, or create the store, to claim them)\n"
         "  would trash: 4 source file(s) -> ~/.Trash\n",
         "",
@@ -670,18 +672,14 @@ def test_ingest_single_busy(
 
 def test_ingest_staged(mail: Path, run: Run, monkeypatch: pytest.MonkeyPatch) -> None:
     del mail
-    stats = _staged(
-        archived=1, duplicates=1, excluded=1, unfiled=1, by_rule={"rule": 1, "self": 1}
-    )
+    stats = _staged(archived=1, duplicates=1, excluded=1)
     _ingest(monkeypatch, staged=_returns(stats))
     assert run("ingest", "--staged", "--mail-account", ME) == (
         0,
         f"staged: 2 file(s); filed 2 to {ME} (2026:2)\n"
-        "  by rule: rule 1, self 1\n"
         "  1 already archived (staged copy removed)\n"
         "  1 set aside as duplicates\n"
-        "  1 excluded, skipped and left staged\n"
-        "  1 unfiled\n" + FILED,
+        "  1 excluded, skipped and left staged\n" + FILED,
         "",
     )
 
@@ -693,7 +691,6 @@ def test_ingest_staged_refused_and_unrecognized(
     stats = _staged(
         added=0,
         added_by_year={},
-        by_rule={},
         filed={},
         refused=["t1/m1@20260706T090004Z.eml"],
         unrecognized=["notes.txt", "t2/odd.eml"],
@@ -707,15 +704,6 @@ def test_ingest_staged_refused_and_unrecognized(
         "  2 not a staged name (left alone):\n"
         "    notes.txt\n"
         "    t2/odd.eml\n",
-    )
-
-
-def test_ingest_bad_domain(mail: Path, run: Run) -> None:
-    del mail
-    assert run("ingest", "--src", "docs", "--domain", "../etc") == (
-        2,
-        "",
-        "invalid --domain '../etc': expected a bare domain like acme.com\n",
     )
 
 

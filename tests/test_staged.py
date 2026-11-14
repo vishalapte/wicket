@@ -1,4 +1,4 @@
-"""fetch only stages; ``ingest --staged`` files (plan rules 6, 7 and 14, and the
+"""fetch only stages; ``ingest --staged`` files (plan rules 6 and 14, and the
 duplicates home).
 
 A staged body is ``<store>/staging/<thread_id>/<msgid>@<INTERNALDATE>.eml``. These
@@ -9,14 +9,23 @@ api and the face. No test opens IMAP.
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
 import wicket.__main__ as root
 from wicket import env
-from wicket.manifest import Row, load_store, read_shard, shard_path, write_shard
-from wicket.message import local_msgid
+from wicket.manifest import (
+    Row,
+    load_store,
+    message_file,
+    message_files,
+    read_shard,
+    shard_path,
+    write_shard,
+)
+from wicket.message import local_msgid, message_date, message_stem
 from wicket.provider import GMAIL, parse_staged
 from wicket.root import api as root_api
 
@@ -54,8 +63,8 @@ def _stage(  # pylint: disable=too-many-arguments
     return path
 
 
-def _ingest(domain: str | None = None, dry_run: bool = False) -> dict[str, object]:
-    options = root_api.IngestOptions(staged=True, domain=domain, dry_run=dry_run)
+def _ingest(dry_run: bool = False) -> dict[str, object]:
+    options = root_api.IngestOptions(staged=True, dry_run=dry_run)
     return root_api.ingest(ME, options=options)
 
 
@@ -64,42 +73,49 @@ def _rows(mail: Path) -> dict[str, dict[str, object]]:
 
 
 def _archived(mail: Path) -> list[str]:
-    archive = mail / ME / "archive"
-    return sorted(p.relative_to(archive).as_posix() for p in archive.rglob("*.eml"))
+    """Each file under ``messages/``, as its path there, sorted."""
+    messages = mail / ME / "messages"
+    return sorted(
+        path.relative_to(messages).as_posix()
+        for path in message_files(messages).values()
+    )
+
+
+def _at(raw: bytes) -> str:
+    """Where a message dated July 2026 is filed under ``messages/``."""
+    return f"2026/07/{message_stem(raw)}.eml"
+
+
+def _held(mail: Path, raw: bytes, **row: object) -> str:
+    """Seed a message the store holds: its file at ``messages/YYYY/MM/<stem>.eml``
+    and its row (``stem``, ``downloaded``) in its year's shard. Returns the stem."""
+    stem = message_stem(raw)
+    when = datetime.fromisoformat(str(row["date"]))
+    path = message_file(mail / ME / "messages", stem, message_date(raw, when))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
+    shard = shard_path(mail / ME / "manifest", when.year)
+    rows = read_shard(shard) if shard.exists() else {}
+    rows[str(row["id"])] = {**row, "downloaded": True, "stem": stem}
+    write_shard(shard, rows)
+    return stem
 
 
 # --- rule 6: fetch stages, ingest --staged files -----------------------------
 
 
-def test_staged_mail_is_filed_by_the_rank_and_leaves_staging(mail: Path) -> None:
-    _stage(mail, "1765", "18f2", frm="billing@acme.com", to=ME, mid="a@acme")
+def test_staged_mail_is_filed_and_leaves_staging(mail: Path) -> None:
+    raw = _stage(
+        mail, "1765", "18f2", frm="billing@acme.com", to=ME, mid="a@acme"
+    ).read_bytes()
     stats = _ingest()
-    assert stats["added"] == 1 and stats["by_rule"] == {"rule": 1}
-    assert _archived(mail) == ["acme.com/2026-07/18f2.eml"]
+    assert stats["added"] == 1
+    assert _archived(mail) == [_at(raw)]
     row = _rows(mail)["a@acme"]
-    assert (row["msgid"], row["thread_id"], row["filed"]) == ("18f2", "1765", "rule")
+    assert (row["msgid"], row["thread_id"]) == ("18f2", "1765")
     assert row["date"] == "2026-07-06T09:00:04+00:00"  # the INTERNALDATE
-    assert row["downloaded"] is True and row["path"] == "acme.com/2026-07/18f2.eml"
+    assert row["downloaded"] is True and row["stem"] == message_stem(raw)
     assert not list((mail / ME / "staging").rglob("*"))  # body and thread dir gone
-
-
-def test_a_staged_note_to_self_and_a_blast_file_under_self_and_sent(mail: Path) -> None:
-    _stage(mail, "1", "a1", frm=ME, to=ME, mid="note@x")
-    _stage(mail, "2", "a2", frm=ME, to="a@acme.com, b@globex.com", mid="blast@x")
-    stats = _ingest()
-    assert stats["by_rule"] == {"self": 1, "sent": 1}
-    assert _archived(mail) == ["self/2026-07/a1.eml", "sent/2026-07/a2.eml"]
-
-
-def test_an_alias_address_is_you_for_the_self_rule(
-    mail: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    aliases = mail / "account-aliases.json"
-    aliases.write_text('{"you@gmail.com": ["me@burner.example"]}')
-    monkeypatch.setenv(env.ACCOUNT_ALIASES_ENV_VAR, str(aliases))
-    _stage(mail, "1", "a1", frm="me@burner.example", to=ME, mid="note@x")
-    _ingest()
-    assert _archived(mail) == ["self/2026-07/a1.eml"]
 
 
 def test_a_staged_message_settles_into_its_catalog_rows_shard(mail: Path) -> None:
@@ -117,42 +133,9 @@ def test_a_staged_message_settles_into_its_catalog_rows_shard(mail: Path) -> Non
     _stage(mail, "1765", "18f2", frm="billing@acme.com", to=ME, mid="a@acme")
     _ingest()
     row = read_shard(shard_path(mail / ME / "manifest", 2025))["a@acme"]
-    assert row["downloaded"] is True and row["filed"] == "rule"
+    assert row["downloaded"] is True
     assert row["labels"] == ["inbox"] and row["date"] == observed["date"]
     assert not shard_path(mail / ME / "manifest", 2026).exists()
-
-
-def test_a_staged_reply_joins_its_threads_archived_folder(mail: Path) -> None:
-    archive = mail / ME / "archive"
-    (archive / "sent" / "2026-07").mkdir(parents=True)
-    (archive / "sent" / "2026-07" / "10.eml").write_bytes(b"x")
-    opener = {
-        "id": "open@x",
-        "msgid": "10",
-        "thread_id": "1765",
-        "date": "2026-07-01T09:00:00+00:00",
-        "from": ME,
-        "to": ["a@acme.com", "b@globex.com"],
-        "downloaded": True,
-        "path": "sent/2026-07/10.eml",
-        "filed": "sent",
-    }
-    write_shard(shard_path(mail / ME / "manifest", 2026), {"open@x": opener})
-    _stage(mail, "1765", "18f2", frm="a@acme.com", to=ME, mid="reply@acme")
-    _ingest(domain="vendor.com")  # an anchor outranks --domain
-    assert _rows(mail)["reply@acme"]["path"] == "sent/2026-07/18f2.eml"
-    assert _rows(mail)["reply@acme"]["filed"] == "sent"  # copied from the anchor
-
-
-# --- rule 7: --domain files every unanchored staged message ------------------
-
-
-def test_staged_domain_files_every_unanchored_message(mail: Path) -> None:
-    _stage(mail, "1", "a1", frm="billing@acme.com", to=ME, mid="a@x")
-    _stage(mail, "2", "a2", frm=ME, to=ME, mid="b@x")
-    stats = _ingest(domain="vendor.com")
-    assert stats["by_rule"] == {"forced": 2}
-    assert _archived(mail) == ["vendor.com/2026-07/a1.eml", "vendor.com/2026-07/a2.eml"]
 
 
 # --- rule 14: an excluded row is skipped and counted --------------------------
@@ -172,7 +155,7 @@ def test_an_excluded_staged_message_is_skipped_counted_and_left(mail: Path) -> N
     assert staged.exists() and _archived(mail) == []
     kept = _rows(mail)["a@x"]  # reconcile ran first; the owner's record stands
     assert kept["excluded"] == row["excluded"] and not kept["downloaded"]
-    assert "path" not in kept and "filed" not in kept
+    assert "stem" not in kept
 
 
 # --- duplicates: one home, <mail root>/.duplicates/<store>/<path> -------------
@@ -180,27 +163,24 @@ def test_an_excluded_staged_message_is_skipped_counted_and_left(mail: Path) -> N
 
 def test_a_copy_archived_under_another_name_goes_to_duplicates(mail: Path) -> None:
     """The Gmail copy of a message ingest filed from a local export (gmail_key's link)."""
-    archive = mail / ME / "archive"
-    local = f"acme.com/2026-07/{local_msgid('a@acme')}.eml"
-    (archive / local).parent.mkdir(parents=True)
-    (archive / local).write_bytes(b"the local copy")
-    filed = {
-        "id": "a@acme",
-        "msgid": local_msgid("a@acme"),
-        "thread_id": "a@acme",
-        "date": "2026-07-06T09:00:00+00:00",  # the Date header: ingest stores it
-        "from": "billing@acme.com",
-        "downloaded": True,
-        "path": local,
-    }
-    write_shard(shard_path(mail / ME / "manifest", 2026), {"a@acme": filed})
     staged = _stage(mail, "1765", "18f2", frm="billing@acme.com", to=ME, mid="a@acme")
     body = staged.read_bytes()
+    local = body + b"the local copy\n"  # the export's bytes: the same message
+    stem = _held(
+        mail,
+        local,
+        id="a@acme",
+        msgid=local_msgid("a@acme"),
+        thread_id="a@acme",
+        date="2026-07-06T09:00:00+00:00",  # the Date header: ingest stores it
+        **{"from": "billing@acme.com"},
+    )
     stats = _ingest()
     assert (stats["duplicates"], stats["linked"], stats["added"]) == (1, 1, 0)
-    dup = mail / ".duplicates" / ME / "acme.com" / "2026-07" / "18f2.eml"
+    dup = mail / ".duplicates" / ME / "2026-07" / "18f2.eml"
     assert dup.read_bytes() == body and not staged.exists()
-    assert _archived(mail) == [local]  # the archive is untouched
+    assert _archived(mail) == [f"2026/07/{stem}.eml"]  # untouched
+    assert message_files(mail / ME / "messages")[stem].read_bytes() == local
     assert _rows(mail)["a@acme"]["msgid"] == "18f2"  # linked: fetch now holds it
     store = env.resolve_duplicates_dir(ME)
     assert store == mail / ".duplicates" / ME
@@ -209,26 +189,29 @@ def test_a_copy_archived_under_another_name_goes_to_duplicates(mail: Path) -> No
 def test_the_same_message_already_archived_drops_only_an_identical_copy(
     mail: Path,
 ) -> None:
-    archive = mail / ME / "archive"
     staged = _stage(mail, "1765", "18f2", frm="billing@acme.com", to=ME, mid="a@acme")
-    (archive / "acme.com" / "2026-07").mkdir(parents=True)
-    (archive / "acme.com" / "2026-07" / "18f2.eml").write_bytes(staged.read_bytes())
-    row = {
-        "id": "a@acme",
-        "msgid": "18f2",
-        "thread_id": "1765",
-        "date": "2026-07-06T09:00:04+00:00",
-        "downloaded": True,
-        "path": "acme.com/2026-07/18f2.eml",
-    }
-    write_shard(shard_path(mail / ME / "manifest", 2026), {"a@acme": row})
+    _held(
+        mail,
+        staged.read_bytes(),
+        id="a@acme",
+        msgid="18f2",
+        thread_id="1765",
+        date="2026-07-06T09:00:04+00:00",
+    )
     other = _stage(mail, "1766", "18f3", frm="b@acme.com", to=ME, mid="b@acme")
-    (archive / "acme.com" / "2026-07" / "18f3.eml").write_bytes(b"different bytes")
+    body = other.read_bytes()
+    in_the_way = mail / ME / "messages" / _at(body)
+    in_the_way.write_bytes(b"different bytes")  # a file no row names, at its stem
     stats = _ingest()
     assert stats["archived"] == 1 and not staged.exists()
-    assert stats["refused"] == [other.relative_to(mail / ME / "staging").as_posix()]
-    assert other.exists()  # a differing file in the way: refused and kept
-    assert "b@acme" not in _rows(mail)  # nothing settled onto the other file
+    # A differing file in the way is never overwritten: the staged body is set
+    # aside (not filed, not lost) and named as a copy whose Subject differs.
+    assert in_the_way.read_bytes() == b"different bytes"
+    aside = mail / ".duplicates" / ME / "2026-07" / "18f3.eml"
+    assert aside.read_bytes() == body and not other.exists()
+    assert stats["copies"] == 1 and len(stats["subject_mismatches"]) == 1  # type: ignore[arg-type]
+    row = _rows(mail)["b@acme"]
+    assert "stem" not in row and row["downloaded"] is False  # nothing settled onto it
 
 
 # --- the split plan's write order, names and no-op ----------------------------
@@ -244,14 +227,14 @@ def test_a_row_written_before_its_body_is_repaired_offline(mail: Path) -> None:
         "from": "billing@acme.com",
         "to": [ME],
         "downloaded": True,  # written first; the body never moved
-        "path": "acme.com/2026-07/18f2.eml",
-        "filed": "rule",
     }
+    staged = _stage(mail, "1765", "18f2", frm="billing@acme.com", to=ME, mid="a@acme")
+    raw = staged.read_bytes()
+    row["stem"] = message_stem(raw)
     write_shard(shard_path(mail / ME / "manifest", 2026), {"a@acme": row})
-    _stage(mail, "1765", "18f2", frm="billing@acme.com", to=ME, mid="a@acme")
     stats = _ingest()
     assert stats["added"] == 1
-    assert _archived(mail) == ["acme.com/2026-07/18f2.eml"]
+    assert _archived(mail) == [_at(raw)]
     assert _rows(mail)["a@acme"]["downloaded"] is True
 
 
@@ -279,7 +262,7 @@ def test_a_dry_run_writes_nothing(mail: Path) -> None:
     staged = _stage(mail, "1765", "18f2", frm="billing@acme.com", to=ME, mid="a@acme")
     stats = _ingest(dry_run=True)
     assert stats["added"] == 1 and staged.exists()
-    assert not (mail / ME / "archive").exists()
+    assert not (mail / ME / "messages").exists()
     assert not (mail / ME / "manifest").exists()
 
 
@@ -295,7 +278,7 @@ def test_the_face_files_staged_mail_and_refuses_both_sources(
 ) -> None:
     _stage(mail, "1765", "18f2", frm="billing@acme.com", to=ME, mid="a@acme")
     code, out, _err = run_cli(_main, ["ingest", "--staged", "--mail-account", ME])
-    assert code == 0 and "filed 1 to you@gmail.com" in out and "rule 1" in out
+    assert code == 0 and "filed 1 to you@gmail.com" in out
     code, _out, err = run_cli(_main, ["ingest", "--staged", "--src", "x"])
     assert code == 2 and "not allowed with" in err
 

@@ -3,9 +3,13 @@
 One JSON Lines shard per UTC year at ``<store-dir>/<YYYY>.jsonl``, one row per
 message keyed by the provider-neutral ``id``, oldest ``date`` first. ``catalog``
 writes the observation fields and ``deleted``; ``ingest`` writes the settlement
-fields (``downloaded``, ``path``, ``filed``) as it files a body. A catalog rewrite
+fields (``downloaded``, ``stem``) as it files a body. A catalog rewrite
 of a shard refreshes observation and preserves settlement, so the two never
 clobber each other.
+
+Also the one home for where a message's file lives: ``<store>/messages/YYYY/MM/
+<stem>.eml`` (`message_file`), found by its row's ``stem`` (`message_files`,
+`eml_on_disk`). ADR-MAIL, 2026-11-14: one file per message, never moved, no folders.
 
 Also the reader of ``<store>/staging/`` (`staged_files`); the name ``fetch`` gives a
 staged body is its provider's (`wicket.provider`), so writer and reader share one rule.
@@ -14,7 +18,7 @@ Pure stdlib, operates on paths and dicts: it is the shared store below the
 verbs, fully testable without a mailbox.
 
 The store is a *cache* (ADR 0002): ``downloaded`` is ground-truthed by the
-``.eml`` on disk and ``domain`` is derived from observation, so the whole thing
+``.eml`` on disk, so the whole thing
 is rebuildable from mailbox + disk by re-running the verbs.
 """
 
@@ -27,10 +31,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # Settlement fields a catalog rewrite carries forward (filing owns them): whether
-# the body is archived, where, and which filing rule placed it (`wicket.filing`).
-SETTLEMENT_FIELDS = ("downloaded", "path", "filed")
-# Fields a catalog rewrite carries forward: settlement, and the owner's
-# ``excluded`` (a message on the mailbox deliberately not kept locally).
+# the body is archived, and its file's stem.
+SETTLEMENT_FIELDS = ("downloaded", "stem")
+# Fields a catalog rewrite carries forward: settlement, and ``excluded`` (a message on
+# the mailbox not kept locally).
 CARRIED_FIELDS = (*SETTLEMENT_FIELDS, "excluded")
 
 Row = dict[str, object]
@@ -155,21 +159,47 @@ def is_excluded(row: Row, excluded_lists: Collection[str]) -> bool:
     return bool(row.get("excluded")) or row.get("list_id") in excluded_lists
 
 
-def eml_on_disk(row: Row, archive_dir: Path) -> bool:
-    """Whether a row's ``.eml`` is in the archive: the ground truth for ``downloaded``.
+def message_file(messages_dir: Path, stem: str, when: datetime) -> Path:
+    """Where a message's one file lives: ``<messages_dir>/YYYY/MM/<stem>.eml``.
 
-    One home for the test, because three callers decide on it: ``reconcile``
-    resets ``downloaded`` from it, ``fetch`` links only a copy that passes it, and
-    ``ingest`` skips a message as archived only when its row passes it.
+    ``when`` is its ``MESSAGE_DATE`` (`wicket.message.message_date`); the month is
+    its UTC month.
     """
-    path = row.get("path")
-    return bool(path) and (archive_dir / str(path)).exists()
+    utc = when.astimezone(timezone.utc)
+    return messages_dir / f"{utc.year:04d}" / f"{utc.month:02d}" / f"{stem}.eml"
+
+
+def message_files(messages_dir: Path) -> dict[str, Path]:
+    """Every file under ``messages_dir`` by stem, from one walk of ``YYYY/MM/``.
+
+    The index every reader finds a row's file in: a row records only its ``stem``,
+    because the month comes from the message and is not on the row. Empty when the
+    dir does not exist. A stem seen twice keeps the first in path order.
+    """
+    found: dict[str, Path] = {}
+    if not messages_dir.is_dir():
+        return found
+    for path in sorted(messages_dir.glob("[0-9][0-9][0-9][0-9]/[0-9][0-9]/*.eml")):
+        found.setdefault(path.stem, path)
+    return found
+
+
+def eml_on_disk(row: Row, files: Collection[str]) -> bool:
+    """Whether a row's ``.eml`` is on disk: the ground truth for ``downloaded``.
+
+    ``files`` is the store's `message_files` (its stems). One home for the test,
+    because three callers decide on it: ``reconcile`` resets ``downloaded`` from
+    it, ``fetch`` links only a copy that passes it, and ``ingest`` skips a message
+    as archived only when its row passes it.
+    """
+    stem = row.get("stem")
+    return bool(stem) and str(stem) in files
 
 
 def merge_settlement(prior: Shard, settlements: Shard) -> Shard:
     """Merge settlement fields into matching rows, adding rows that are new.
 
-    Filing owns ``downloaded`` / ``path`` / ``filed`` and may run before catalog
+    Filing owns ``downloaded`` / ``stem`` and may run before catalog
     has observed a message, so a settlement with no prior observation row becomes
     a new, partial row (ADR 0002 progressive enrichment).
     """

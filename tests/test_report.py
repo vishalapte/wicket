@@ -315,14 +315,16 @@ def _file(path: Path, when: datetime) -> None:
 
 
 def test_last_download_is_the_newest_eml_in_local_time(tmp_path: Path) -> None:
-    archive, staging = tmp_path / "archive", tmp_path / "staging"
-    _file(archive / "acme.com" / "2026-10" / "1@x.eml", datetime(2026, 10, 30, 9, 5))
+    messages, staging = tmp_path / "messages", tmp_path / "staging"
+    _file(
+        messages / "2026" / "10" / "0123456789abcdef.eml", datetime(2026, 10, 30, 9, 5)
+    )
     _file(staging / "t1" / "2@x@20261103.eml", datetime(2026, 11, 3, 17, 1))
-    _file(archive / "acme.com" / "notes.txt", datetime(2026, 12, 1, 0, 0))  # not .eml
-    assert last_download([archive, staging]) == "2026-11-03 17:01"
-    assert last_download([archive]) == "2026-10-30 09:05"
+    _file(messages / "2026" / "notes.txt", datetime(2026, 12, 1, 0, 0))  # not .eml
+    assert last_download([messages, staging]) == "2026-11-03 17:01"
+    assert last_download([messages]) == "2026-10-30 09:05"
 
 
 def test_last_download_none_when_no_eml(tmp_path: Path) -> None:
-    (tmp_path / "archive").mkdir()
-    assert last_download([tmp_path / "archive", tmp_path / "staging"]) is None
+    (tmp_path / "messages").mkdir()
+    assert last_download([tmp_path / "messages", tmp_path / "staging"]) is None

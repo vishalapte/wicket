@@ -7,7 +7,7 @@ the true home, never from here (this file holds no code):
     from wicket.root.api import catalog, CatalogOptions
     from wicket.root.api import fetch, FetchOptions, held_messages
     from wicket.root.api import report, sender_counts, all_addresses, manifest
-    from wicket.env import resolve_store_dir, resolve_archive_dir
+    from wicket.env import resolve_store_dir, resolve_messages_dir
 
 Every entry point takes ``account=`` (multi-user, n accounts); the only account
 folder in ``~/.config/wicket/accounts`` is the default.

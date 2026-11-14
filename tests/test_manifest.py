@@ -36,7 +36,7 @@ def test_load_store_merges_all_shards(tmp_path: Path) -> None:
 def test_merge_settlement_updates_existing_and_adds_new() -> None:
     prior: dict[str, Row] = {"a@x": {"id": "a@x", "from": "y@z.com"}}
     settlements: dict[str, Row] = {
-        "a@x": {"downloaded": True, "path": "p"},
+        "a@x": {"downloaded": True, "stem": "p"},
         "b@x": {"id": "b@x", "downloaded": True},
     }
     merged = merge_settlement(prior, settlements)
@@ -100,7 +100,7 @@ def test_merge_refreshes_observation_and_preserves_settlement() -> None:
             "id": "a@x",
             "from": "old@acme.com",
             "downloaded": True,
-            "path": "acme.com/2024-03/18f2.eml",
+            "stem": "18f2aa00bb11cc22",
         }
     }
     observed: dict[str, Row] = {
@@ -110,12 +110,12 @@ def test_merge_refreshes_observation_and_preserves_settlement() -> None:
     assert merged["a@x"]["from"] == "new@acme.com"  # observation refreshed
     assert merged["a@x"]["subject"] == "Hi"
     assert merged["a@x"]["downloaded"] is True  # settlement preserved
-    assert merged["a@x"]["path"] == "acme.com/2024-03/18f2.eml"
+    assert merged["a@x"]["stem"] == "18f2aa00bb11cc22"
     assert merged["a@x"]["deleted"] is False
 
 
 def test_complete_catalog_keeps_downloaded_gone_marks_deleted() -> None:
-    prior = {"a@x": {"id": "a@x", "downloaded": True, "path": "p.eml"}}
+    prior = {"a@x": {"id": "a@x", "downloaded": True, "stem": "18f2aa00bb11cc22"}}
     merged = merge_catalog(prior, {}, complete=True)
     assert merged["a@x"]["deleted"] is True
     assert merged["a@x"]["downloaded"] is True
@@ -134,7 +134,7 @@ def test_incomplete_catalog_preserves_unseen_untouched() -> None:
 
 
 def test_returning_message_clears_deleted() -> None:
-    prior = {"a@x": {"id": "a@x", "deleted": True, "downloaded": True, "path": "p.eml"}}
+    prior = {"a@x": {"id": "a@x", "deleted": True, "downloaded": True, "stem": "p"}}
     observed: dict[str, Row] = {"a@x": {"id": "a@x", "from": "x@y.com"}}
     merged = merge_catalog(prior, observed, complete=True)
     assert merged["a@x"]["deleted"] is False

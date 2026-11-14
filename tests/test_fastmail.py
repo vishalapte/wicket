@@ -22,6 +22,7 @@ import wicket.root.lib.catalog as catalog_lib
 import wicket.root.lib.fetch as fetch_lib
 from wicket import auth, env
 from wicket.manifest import Row, load_store
+from wicket.message import message_stem
 from wicket.provider import FASTMAIL, GMAIL, parse_staged, provider_of
 from wicket.root import api as root_api
 
@@ -310,7 +311,7 @@ def test_catalog_refuses_mailbox_on_fastmail(
 def _ctx() -> fetch_lib.ThreadContext:
     mail = env.MAIL_ROOT / ME
     return fetch_lib.ThreadContext(
-        dest=mail / "archive",
+        dest=mail / "messages",
         account=ME,
         domain_aliases={},
         dry_run=False,
@@ -404,20 +405,24 @@ def test_a_real_file_imap_json_is_refused_before_any_login(
 
 
 @pytest.mark.usefixtures("account")
-def test_ingest_files_a_staged_fastmail_body_by_its_digest_name() -> None:
+def test_ingest_files_a_staged_fastmail_body_at_its_message_stem() -> None:
+    """The file is named by the message (`message_stem`), not by Fastmail's digest;
+    the row keeps Fastmail's id and thread."""
     when = datetime(2026, 1, 30, 17, 26, 16, tzinfo=timezone.utc)
     rel = FASTMAIL.staged_name("AlN-Somskwhs", "Str0hkL1JFLB", when)
     staged = env.MAIL_ROOT / ME / "staging" / rel
     staged.parent.mkdir(parents=True)
-    staged.write_bytes(
+    raw = (
         b"Message-ID: <m1@uber.com>\r\nFrom: shop@uber.com\r\nTo: you@enine.com\r\n"
         b"Date: Fri, 30 Jan 2026 17:26:16 +0000\r\nSubject: s\r\n\r\nbody\r\n"
     )
+    staged.write_bytes(raw)
     root_api.ingest(ME, options=root_api.IngestOptions(staged=True))
     rows: dict[str, Row] = load_store(env.MAIL_ROOT / ME / "manifest")
     row = rows["m1@uber.com"]
     assert (row["msgid"], row["thread_id"]) == ("Str0hkL1JFLB", "AlN-Somskwhs")
-    stem = FASTMAIL.file_stem("Str0hkL1JFLB")
-    assert str(row["path"]).endswith(f"/2026-01/{stem}.eml")
-    assert (env.MAIL_ROOT / ME / "archive" / str(row["path"])).exists()
+    stem = message_stem(raw)
+    assert row["stem"] == stem and "path" not in row
+    filed = env.MAIL_ROOT / ME / "messages" / "2026" / "01" / f"{stem}.eml"
+    assert filed.read_bytes() == raw
     assert not staged.exists()

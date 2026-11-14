@@ -48,13 +48,15 @@ duplicate it here. Bound by the racecar standards (resolver:
     `domains.parse_domain_aliases`), and only then writes (`maps.write_maps`).
     `store` writes domain-routes.json for `--from` and account-aliases.json for
     `--to`, both or neither.
-  - `filing.py` (package root, one layer above the shared modules): the **one
-    home for where mail is filed**: the domain rule (`compute_domain`), the
-    thread rule (`opener`: a thread's earliest-`date` row across the store), the
-    self and sent rules, the fallback, the rank (`file_thread`: anchor, forced,
-    list, self, sent, rule, fallback, unfiled) with the `filed` kinds it records,
-    `folder_of` (the one rule for a row's folder: its path without
-    `YYYY-MM/<file>`), and the router (`route_threads`). Never restate a filing rule in a verb.
+  - `filing.py` (package root, one layer above the shared modules): the shared
+    rules for who a message is with and which store it belongs in: the domain rule
+    (`compute_domain`), the thread rule (`opener`: a thread's earliest-`date` row
+    across the store; `thread_domain`, every row's `domain`), and the router
+    (`route_threads`). There is no filing rank: a thread is linked to every domain it
+    touches through its rows' `from`/`to`/`cc`/`bcc`. A message's one file is
+    `<store>/messages/YYYY/MM/<stem>.eml` (`manifest.message_file`, named by
+    `message.message_stem`, month `message.message_date`), found by the row's `stem`
+    (`manifest.message_files`). Never restate a filing rule in a verb.
     `reconcile.py` keeps only the reconcile.
   - `auth.py`, `env.py`, `domains.py`, `message.py`, `manifest.py` (package
     root): shared. `env.DEFAULT_THREADS` is the one home for the worker-pool
@@ -92,14 +94,11 @@ duplicate it here. Bound by the racecar standards (resolver:
     mail (`Target.excluded_lists`), while `catalog` records the whole mailbox.
     `catalog` and `ingest` write a row's `list_id` (its `List-Id`, absent when
     none: a fact, never the decision); `report` leaves a row out by
-    `manifest.is_excluded` (`excluded`, or `list_id` on the map now). A fifth,
-    `list-folders.json` (`{name: [address]}`), is read by `wicket.lists` and edited by
-    hand; `filing.place` files a thread whose opener's `To` names one of its addresses
-    under `lists/<name>` (`Target.list_folders`).
+    `manifest.is_excluded` (`excluded`, or `list_id` on the map now).
   - `root/lib/catalog.py`, `root/lib/fetch.py`, `root/lib/ingest.py`: per-verb
     worker modules. **`fetch` files nothing**: it gets bodies into
     `<store>/staging/` (`env.resolve_staging_dir`) and writes no `downloaded` or
-    `path`; `ingest` is the only filer, and `ingest --staged` files what fetch
+    `stem`; `ingest` is the only filer, and `ingest --staged` files what fetch
     got. Duplicates have one home, `<mail root>/.duplicates/<store>/`
     (`env.resolve_duplicates_dir`). **No argparse, no `if __name__ == "__main__"`, no CLI.**
     Strictly non-interactive; the IMAP workers parallelize with a per-worker

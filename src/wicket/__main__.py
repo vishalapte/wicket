@@ -136,7 +136,6 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
         src=args.src,
         staged=args.staged,
         source=args.source,
-        domain=args.domain,
         tags=args.tag,
         no_delete=args.no_delete,
         force=args.force,
@@ -148,13 +147,13 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
 def subcommands() -> list[tuple[str, str]]:
     return [
         ("catalog", "Observe the mailbox into the year-sharded manifest"),
-        ("fetch", "Download .eml for matching threads, filed by sender domain"),
+        ("fetch", "Get .eml for matching messages into the store's staging/"),
         ("report", "Read-only reports over the manifest (senders, addresses)"),
-        ("ingest", "Additively file a local .eml folder into the manifest + archive"),
+        ("ingest", "Additively file .eml into the manifest + messages/"),
     ]
 
 
-def parser() -> argparse.ArgumentParser:
+def parser() -> argparse.ArgumentParser:  # pylint: disable=too-many-statements
     """Build the parser without parsing: the audit and --help both read this."""
     p = NounParser(
         prog="python -m wicket",
@@ -301,8 +300,8 @@ def parser() -> argparse.ArgumentParser:
         default=None,
         help="JSON file of domain aliases, shape "
         '{"primary.com": ["alias1.com", "alias2.com"]}. '
-        "Search expands to include aliases; the filing domain canonicalizes "
-        "to primary. Default: <state-dir>/domain-aliases.json (silently "
+        "Search expands to include aliases; a domain filter folds to the "
+        "primary. Default: <state-dir>/domain-aliases.json (silently "
         "skipped if absent).",
     )
     p_fetch.add_argument(
@@ -384,7 +383,7 @@ def parser() -> argparse.ArgumentParser:
         description=(
             "Ingest local .eml (a folder — an Outlook / Apple Mail drag-export — "
             "or a single message) "
-            "into the year-sharded manifest + archive, for a mailbox wicket "
+            "into the year-sharded manifest + messages/, for a mailbox wicket "
             "cannot reach over IMAP. Additive: a message already archived is left "
             "untouched, only new ones are filed, and no archived message is ever "
             "deleted. Re-running is idempotent. With no --mail-account, each thread is "
@@ -424,17 +423,6 @@ def parser() -> argparse.ArgumentParser:
         default="local",
         choices=["local"],
         help="Export profile (only 'local' today: RFC822 .eml on disk).",
-    )
-    p_ingest.add_argument(
-        "--domain",
-        default=None,
-        help="File every newly-added message under this one domain folder "
-        "(<domain>/YYYY-MM/), overriding the self, sent and counterparty rules. "
-        "A destination, NOT a filter: it does not select which messages are "
-        "ingested; with --staged it applies to every staged message of the "
-        "account. A bare domain like acme.com. A reply that joins an "
-        "already-archived thread still files with its thread, so this only "
-        "redirects mail that has no archived home yet.",
     )
     p_ingest.add_argument(
         "--tag",

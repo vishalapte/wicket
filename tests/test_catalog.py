@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from wicket.manifest import Row, read_shard, shard_path, write_shard
+from wicket.manifest import Row, message_file, read_shard, shard_path, write_shard
 from wicket.message import local_msgid
 from wicket.root.lib.catalog import _fetch_rows_batch, _finalize_record, _merge_observed
 
@@ -90,11 +90,11 @@ def _merge(
     store: Path,
     observed: list[dict[str, object]],
     swept: set[int],
-    archive: Path | None = None,
+    messages: Path | None = None,
 ) -> None:
     _merge_observed(
         store_dir=store,
-        archive_dir=archive,
+        messages_dir=messages,
         observed=observed,
         swept=swept,
         dry_run=False,
@@ -151,16 +151,17 @@ def test_a_resweep_is_byte_identical(tmp_path: Path) -> None:
 def test_an_ingest_row_in_an_unswept_year_is_linked_and_nothing_dropped(
     tmp_path: Path,
 ) -> None:
-    store, archive = tmp_path / "manifest", tmp_path / "archive"
-    path = "ba.com/2019-12/" + local_msgid("r@ba") + ".eml"
-    (archive / path).parent.mkdir(parents=True)
-    (archive / path).write_bytes(b"x")
+    store, messages = tmp_path / "manifest", tmp_path / "messages"
+    stem = "0123456789abcdef"
+    held = message_file(messages, stem, SENT)
+    held.parent.mkdir(parents=True)
+    held.write_bytes(b"x")
     ingested = {
         "id": "r@ba",
         "msgid": local_msgid("r@ba"),
         "date": SENT.isoformat(),
         "downloaded": True,
-        "path": path,
+        "stem": stem,
     }
     bystander: Row = {
         "id": "other@x",
@@ -169,9 +170,9 @@ def test_an_ingest_row_in_an_unswept_year_is_linked_and_nothing_dropped(
     }
     write_shard(shard_path(store, 2019), {"r@ba": ingested, "other@x": bystander})
     # its Gmail copy arrived on 1 Jan 2020; only 2020 is swept
-    _merge(store, [_obs("18a", "2020-01-01T00:00:00+00:00")], {2020}, archive)
+    _merge(store, [_obs("18a", "2020-01-01T00:00:00+00:00")], {2020}, messages)
     shard = read_shard(shard_path(store, 2019))
-    assert shard["r@ba"]["msgid"] == "18a" and shard["r@ba"]["path"] == path
+    assert shard["r@ba"]["msgid"] == "18a" and shard["r@ba"]["stem"] == stem
     assert shard["r@ba"]["deleted"] is False
     assert "other@x" in shard  # a year not swept loses nothing
     assert not read_shard(shard_path(store, 2020))  # no second row for the message
@@ -208,7 +209,7 @@ def test_a_resweep_keeps_excluded(tmp_path: Path) -> None:
 def test_a_dry_run_writes_nothing(tmp_path: Path) -> None:
     _merge_observed(
         store_dir=tmp_path,
-        archive_dir=None,
+        messages_dir=None,
         observed=[_obs("18a", "2024-03-01T00:00:00+00:00")],
         swept={2024},
         dry_run=True,

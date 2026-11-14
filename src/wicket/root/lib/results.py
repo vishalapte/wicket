@@ -173,19 +173,30 @@ class FetchRoot(TypedDict):
     halt_file: NotRequired[str | None]
 
 
+class SubjectMismatch(TypedDict):
+    """A message not filed because its stem is held, whose Subject differs from the
+    held one's: usually a copy rewritten in transit, rarely a reused Message-ID.
+    ``holder`` is the held row's id, None for a file no row names."""
+
+    stem: str
+    id: str
+    subject: str
+    holder: str | None
+    holder_subject: str
+
+
 class IngestStore(TypedDict):
     """One store's share of an ingest: what was filed there, and where."""
 
     account: str
     added: int
-    unfiled: int
     added_by_year: dict[str, int]
-    top_domains: list[DomainCount]
-    by_rule: dict[str, int]
     filed: dict[str, list[str]]
     skipped: int
     excluded: int
     excluded_lists: int
+    copies: int
+    subject_mismatches: list[SubjectMismatch]
 
 
 class BusyStore(TypedDict):
@@ -200,9 +211,11 @@ class IngestRoot(TypedDict):
     """What ``wicket ingest`` returns: the mode it ran in, and that mode's stats.
 
     Every mode carries ``added``, ``excluded``, ``excluded_lists`` (mail sent via a
-    mailing list the store excludes, skipped and left where it is) and ``filed``
-    (archive dir -> the ``.eml`` filed there). ``staged`` and ``single`` carry one
-    store's counts at the top (``account`` ... ``by_rule``); ``routed`` carries them
+    mailing list the store excludes, skipped and left where it is), ``filed``
+    (``messages/`` dir -> the ``.eml`` filed there), ``copies`` (not filed: the store
+    already holds a file with their stem) and ``subject_mismatches``. ``staged`` and
+    ``single`` carry one
+    store's counts at the top (``account`` ... ``added_by_year``); ``routed`` carries them
     per store in ``accounts``. ``added_by_year`` is keyed by the year as a string. A returned
     result never names a busy store: a routed run that skips one is refused.
     """
@@ -214,11 +227,10 @@ class IngestRoot(TypedDict):
     excluded: int
     excluded_lists: int
     filed: dict[str, list[str]]
+    copies: int
+    subject_mismatches: list[SubjectMismatch]
     account: NotRequired[str]
-    unfiled: NotRequired[int]
     added_by_year: NotRequired[dict[str, int]]
-    top_domains: NotRequired[list[DomainCount]]
-    by_rule: NotRequired[dict[str, int]]
     skipped: NotRequired[int]
     warning: NotRequired[str | None]
     files: NotRequired[int]

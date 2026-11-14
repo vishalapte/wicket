@@ -1,65 +1,25 @@
-"""Where a message is filed: the one home for every filing rule (plan rule 8).
+"""Which store a thread belongs in, and the search a domain filter becomes.
 
-Filing decides a thread's folder (``<archive>/<folder>/YYYY-MM/<msgid>.eml``) and
-records which rule chose it as the row's ``filed``. The rank, first match wins:
+There are no folders and no filing rank (ADR-MAIL, 2026-11-14): a message's one file
+is ``<store>/messages/YYYY/MM/<stem>.eml``, and a row is linked to every domain it
+touches by its ``from``/``to``/``cc``/``bcc``.
 
-1. **anchor**: a downloaded member of the thread, its ``.eml`` on disk; new members
-   join its folder and copy its ``filed`` (nothing when it has none);
-2. **forced**: ``ingest --domain D``;
-3. **list**: the opener's ``To`` names an address in `wicket.lists`'s map; the thread
-   files under ``lists/<name>`` (the first mapped address in the row's sorted ``to``);
-4. **self**: the opener is from you and every recipient is you, or there is none;
-5. **sent**: the opener is from you and its ``To``, folded, without your addresses,
-   spans two or more domains;
-6. **rule**: the computed counterparty domain (`compute_domain`);
-7. **fallback**: your own domain and addresses stripped from ``To``, one domain left;
-8. **unfiled**: ``_unfiled``.
+- **The router** (`route_threads`): which store a thread belongs in.
+- **The thread opener** (`opener`): a thread's earliest-``date`` row, whose thread id a
+  local export's thread adopts.
+- **The domain filter** (`build_domain_query`): the Gmail search ``--domains`` becomes.
 
-The **opener** is a thread's earliest-``date`` row across every shard of the store
-(thread ids are per store), so the rule reads the message that started the thread,
-whichever of its members is being filed. Steps 3-8 are `place`: what the maps and
-identities say, with no anchor and no override.
-
-Also here: the search a domain filter becomes (`build_domain_query`) and the
-**router** (`route_threads`), which picks the store a thread belongs in. Shared, so
-every verb that files reads one rule; it imports only the shared layer below it.
+Shared, so every verb reads one rule; it imports only the shared layer below it.
 """
 
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Callable, Container, Iterable
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
-from email.utils import getaddresses
 
-from wicket.domains import DOMAIN_RE, canonical_domain, expand_domain
-from wicket.env import normalize_account
+from wicket.domains import DOMAIN_RE, expand_domain
 from wicket.manifest import Row
-
-UNFILED = "_unfiled"
-SELF = "self"
-SENT = "sent"
-# The folder under the archive that holds every list folder (`wicket.lists`).
-LISTS = "lists"
-
-# A row's ``filed``: which rank placed it. An anchored member copies its anchor's.
-FILED_RULE = "rule"
-FILED_LIST = "list"
-FILED_FORCED = "forced"
-FILED_SELF = "self"
-FILED_SENT = "sent"
-FILED_FALLBACK = "fallback"
-FILED_UNFILED = "unfiled"
-FILED_KINDS = (
-    FILED_RULE,
-    FILED_LIST,
-    FILED_FORCED,
-    FILED_SELF,
-    FILED_SENT,
-    FILED_FALLBACK,
-    FILED_UNFILED,
-)
 
 # Resolves an address to the store that owns it, or None when nothing does. Supplied
 # by an api (`env.account_of` bound to the alias map and the stores that exist), so a
@@ -67,75 +27,7 @@ FILED_KINDS = (
 AccountFor = Callable[[str], str | None]
 
 
-# --- The domain rule -----------------------------------------------------
-
-
-def _domain_of(address: str) -> str | None:
-    address = address.strip().lower()
-    if "@" not in address:
-        return None
-    return address.split("@", 1)[1] or None
-
-
-def _parse_header_addresses(header_value: str) -> list[str]:
-    if not header_value:
-        return []
-    return [addr.lower() for _, addr in getaddresses([header_value]) if addr]
-
-
-def _canonical_external(
-    addr: str, me: str, aliases: dict[str, str], mine: Container[str] = frozenset()
-) -> str | None:
-    """Canonical domain of ``addr``, or None if it is ``me`` or malformed.
-
-    ``mine`` is the owner's other addresses (`env.identities`); one of them is
-    no more a counterparty than ``me`` is. Empty by default, so a caller that
-    knows only the mailbox address gets the historical behavior.
-
-    The result becomes a filesystem path segment (`<domain>/<month>/<msgid>.eml`),
-    so a crafted header like `x@../../etc` must never pass: DOMAIN_RE forbids `/`
-    and `..`, and a rejected address just drops out.
-    """
-    canonical = normalize_account(addr)
-    if canonical == me or canonical in mine:
-        return None
-    domain = _domain_of(addr)
-    if domain and DOMAIN_RE.match(domain):
-        return canonical_domain(domain, aliases)
-    return None
-
-
-def compute_domain(
-    from_header: str,
-    to_header: str,
-    imap_email: str,
-    domain_aliases: dict[str, str] | None = None,
-    identities: Container[str] = frozenset(),
-) -> str | None:
-    """Return the alias-canonical domain a thread files under, or None (ADR 0002).
-
-    Direction decides the counterparty. For **inbound** mail (From is not you)
-    the domain is the sender's, and ``To`` (including any forwarding address) is
-    ignored. For **outbound** mail (From is you) it is the single external
-    recipient's domain, or None when you wrote to several distinct domains.
-    Applied to a thread's opener. ``imap_email`` is your own address
-    (the mailbox owner); `+tag` aliasing is normalized. ``identities`` widens
-    "you" to every address you receive at (`env.identities`), so mail sent to
-    a burner or forwarding address of yours still files under the counterparty
-    rather than under your own alias domain.
-    """
-    aliases = domain_aliases or {}
-    me = normalize_account(imap_email)
-    from_addrs = _parse_header_addresses(from_header)
-    sender = from_addrs[0] if from_addrs else ""
-    if sender and (normalize_account(sender) == me or sender in identities):
-        domains = {
-            d
-            for addr in _parse_header_addresses(to_header)
-            if (d := _canonical_external(addr, me, aliases, identities)) is not None
-        }
-        return next(iter(domains)) if len(domains) == 1 else None
-    return _canonical_external(sender, me, aliases, identities)
+# --- The domain filter ----------------------------------------------------
 
 
 def build_domain_query(
@@ -175,147 +67,6 @@ def _when(row: Row) -> datetime:
 def opener(rows: Iterable[Row]) -> Row | None:
     """The thread's opener: its earliest-``date`` row, ties broken by ``id``; None if empty."""
     return min(rows, key=lambda r: (_when(r), str(r.get("id", ""))), default=None)
-
-
-def recipients(row: Row) -> str:
-    """A row's ``to`` as one header value (a row stores it as a list of addresses)."""
-    value = row.get("to")
-    if isinstance(value, list):
-        return ", ".join(str(x) for x in value)
-    return str(value or "")
-
-
-def thread_domain(
-    observed: Iterable[Row], imap_email: str, domain_aliases: dict[str, str]
-) -> str | None:
-    """The counterparty domain of a thread's opener, or None (reconcile's prediction)."""
-    first = opener(observed)
-    if first is None:
-        return None
-    return compute_domain(
-        str(first.get("from", "")), recipients(first), imap_email, domain_aliases
-    )
-
-
-# --- The rank ------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class Owner:
-    """Who *you* are in one store, which every rule below the anchor needs.
-
-    ``account`` is the store's own name (an address, or a bucket's slug);
-    ``identities`` is `env.identities` (every address that is you, wildcards too);
-    ``domain_aliases`` folds a subdomain onto its primary (``t.delta.com`` ->
-    ``delta.com``); ``list_folders`` is `wicket.lists`'s map, ``address -> name``.
-    """
-
-    account: str
-    identities: Container[str]
-    domain_aliases: dict[str, str]
-    list_folders: dict[str, str] = field(default_factory=dict)
-
-    def __contains__(self, address: object) -> bool:
-        if not isinstance(address, str):
-            return False
-        return (
-            normalize_account(address) == normalize_account(self.account)
-            or address in self.identities
-        )
-
-
-def _fallback(to_addrs: list[str], owner: Owner) -> str | None:
-    """Owner rule: strip yourself from To; if one external domain remains, use it.
-
-    "Yourself" is your own domain plus every address in ``owner.identities``: without
-    the latter, a message to a burner address of yours leaves that burner's domain
-    standing as the lone "external" one and files under it. The survivor is folded to
-    its primary (``t.delta.com`` -> ``delta.com``), as the main rule folds.
-    """
-    account = owner.account
-    own = account.split("@", 1)[1] if "@" in account else ""
-    external = {
-        canonical_domain(d, owner.domain_aliases)
-        for a in to_addrs
-        if (d := _domain_of(a))
-        and DOMAIN_RE.match(d)
-        and d != own
-        and a not in owner.identities
-    }
-    return next(iter(external)) if len(external) == 1 else None
-
-
-def place(from_header: str, to_header: str, owner: Owner) -> tuple[str, str]:
-    """``(folder, filed)`` for a thread whose opener has these ``From`` and ``To``.
-
-    The rank below the anchor and the override: list, self, sent, the computed
-    domain, the fallback, ``_unfiled``. Self and sent apply only to an opener from
-    you. "You" is the store's account and every address in ``owner.identities``.
-    """
-    senders = _parse_header_addresses(from_header)
-    to_addrs = _parse_header_addresses(to_header)
-    for address in to_addrs:
-        name = owner.list_folders.get(address)
-        if name is not None:
-            return f"{LISTS}/{name}", FILED_LIST
-    if senders and senders[0] in owner:
-        others = [a for a in to_addrs if a not in owner]
-        if not others:
-            return SELF, FILED_SELF
-        me = normalize_account(owner.account)
-        domains = {
-            d
-            for a in others
-            if (d := _canonical_external(a, me, owner.domain_aliases)) is not None
-        }
-        if len(domains) >= 2:
-            return SENT, FILED_SENT
-    domain = compute_domain(
-        from_header, to_header, owner.account, owner.domain_aliases, owner.identities
-    )
-    if domain is not None:
-        return domain, FILED_RULE
-    fallback = _fallback(to_addrs, owner)
-    if fallback is not None:
-        return fallback, FILED_FALLBACK
-    return UNFILED, FILED_UNFILED
-
-
-def folder_of(path: object) -> str:
-    """A row's folder: its archive path without the trailing ``YYYY-MM/<file>``.
-
-    ``lists/qse/2026-11/a.eml`` is ``lists/qse``; ``acme.com/2026-07/a.eml`` is
-    ``acme.com``. The one rule every reader of a row's folder uses; '' for no path.
-    """
-    return str(path or "").rsplit("/", 2)[0]
-
-
-def anchor_folder(anchor: Row) -> str:
-    """The folder an anchor's thread lives in (`folder_of` its committed path)."""
-    return folder_of(anchor.get("path"))
-
-
-def file_thread(
-    *,
-    anchor: Row | None,
-    forced: str | None,
-    first: Row | None,
-    owner: Owner,
-) -> tuple[str, str | None]:
-    """``(folder, filed)`` for a thread, by the whole rank (module docstring).
-
-    ``anchor`` is the thread's earliest downloaded row whose ``.eml`` is on disk, or
-    None; ``forced`` is ``--domain``; ``first`` is the thread's opener. An anchored
-    thread copies the anchor's ``filed``, which is None when the anchor has none.
-    """
-    if anchor is not None:
-        filed = anchor.get("filed")
-        return anchor_folder(anchor), str(filed) if filed else None
-    if forced:
-        return forced, FILED_FORCED
-    if first is None:
-        return UNFILED, FILED_UNFILED
-    return place(str(first.get("from", "")), recipients(first), owner)
 
 
 # --- The router ----------------------------------------------------------

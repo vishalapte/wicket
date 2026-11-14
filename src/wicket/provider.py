@@ -118,7 +118,11 @@ class Provider:
         raise NotImplementedError
 
     def file_stem(self, msgid: str) -> str:
-        """The ``.eml`` file name (no suffix) a message of this provider is filed under."""
+        """The name (no suffix) a copy of this provider's message is set aside under.
+
+        Only ``.duplicates`` uses it (fetch counts a set-aside copy as got); a filed
+        message is named by `wicket.message.message_stem`.
+        """
         raise NotImplementedError
 
     def raw_search(self, query: str) -> Search:

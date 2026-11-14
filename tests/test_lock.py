@@ -112,10 +112,8 @@ def _eml(folder: Path, name: str, *, frm: str, to: str) -> None:
 def _target(mail: Path, account: str) -> Target:
     return Target(
         store_dir=mail / account / "manifest",
-        archive_dir=mail / account / "archive",
+        messages_dir=mail / account / "messages",
         account=account,
-        identities=env.Identities(frozenset({ME, WORK}), frozenset()),
-        domain_aliases={},
     )
 
 
@@ -132,7 +130,7 @@ def test_single_target_ingest_refuses_a_locked_store(
             ingest_folder(
                 src=tmp_path / "src", target=_target(mail, ME), account_for=_owner
             )
-    assert not (mail / ME / "archive").exists()  # nothing was filed
+    assert not (mail / ME / "messages").exists()  # nothing was filed
 
 
 def test_routed_ingest_skips_and_names_a_busy_store_and_files_the_rest(
@@ -149,8 +147,8 @@ def test_routed_ingest_skips_and_names_a_busy_store_and_files_the_rest(
         )
     assert [a["account"] for a in stats["accounts"]] == [ME]  # type: ignore[attr-defined]
     assert stats["busy"] == [{"account": WORK, "pid": str(os.getpid()), "messages": 1}]
-    assert len(list((mail / ME / "archive").rglob("*.eml"))) == 1
-    assert not (mail / WORK / "archive").exists()
+    assert len(list((mail / ME / "messages").rglob("*.eml"))) == 1
+    assert not (mail / WORK / "messages").exists()
 
 
 def test_the_ingest_face_names_a_busy_store_and_exits_2(

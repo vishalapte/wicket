@@ -1,11 +1,9 @@
-"""Where a message is filed, and the record of why (plan rules 8 and 14).
+"""What ingest files, and what it skips (plan rule 14).
 
-The rank lives in `wicket.filing`; these tests drive it through ingest's production
-path (`ingest_folder`), so each asserts the folder a message lands in and the
-``filed`` its row records: anchor, ``--domain`` (forced), self, sent, the computed
-domain (rule), the fallback, ``_unfiled``. The opener is the thread's earliest row
-across the store, not the earliest message in hand, and only an archived row
-anchors. A row the owner marked ``excluded`` is skipped and counted.
+These tests drive ingest's production path (`ingest_folder`). A message the store has
+observed keeps the store's thread id; a row the owner marked ``excluded`` is skipped,
+counted, and its source kept. A row records no folder and no label: a message's one
+file is ``messages/YYYY/MM/<stem>.eml``.
 """
 
 from __future__ import annotations
@@ -15,165 +13,55 @@ from pathlib import Path
 import pytest
 
 import wicket.root.lib.ingest as ingest_lib
-from wicket.env import Identities
-from wicket.filing import folder_of
-from wicket.manifest import Row, load_store, merge_catalog, shard_path, write_shard
+from wicket.manifest import Row, load_store, message_files, shard_path, write_shard
 from wicket.root.lib.ingest import Target, ingest_folder
 
 ME = "you@gmail.com"
 WORK = "work@corp.com"
-BURNER = "burner@duck.com"
 
 
 def _account_for(address: str) -> str | None:
     return address if address in (ME, WORK) else None
 
 
-def _target(
-    root: Path,
-    account: str = ME,
-    *,
-    forced: str | None = None,
-    lists: dict[str, str] | None = None,
-) -> Target:
+def _target(root: Path, account: str = ME) -> Target:
     return Target(
         store_dir=root / account / "manifest",
-        archive_dir=root / account / "archive",
+        messages_dir=root / account / "messages",
         account=account,
-        identities=Identities(frozenset({ME, WORK, BURNER}), frozenset()),
-        domain_aliases={},
-        filing_domain=forced,
-        list_folders=lists or {},
     )
 
 
-def _eml(  # pylint: disable=too-many-arguments
-    folder: Path,
-    name: str,
-    *,
-    frm: str,
-    to: str,
-    date: str = "Mon, 06 Jul 2026 09:00:00 +0000",
-    reply_to: str = "",
-) -> None:
+def _eml(folder: Path, name: str, *, frm: str, to: str) -> None:
     folder.mkdir(parents=True, exist_ok=True)
-    refs = f"In-Reply-To: <{reply_to}@test>\n" if reply_to else ""
     (folder / f"{name}.eml").write_text(
-        f"Message-ID: <{name}@test>\n{refs}From: {frm}\nTo: {to}\n"
-        f"Date: {date}\nSubject: {name}\n\nbody\n",
+        f"Message-ID: <{name}@test>\nFrom: {frm}\nTo: {to}\n"
+        f"Date: Mon, 06 Jul 2026 09:00:00 +0000\nSubject: {name}\n\nbody\n",
         encoding="utf-8",
     )
 
 
-def _filed(
-    root: Path,
-    *,
-    account: str = ME,
-    forced: str | None = None,
-    lists: dict[str, str] | None = None,
-) -> dict[str, object]:
-    """Ingest ``root/src`` into ``account`` and return the store's rows by id."""
+def _filed(root: Path, *, account: str = ME) -> dict[str, Row]:
+    """Ingest ``root/src`` into ``account`` and return the store's rows by id.
+
+    Every downloaded row's file is on disk at its stem under ``messages/``.
+    """
     ingest_folder(
         src=root / "src",
-        target=_target(root, account, forced=forced, lists=lists),
+        target=_target(root, account),
         account_for=_account_for,
         force=True,
     )
-    return dict(load_store(root / account / "manifest"))
+    rows = dict(load_store(root / account / "manifest"))
+    files = message_files(root / account / "messages")
+    for row in rows.values():
+        if row.get("downloaded"):
+            assert str(row["stem"]) in files
+    return rows
 
 
-def _folder_and_filed(rows: dict[str, object], mid: str) -> tuple[str, object]:
-    row = rows[mid]
-    assert isinstance(row, dict)
-    return folder_of(row["path"]), row.get("filed")
-
-
-def test_a_note_to_self_files_under_self(tmp_path: Path) -> None:
-    _eml(tmp_path / "src", "note", frm=ME, to=f"{ME}, {BURNER}")
-    assert _folder_and_filed(_filed(tmp_path), "note@test") == ("self", "self")
-
-
-def test_a_message_with_no_recipient_from_you_files_under_self(tmp_path: Path) -> None:
-    _eml(tmp_path / "src", "draft", frm=ME, to="")
-    assert _folder_and_filed(_filed(tmp_path), "draft@test") == ("self", "self")
-
-
-def test_mail_to_two_counterparty_domains_files_under_sent(tmp_path: Path) -> None:
-    _eml(tmp_path / "src", "blast", frm=ME, to=f"a@acme.com, b@globex.com, {BURNER}")
-    assert _folder_and_filed(_filed(tmp_path), "blast@test") == ("sent", "sent")
-
-
-def test_the_sent_rule_holds_in_every_account(tmp_path: Path) -> None:
-    _eml(tmp_path / "src", "blast", frm=WORK, to="a@acme.com, b@globex.com")
-    rows = _filed(tmp_path, account=WORK)
-    assert _folder_and_filed(rows, "blast@test") == ("sent", "sent")
-
-
-def test_your_own_addresses_do_not_count_as_a_second_domain(tmp_path: Path) -> None:
-    _eml(tmp_path / "src", "one", frm=ME, to=f"a@acme.com, {BURNER}, {WORK}")
-    assert _folder_and_filed(_filed(tmp_path), "one@test") == ("acme.com", "rule")
-
-
-def test_an_inbound_message_records_rule(tmp_path: Path) -> None:
-    _eml(tmp_path / "src", "bill", frm="billing@acme.com", to=ME)
-    assert _folder_and_filed(_filed(tmp_path), "bill@test") == ("acme.com", "rule")
-
-
-def test_a_forced_domain_records_forced_and_outranks_self(tmp_path: Path) -> None:
-    _eml(tmp_path / "src", "note", frm=ME, to=ME)
-    rows = _filed(tmp_path, forced="vendor.com")
-    assert _folder_and_filed(rows, "note@test") == ("vendor.com", "forced")
-
-
-def test_no_sender_but_one_outside_recipient_records_fallback(tmp_path: Path) -> None:
-    _eml(tmp_path / "src", "odd", frm="", to=f"{ME}, x@acme.com")
-    assert _folder_and_filed(_filed(tmp_path), "odd@test") == ("acme.com", "fallback")
-
-
-def test_nothing_to_go_on_records_unfiled(tmp_path: Path) -> None:
-    _eml(tmp_path / "src", "odd", frm="", to=ME)
-    assert _folder_and_filed(_filed(tmp_path), "odd@test") == ("_unfiled", "unfiled")
-
-
-def test_an_anchored_reply_copies_its_anchors_filed(tmp_path: Path) -> None:
-    _eml(tmp_path / "src", "blast", frm=ME, to="a@acme.com, b@globex.com")
-    _filed(tmp_path)
-    _eml(
-        tmp_path / "src",
-        "reply",
-        frm="a@acme.com",
-        to=ME,
-        date="Tue, 07 Jul 2026 09:00:00 +0000",
-        reply_to="blast",
-    )
-    rows = _filed(tmp_path)
-    assert _folder_and_filed(rows, "reply@test") == ("sent", "sent")
-
-
-def test_an_anchor_with_no_filed_gives_none(tmp_path: Path) -> None:
-    """A row archived before `filed` existed anchors its thread and records nothing."""
-    target = _target(tmp_path)
-    (target.archive_dir / "acme.com" / "2026-07").mkdir(parents=True)
-    (target.archive_dir / "acme.com" / "2026-07" / "aa.eml").write_bytes(b"x")
-    old = {
-        "id": "root@test",
-        "msgid": "aa",
-        "thread_id": "root@test",
-        "date": "2026-07-05T09:00:00+00:00",
-        "from": "billing@acme.com",
-        "to": [ME],
-        "downloaded": True,
-        "path": "acme.com/2026-07/aa.eml",
-    }
-    write_shard(shard_path(target.store_dir, 2026), {"root@test": old})
-    _eml(tmp_path / "src", "root", frm="billing@acme.com", to=ME)
-    _eml(tmp_path / "src", "reply", frm=ME, to="x@other.com", reply_to="root")
-    rows = _filed(tmp_path)
-    assert _folder_and_filed(rows, "reply@test") == ("acme.com", None)
-
-
-def test_the_opener_is_the_earliest_row_the_store_holds(tmp_path: Path) -> None:
-    """A thread you opened to two domains is sent mail, whichever reply is filed first."""
+def test_a_message_the_store_observed_joins_its_thread(tmp_path: Path) -> None:
+    """A local export has no provider thread id: the store's own one is kept."""
     target = _target(tmp_path)
     observed = {
         "open@test": {
@@ -198,40 +86,7 @@ def test_the_opener_is_the_earliest_row_the_store_holds(tmp_path: Path) -> None:
     write_shard(shard_path(target.store_dir, 2026), observed)
     _eml(tmp_path / "src", "reply", frm="a@acme.com", to=ME)
     rows = _filed(tmp_path)
-    assert _folder_and_filed(rows, "reply@test") == ("sent", "sent")
-    assert rows["reply@test"]["thread_id"] == "1765"  # type: ignore[index]
-
-
-def test_an_observed_rows_derived_domain_does_not_steer_filing(tmp_path: Path) -> None:
-    """Only an archived row anchors (split plan rule 3)."""
-    target = _target(tmp_path)
-    row = {
-        "id": "bill@test",
-        "msgid": "a1",
-        "thread_id": "1765",
-        "date": "2026-07-06T09:00:04+00:00",
-        "from": "billing@acme.com",
-        "to": [ME],
-        "downloaded": False,
-        "domain": "wrong.com",
-    }
-    write_shard(shard_path(target.store_dir, 2026), {"bill@test": row})
-    _eml(tmp_path / "src", "bill", frm="billing@acme.com", to=ME)
-    assert _folder_and_filed(_filed(tmp_path), "bill@test") == ("acme.com", "rule")
-
-
-def test_filed_survives_a_complete_catalog(tmp_path: Path) -> None:
-    del tmp_path
-    prior = {
-        "x": {
-            "id": "x",
-            "downloaded": True,
-            "path": "sent/2026-07/1.eml",
-            "filed": "sent",
-        }
-    }
-    merged = merge_catalog(prior, {"x": {"id": "x", "from": ME}}, complete=True)
-    assert merged["x"]["filed"] == "sent"
+    assert rows["reply@test"]["thread_id"] == "1765"
 
 
 def test_an_excluded_row_is_skipped_counted_and_kept_at_the_source(
@@ -257,67 +112,6 @@ def test_an_excluded_row_is_skipped_counted_and_kept_at_the_source(
         src=tmp_path / "src", target=target, account_for=_account_for, to_trash=True
     )
     assert (stats["added"], stats["excluded"]) == (0, 1)
-    assert not target.archive_dir.exists()  # not archived
+    assert not target.messages_dir.exists()  # not archived
     assert trashed == [[]]  # its source is not trashed
     assert load_store(target.store_dir)["dup@test"] == row
-
-
-# --- the list rule (list-folders.json) ---------------------------------------------
-
-QSE = "qse@lists.ercot.com"
-LISTS = {QSE: "qse", "gfem@corp.com": "gfem"}
-
-
-def test_mail_to_a_mapped_list_files_under_its_list_folder(tmp_path: Path) -> None:
-    _eml(tmp_path / "src", "notice", frm="ops@ercot.com", to=QSE)
-    rows = _filed(tmp_path, lists=LISTS)
-    assert _folder_and_filed(rows, "notice@test") == ("lists/qse", "list")
-
-
-def test_the_list_rule_outranks_self_and_the_domain_rule(tmp_path: Path) -> None:
-    _eml(tmp_path / "src", "post", frm=ME, to=QSE)
-    assert _folder_and_filed(_filed(tmp_path, lists=LISTS), "post@test") == (
-        "lists/qse",
-        "list",
-    )
-
-
-def test_two_mapped_lists_file_under_the_first_in_sorted_to(tmp_path: Path) -> None:
-    _eml(tmp_path / "src", "both", frm="x@acme.com", to=f"{QSE}, gfem@corp.com")
-    rows = _filed(tmp_path, lists=LISTS)
-    assert _folder_and_filed(rows, "both@test") == ("lists/gfem", "list")
-
-
-def test_a_reply_in_a_list_thread_stays_in_the_list_folder(tmp_path: Path) -> None:
-    _eml(tmp_path / "src", "notice", frm="ops@ercot.com", to=QSE)
-    _filed(tmp_path, lists=LISTS)
-    _eml(
-        tmp_path / "src",
-        "reply",
-        frm=ME,
-        to="ops@ercot.com",
-        date="Tue, 07 Jul 2026 09:00:00 +0000",
-        reply_to="notice",
-    )
-    rows = _filed(tmp_path, lists=LISTS)
-    assert _folder_and_filed(rows, "reply@test") == ("lists/qse", "list")
-
-
-def test_without_the_map_list_mail_files_by_domain(tmp_path: Path) -> None:
-    _eml(tmp_path / "src", "notice", frm="ops@ercot.com", to=f"{QSE}, {ME}")
-    assert _folder_and_filed(_filed(tmp_path), "notice@test") == ("ercot.com", "rule")
-
-
-@pytest.mark.parametrize(
-    "path,folder",
-    [
-        ("lists/qse/2026-07/a.eml", "lists/qse"),
-        ("acme.com/2026-07/a.eml", "acme.com"),
-        ("self/2026-07/a.eml", "self"),
-        ("", ""),
-    ],
-)
-def test_a_rows_folder_is_its_path_without_month_and_file(
-    path: str, folder: str
-) -> None:
-    assert folder_of(path) == folder

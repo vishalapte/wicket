@@ -6,7 +6,7 @@ generator:
 target:
   repo: wicket
   date: 2026-09-04
-  version: "0.19.0"
+  version: "0.20.0"
 bundle:
   - WICKET.md
   - WICKET-DOSSIER.md
@@ -114,7 +114,7 @@ relationships:
     to: EmlFile
     cardinality: "1:1"
     owner_side: Message
-    notes: Only when downloaded=true. The row's `path` points at it, and the file's first path segment IS the FilingDomain.
+    notes: Only when downloaded=true. The row's `stem` names it, at <store>/messages/YYYY/MM/<stem>.eml (ADR-MAIL, 2026-11-14).
   - from: Thread
     to: Message
     cardinality: "1:N"
@@ -169,7 +169,7 @@ external_surface:
       exit: "0 ok, 2 on config error"
     - verb: wicket ingest
       module: wicket.__main__
-      args: "--src | --staged (exactly one); --mail-account --source {local} --domain --tag --force --no-delete --dry-run"
+      args: "--src | --staged (exactly one); --mail-account --source {local} --tag --force --no-delete --dry-run"
       behavior: The only verb that files. --staged files what fetch got for one account (duplicates to <mail root>/.duplicates/<store>/). --src files local .eml (a folder, or one file); omit --mail-account to route each thread to the store it belongs to. No IMAP. Additive. Archived sources move to ~/.Trash unless --no-delete. A row marked excluded is skipped and counted.
       exit: "0 ok, 2 on mismatch / absent root / no .eml"
     - verb: python -m wicket.alias
@@ -302,8 +302,8 @@ It was lifted out of `factotum` (a personal kitchen-sink repo) because more than
 |---|---|
 | `wicket/root/` | The root noun: each root verb's api and request function (`root/api.py`), its worker (`root/lib/<verb>.py`), its result type (`root/lib/results.py`) and its text (`root/lib/renderer/plaintext.py`). `catalog` is here: observe the mailbox (headers only) into the manifest, recording **what exists** (IMAP). So is `fetch`: get full `.eml` for matching messages into the store's `staging/`, filing nothing (IMAP). So is `report`: read-only summaries over the manifest (top senders, every address, a bucket across every store; no IMAP). So is `ingest`, the only filer: staged mail (`--staged`), or a local `.eml` drag-export routed per thread (no IMAP). |
 | `wicket/env.py` | The environment layer: the mail root, the destination rules (who is *me*, which stores exist), the alias-file rule. Imports nothing above itself. |
-| `wicket/filing.py` | The one home for where mail is filed: the domain, thread, self and sent rules, the rank, `filed`, and the router. |
-| `wicket/reconcile.py` | The offline `downloaded`/`domain` reconcile. |
+| `wicket/filing.py` | The router (which store a thread belongs in), the thread opener, and the search a domain filter becomes. No filing rank (2026-11-14). |
+| `wicket/reconcile.py` | The offline `downloaded` reconcile. |
 | `wicket/domains.py` | Subdomain folding and counterparty routing — the two domain maps. |
 | `wicket/manifest.py` | The year-sharded store: read, write, and merge shards, deterministically. |
 | `wicket/message.py` | The provider-neutral `message_key`, the per-mailbox `mailbox_key`, field ownership, and a local export's header threads. |

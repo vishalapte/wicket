@@ -21,6 +21,7 @@ from ..results import (
     IngestRoot,
     IngestStore,
     ReportRoot,
+    SubjectMismatch,
 )
 
 
@@ -119,15 +120,30 @@ def _single(result: IngestRoot) -> IngestStore:
     return {
         "account": result["account"],
         "added": result["added"],
-        "unfiled": result["unfiled"],
         "added_by_year": result["added_by_year"],
-        "top_domains": result["top_domains"],
-        "by_rule": result["by_rule"],
         "filed": result["filed"],
         "skipped": result["skipped"],
         "excluded": result["excluded"],
         "excluded_lists": result["excluded_lists"],
+        "copies": result["copies"],
+        "subject_mismatches": result["subject_mismatches"],
     }
+
+
+def mismatch_lines(mismatches: list[SubjectMismatch]) -> list[str]:
+    """Each copy not filed whose Subject differs from the held message's, for the owner."""
+    lines: list[str] = []
+    if mismatches:
+        lines.append(
+            f"  {len(mismatches)} copy(ies) whose Subject differs from the held one:"
+        )
+    for m in mismatches:
+        lines.append(
+            f"    {m['stem']}  {m['id']}  (held: {m['holder'] or 'a file no row names'})"
+        )
+        lines.append(f"      this: {m['subject']}")
+        lines.append(f"      held: {m['holder_subject']}")
+    return lines
 
 
 def ingest_lines(result: IngestRoot) -> list[str]:
@@ -152,9 +168,10 @@ def ingest_lines(result: IngestRoot) -> list[str]:
             line += f"; {got['excluded']} excluded, skipped"
         if got["excluded_lists"]:
             line += f"; {got['excluded_lists']} from an excluded mailing list, skipped"
-        if got["unfiled"]:
-            line += f"; {got['unfiled']} unfiled"
+        if got["copies"]:
+            line += f"; {got['copies']} already held under the same stem, not filed"
         lines.append(line)
+        lines += mismatch_lines(got["subject_mismatches"])
         lines += _filed_lines(got["filed"])
     if result["unrouted"]:
         lines.append(
@@ -190,15 +207,12 @@ def _print_staged(result: IngestRoot) -> None:
     if by_year:
         line += f" ({by_year})"
     print(line)
-    rules = result["by_rule"]
-    if rules:
-        print("  by rule: " + ", ".join(f"{k} {n}" for k, n in rules.items()))
     for count, label in (
         (result["archived"], "already archived (staged copy removed)"),
         (result["duplicates"], "set aside as duplicates"),
+        (result["copies"], "already held under the same stem (row marked excluded)"),
         (result["excluded"], "excluded, skipped and left staged"),
         (result["excluded_lists"], "from an excluded mailing list, left staged"),
-        (result["unfiled"], "unfiled"),
     ):
         if count:
             print(f"  {count} {label}")
@@ -210,6 +224,8 @@ def _print_staged(result: IngestRoot) -> None:
             print(f"  {len(names)} {label}:", file=sys.stderr)
             for name in names:
                 print(f"    {name}", file=sys.stderr)
+    for line in mismatch_lines(result["subject_mismatches"]):
+        print(line)
     for filed in _filed_lines(result["filed"]):
         print(filed)
 

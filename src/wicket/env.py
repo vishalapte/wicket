@@ -78,15 +78,8 @@ EXCLUDED_LISTS_ENV_VAR = "WICKET_EXCLUDED_LISTS"
 EXCLUDED_SENDERS_FILENAME = "excluded_senders.json"
 EXCLUDED_SENDERS_ENV_VAR = "WICKET_EXCLUDED_SENDERS"
 
-# The list-folder map: group addresses whose threads file under ``archive/lists/<name>/``,
-# ``{"<name>": [address, ...]}``. Read by `wicket.lists`; named here so every owner map's
-# filename and override share one home.
-LIST_FOLDERS_FILENAME = "list-folders.json"
-LIST_FOLDERS_ENV_VAR = "WICKET_LIST_FOLDERS"
-
 # An email address. Deliberately permissive in the local part (burner services
-# mint odd ones) and strict in the domain, which is the half that can reach the
-# filesystem through the filing rule.
+# mint odd ones) and strict in the domain.
 ADDRESS_RE = re.compile(r"^[^@\s]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 
 # A catch-all alias: every address at a domain is yours ("*@shopping.you.com").
@@ -101,7 +94,7 @@ BUCKET_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 # Optional alias file consumed by fetch (`wicket.root.api`). Shape:
 #   {"primary.com": ["alias1.com", "alias2.com"], ...}
 # When present, the archive tool treats aliases as the same logical entity
-# as the primary (search expands; the filing domain canonicalizes to primary).
+# as the primary (search expands; a domain filter folds to the primary).
 ALIASES_FILENAME = "domain-aliases.json"
 
 # The owner's Gmail address is intentionally not baked in. A verb that needs
@@ -495,13 +488,14 @@ def resolve_store_dir(account: str) -> Path:
     return MAIL_ROOT / normalize_account(account) / "manifest"
 
 
-def resolve_archive_dir(account: str) -> Path:
-    """Per-store .eml archive root (``<mail-root>/<store>/archive``).
+def resolve_messages_dir(account: str) -> Path:
+    """Per-store message files (``<mail-root>/<store>/messages``).
 
-    Holds the ``<domain>/YYYY-MM/<msgid>.eml`` tree `wicket.root.lib.ingest`
-    writes; sibling to the manifest store under one mail root.
+    Holds the ``YYYY/MM/<stem>.eml`` tree `wicket.root.lib.ingest` writes, one
+    file per message (`manifest.message_file`; ADR-MAIL, 2026-11-14); sibling to
+    the manifest store under one mail root. Never created here.
     """
-    return MAIL_ROOT / normalize_account(account) / "archive"
+    return MAIL_ROOT / normalize_account(account) / "messages"
 
 
 def resolve_staging_dir(account: str) -> Path:
