@@ -48,12 +48,12 @@ duplicate it here. Bound by the racecar standards (resolver:
     `domains.parse_domain_aliases`), and only then writes (`maps.write_maps`).
     `store` writes domain-routes.json for `--from` and account-aliases.json for
     `--to`, both or neither.
-  - `filing.py` (package root, one layer above the shared modules): the shared
-    rules for who a message is with and which store it belongs in: the domain rule
-    (`compute_domain`), the thread rule (`opener`: a thread's earliest-`date` row
-    across the store; `thread_domain`, every row's `domain`), and the router
-    (`route_threads`). There is no filing rank: a thread is linked to every domain it
-    touches through its rows' `from`/`to`/`cc`/`bcc`. A message's one file is
+  - `filing.py` (package root, one layer above the shared modules): which store a
+    thread belongs in (the router, `route_threads`, voting with `participants`), a
+    thread's opener (`opener`: its earliest-`date` row, whose thread id a local
+    export's thread adopts), and the search a domain filter becomes
+    (`build_domain_query`). There is no filing rank and no row `domain`: a row is
+    linked to every domain it touches by its `from`/`to`/`cc`/`bcc`. A message's one file is
     `<store>/messages/YYYY/MM/<stem>.eml` (`manifest.message_file`, named by
     `message.message_stem`, month `message.message_date`), found by the row's `stem`
     (`manifest.message_files`). Never restate a filing rule in a verb.

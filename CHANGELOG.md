@@ -12,6 +12,9 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+### Fixed
+- **The package's agent rules describe `filing.py` as it is.** They named `compute_domain` and `thread_domain` and a row `domain`, all deleted in 0.20.0; they now name the router, the thread opener and the domain filter.
+
 ## 0.20.0 - 2026-11-14
 
 ### Removed
