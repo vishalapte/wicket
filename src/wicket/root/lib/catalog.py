@@ -94,7 +94,6 @@ _INTERNALDATE_RE = re.compile(rb'INTERNALDATE\s+"([^"]+)"')
 _HEADER_FIELDS = ("FROM", "TO", "SUBJECT", "MESSAGE-ID", "DATE", "LIST-ID")
 _HEADER_ITEM = f"HEADER.FIELDS ({' '.join(_HEADER_FIELDS)})"
 _HEADER_LITERAL_MARKER = f"BODY[{_HEADER_ITEM}]".encode("ascii")
-_SHARD_RE = re.compile(r"^\d{4}\.jsonl$")
 # Progress, one line per step; the CLI's `main()` shows it on stderr.
 logger = logging.getLogger(__name__)
 
@@ -412,7 +411,7 @@ def _merge_observed(  # pylint: disable=too-many-arguments
     Returns how many shards were merged.
     """
     prior: dict[int, Shard] = {
-        int(p.stem): read_shard(p) for p in store_shards(store_dir) if p.stem.isdigit()
+        int(p.stem): read_shard(p) for p in store_shards(store_dir)
     }
     rows: dict[str, MailRow] = {}
     year_of: dict[str, int] = {}

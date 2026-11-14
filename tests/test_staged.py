@@ -304,13 +304,6 @@ def test_the_face_files_staged_mail_and_refuses_both_sources(
 
 
 @pytest.mark.usefixtures("mail")
-def test_fetch_refuses_a_destination_and_names_the_split(run_cli: Run) -> None:
-    with pytest.raises(ValueError, match="ingest --staged"):
-        root_api.FetchOptions(dest=Path("/somewhere"))
-    code, _out, err = run_cli(_main, ["fetch", "--target", "/x", "--mail-account", ME])
-    assert code == 2 and "ingest --staged" in err
-
-
 def test_staged_paths_are_got_by_the_writer_and_read_by_the_reader() -> None:
     """One home for the staged name: what fetch writes, ingest parses back."""
     staged = parse_staged("1765/18f2@20260706T090004Z.eml")

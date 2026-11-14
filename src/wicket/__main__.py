@@ -110,7 +110,6 @@ def _cmd_fetch(args: argparse.Namespace) -> int:
         last=args.last,
         years=args.years,
         limit=args.limit,
-        target=args.target,
         alias_file=args.alias_file,
         state_dir=args.state_dir,
         threads=args.threads,
@@ -283,19 +282,11 @@ def parser() -> argparse.ArgumentParser:
         "later; anything else exits 2.",
     )
     p_fetch.add_argument(
-        "--target",
-        type=Path,
-        default=None,
-        help="Refused: fetch no longer files mail, so it takes no destination. "
-        "Bodies go to <mail-root>/<account>/staging/; `wicket ingest --staged` "
-        "files them.",
-    )
-    p_fetch.add_argument(
         "--state-dir",
         type=Path,
         default=None,
         help="The base holding accounts/<account>/imap.json (email + app password) "
-        "(default: ~/.config/wicket; shared with wicket.catalog).",
+        "(default: ~/.config/wicket).",
     )
     p_fetch.add_argument(
         "--mail-account",

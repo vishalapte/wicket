@@ -243,7 +243,6 @@ skipped a busy store, print their summary on stderr with the refusal.
 | `--query EXPR` | Raw Gmail search expression (escape hatch). |
 | `--last AGE` | Messages newer than AGE: N then `d`, `m` or `y` (`2d`, `3m`, `1y`), run as the Gmail search `newer_than:AGE`. Anything else exits 2. |
 | `--years Y,Y` | Walk only these years, oldest first, each as the no-filter run walks a year (`2021,2022`), for a backfill that does not re-list recent years. Four digits, 1970 or later; anything else exits 2. |
-| `--target DIR` | Refused (exit 2): fetch files nothing, so it takes no destination. |
 | `--alias-file PATH` | Subdomain-fold JSON `{"primary.com": ["alias.com", "*.primary.com"]}`. Default `<mail-root>/domain-aliases.json` (skipped if absent) — one home, shared with `ingest`. |
 | `--max N` | Stop after N new messages this run (after store dedup), across every year of an unfiltered run. |
 | `--mail-account ACCOUNT` | Scopes the staging dir and the manifest store. Default `$WICKET_ACCOUNT`, else the only account folder. |

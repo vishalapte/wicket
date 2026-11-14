@@ -159,7 +159,7 @@ external_surface:
       exit: "0 ok, 2 on auth/config error"
     - verb: wicket fetch
       module: wicket.__main__
-      args: "--domains | --query (at most one); --alias-file --max --mail-account --state-dir --threads --dry-run --non-interactive; --target is refused"
+      args: "--domains | --query (at most one); --alias-file --max --mail-account --state-dir --threads --dry-run --non-interactive"
       behavior: Get full .eml for matching messages into <store>/staging/<thread>/<msgid>@<INTERNALDATE>.eml, filing nothing; ingest --staged files them. Read-only IMAP.
       exit: "0 ok, 2 on auth/config error"
     - verb: wicket report

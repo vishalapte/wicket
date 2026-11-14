@@ -468,11 +468,6 @@ def test_fetch_imap_error(
     assert run(*FETCH) == (1, "", "IMAP error: NO [ALERT] refused\n")
 
 
-def test_fetch_target_is_refused(mail: Path, run: Run) -> None:
-    del mail
-    assert run("fetch", "--target", "out") == (2, "", f"{root_api.DEST_REFUSED}\n")
-
-
 def test_fetch_empty_domains(mail: Path, run: Run) -> None:
     del mail
     assert run("fetch", "--domains", ",", "--non-interactive") == (

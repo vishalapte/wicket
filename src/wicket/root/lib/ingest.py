@@ -62,6 +62,7 @@ from wicket.manifest import (
     read_shard,
     shard_path,
     staged_files,
+    store_shards,
     write_eml,
     write_shard,
 )
@@ -236,11 +237,10 @@ def _load_existing(store_dir: Path, archive_dir: Path) -> Existing:
     rows: dict[str, Row] = {}
     held: set[str] = set()
     shard_of: dict[str, int] = {}
-    for shard in sorted(store_dir.glob("*.jsonl")) if store_dir.exists() else []:
+    for shard in store_shards(store_dir):
         for id_, row in read_shard(shard).items():
             rows[id_] = row
-            if shard.stem.isdigit():
-                shard_of[id_] = int(shard.stem)
+            shard_of[id_] = int(shard.stem)
             if row.get("downloaded") and eml_on_disk(row, archive_dir):
                 held.add(id_)
     by_thread: dict[str, list[Row]] = {}

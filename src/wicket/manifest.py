@@ -124,13 +124,15 @@ def write_shard(path: Path, rows: Shard) -> None:
 
 
 def store_shards(store_dir: Path) -> list[Path]:
-    """The shard files in a store dir, sorted; empty if the dir is absent."""
-    return sorted(store_dir.glob("*.jsonl")) if store_dir.exists() else []
+    """The year shards (``YYYY.jsonl``) in a store dir, sorted; empty if the dir is absent."""
+    if not store_dir.exists():
+        return []
+    return sorted(store_dir.glob("[0-9][0-9][0-9][0-9].jsonl"))
 
 
 def latest_shard_year(store_dir: Path) -> int | None:
     """The most recent UTC year present in the store, or None when empty."""
-    years = [int(p.stem) for p in store_shards(store_dir) if p.stem.isdigit()]
+    years = [int(p.stem) for p in store_shards(store_dir)]
     return max(years) if years else None
 
 

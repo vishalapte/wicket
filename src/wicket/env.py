@@ -104,9 +104,9 @@ BUCKET_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 # as the primary (search expands; the filing domain canonicalizes to primary).
 ALIASES_FILENAME = "domain-aliases.json"
 
-# The owner's Gmail address is intentionally not baked in. Tools that need
-# an account (the filing-domain rule, census's inventory scoping) read this
-# env var or take --mail-account; missing-and-not-passed is a hard error.
+# The owner's Gmail address is intentionally not baked in. A verb that needs
+# an account reads this env var or takes --mail-account; missing-and-not-passed
+# is a hard error.
 ACCOUNT_ENV_VAR = "WICKET_ACCOUNT"
 
 # One per-account mail root holding both the year-sharded manifest store and the
@@ -116,7 +116,7 @@ ACCOUNT_ENV_VAR = "WICKET_ACCOUNT"
 # The PHYSICAL location is configuration, not code: $WICKET_DATA_DIR overrides
 # it (a leading ~ expanded), so the tree can follow an encrypted vault to whatever
 # path it mounts at. wicket is standalone and reads its OWN env var; it never
-# imports delphi or reads $DELPHI_PRIVATE.
+# imports delphi.
 DATA_DIR_ENV_VAR = "WICKET_DATA_DIR"
 MAIL_ROOT = Path(
     os.environ.get(DATA_DIR_ENV_VAR) or Path.home() / ".data" / "mail"
@@ -144,7 +144,7 @@ STAGING_DIRNAME = "staging"
 DUPLICATES_DIRNAME = ".duplicates"
 
 # Default worker-thread count for tools that parallelize IMAP work
-# (census year workers, gmail body workers). One worker = one IMAP
+# (catalog year workers, fetch body workers). One worker = one IMAP
 # connection (imaplib is not thread-safe across commands); Gmail caps
 # simultaneous IMAP connections (~15), so stay well under.
 DEFAULT_THREADS = 4

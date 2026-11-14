@@ -242,10 +242,7 @@ def test_resolve_state_dir_never_creates_and_a_missing_folder_raises(
     monkeypatch.setattr(env, "DEFAULT_STATE_DIR", base)
     with pytest.raises(env.NotLinked):
         env.resolve_state_dir("you@gmail.com")
-    (base / "you@gmail.com").mkdir(parents=True)  # the old layout is no account
-    with pytest.raises(env.NotLinked):
-        env.resolve_state_dir("you@gmail.com")
-    (base / "accounts").mkdir()
+    (base / "accounts").mkdir(parents=True)
     (base / "accounts" / "you@gmail.com").symlink_to(tmp_path / "gone")  # to nothing
     with pytest.raises(env.NotLinked):
         env.resolve_state_dir("you@gmail.com")

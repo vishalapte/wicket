@@ -12,6 +12,9 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+### Removed
+- **Code that only served finished transitions.** `fetch --target` and `FetchOptions.dest` existed to refuse a destination after the fetch/ingest split; argparse now refuses the flag like any unknown one. A store's manifest dir is read for `YYYY.jsonl` shards only, so no caller filters other files out. Tests that pinned three renamed flags, the old `WICKET_*_FILE` names and the old account layout are gone.
+
 ### Changed
 - **docs**: ADR-MAIL matches delphi's copy again: the store is `$WICKET_DATA_DIR`, references are listed by `delphi refs` and locked by `/enine-mail pin`, and delphi's SessionEnd hook pins only ids new since the last quit.
 - **ADR-MAIL and ADR 0002 record the 2026-11-14 store decisions.** A message is one file per account at `messages/YYYY/MM/<stem>.eml`, its stem a hash of its Message-ID, Date and From; a row lists `cc`, `bcc` and `attachments`; there are no folders, links or filing rank; and duplication is decided within an account only.

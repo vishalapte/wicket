@@ -245,20 +245,9 @@ def _gmail_copy(dest: Path, store: Path, sent: datetime | None = SENT) -> list[R
 
 def test_held_maps_rows_by_id_with_shard_year(tmp_path: Path) -> None:
     _dest, store = _ingested_store(tmp_path)
-    write_shard(
-        store / "notes.jsonl",
-        {
-            "x@y": {
-                "id": "x@y",
-                "date": "2024-01-01T00:00:00+00:00",
-                "msgid": "ab",
-                "downloaded": True,
-            }
-        },
-    )
     msgids, by_id = _held(store)
-    assert msgids == {"068d2a33a1af5856", "ab"}
-    assert set(by_id) == {"a@acme"}  # a non-year shard feeds the prefilter only
+    assert msgids == {"068d2a33a1af5856"}
+    assert set(by_id) == {"a@acme"}
     assert by_id["a@acme"][1] == 2024
 
 

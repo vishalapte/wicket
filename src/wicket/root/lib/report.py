@@ -121,9 +121,8 @@ def by_year(
     """
     latest: dict[str, tuple[int, Row]] = {}
     for shard in store_shards(store_dir):
-        if shard.stem.isdigit():
-            for id_, row in read_shard(shard).items():
-                latest[id_] = (int(shard.stem), row)
+        for id_, row in read_shard(shard).items():
+            latest[id_] = (int(shard.stem), row)
     cells: dict[int, list[int]] = {}
     for year, row in latest.values():
         state = row_state(row, excluded_lists)

@@ -175,40 +175,19 @@ def test_a_tilde_in_the_mail_root_override_is_expanded(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("path_of", "name", "old_name"),
+    ("path_of", "name"),
     [
-        (
-            account_aliases_path,
-            "WICKET_ACCOUNT_ALIASES",
-            "WICKET_ACCOUNT_ALIASES_FILE",
-        ),
-        (
-            domains.domain_routes_path,
-            "WICKET_DOMAIN_ROUTES",
-            "WICKET_DOMAIN_ROUTES_FILE",
-        ),
-        (
-            domains.domain_aliases_path,
-            "WICKET_DOMAIN_ALIASES",
-            "WICKET_DOMAIN_ALIASES_FILE",
-        ),
-        (
-            exclusions.excluded_lists_path,
-            "WICKET_EXCLUDED_LISTS",
-            "WICKET_EXCLUDED_LISTS_FILE",
-        ),
+        (account_aliases_path, "WICKET_ACCOUNT_ALIASES"),
+        (domains.domain_routes_path, "WICKET_DOMAIN_ROUTES"),
+        (domains.domain_aliases_path, "WICKET_DOMAIN_ALIASES"),
+        (exclusions.excluded_lists_path, "WICKET_EXCLUDED_LISTS"),
     ],
 )
-def test_each_map_override_has_its_new_name_and_not_its_old_one(
+def test_each_map_override_names_its_file(
     path_of: Callable[[Path], Path],
     name: str,
-    old_name: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv(name, raising=False)
-    default = path_of(tmp_path)
-    monkeypatch.setenv(old_name, str(tmp_path / "old.json"))
-    assert path_of(tmp_path) == default  # the old name is not read
     monkeypatch.setenv(name, str(tmp_path / "new.json"))
     assert path_of(tmp_path) == tmp_path / "new.json"

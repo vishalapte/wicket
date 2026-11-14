@@ -266,7 +266,7 @@ def _held(store_dir: Path | None) -> tuple[set[str], dict[str, Held]]:
 
     Returns ``(msgids, rows)``: the Gmail msgids fetch must not download (the
     cheap prefilter before any header FETCH) -- every downloaded row's and every
-    ``excluded`` row's -- and every row of a year shard by ``id`` with its shard
+    ``excluded`` row's -- and every row by ``id`` with its shard
     year, from which a message is keyed, linked, and settled in place. A later
     shard wins an ``id`` seen twice, as in ``manifest.load_store``.
     """
@@ -275,12 +275,11 @@ def _held(store_dir: Path | None) -> tuple[set[str], dict[str, Held]]:
     if store_dir is None:
         return msgids, by_id
     for shard in store_shards(store_dir):
-        year = int(shard.stem) if shard.stem.isdigit() else None
+        year = int(shard.stem)
         for id_, row in read_shard(shard).items():
             if row.get("msgid") and (row.get("downloaded") or row.get("excluded")):
                 msgids.add(str(row["msgid"]))
-            if year is not None:  # a settlement or link writes back into a year shard
-                by_id[id_] = (row, year)
+            by_id[id_] = (row, year)
     return msgids, by_id
 
 

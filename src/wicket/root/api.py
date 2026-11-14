@@ -272,14 +272,6 @@ def catalog(
         return run()
 
 
-# Why ``--target`` / ``FetchOptions.dest`` is refused (the fetch/ingest split).
-DEST_REFUSED = (
-    "fetch no longer files mail, so it takes no destination (--target, "
-    "FetchOptions.dest): it gets bodies into <mail-root>/<store>/staging/, and "
-    "`wicket ingest --staged --mail-account <account>` files them into the archive."
-)
-
-
 @dataclass(frozen=True)
 class FetchOptions:
     """What to fetch, independent of which account.
@@ -288,8 +280,6 @@ class FetchOptions:
     expression), ``last`` (``2d``, ``3m``, ``1y``) or ``years`` (the years to walk)
     may be set; the invariant is enforced here so a face cannot build an ambiguous
     request. None means every message not got and not excluded, every year.
-    ``dest`` is refused (`DEST_REFUSED`): fetch stages and files nothing, so a
-    destination would be silently ignored.
     ``limit`` bounds the candidates of the whole run. ``interactive`` is
     deliberately not a field: it is a capability of the calling face, not part of
     the request.
@@ -299,7 +289,6 @@ class FetchOptions:
     query: str | None = None
     last: str | None = None
     years: list[int] | None = None
-    dest: Path | None = None
     state_dir: Path | None = None
     alias_file: Path | None = None
     limit: int | None = None
@@ -312,8 +301,6 @@ class FetchOptions:
             raise ValueError(
                 "pass at most one of domains=..., query=..., last=... or years=..."
             )
-        if self.dest is not None:
-            raise ValueError(DEST_REFUSED)
 
 
 def _search(
@@ -831,7 +818,6 @@ def fetch_root(  # pylint: disable=too-many-arguments
     last: str | None = None,
     years: str | None = None,
     limit: int | None = None,
-    target: Path | None = None,
     alias_file: Path | None = None,
     state_dir: Path | None = None,
     threads: int = DEFAULT_THREADS,
@@ -864,7 +850,6 @@ def fetch_root(  # pylint: disable=too-many-arguments
             query=query,
             last=last,
             years=walked,
-            dest=target.expanduser() if target else None,
             state_dir=state_dir,
             alias_file=alias_file.expanduser() if alias_file else None,
             limit=limit,
