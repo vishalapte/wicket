@@ -1,8 +1,8 @@
 """Which store a thread belongs in, and the search a domain filter becomes.
 
-There are no folders and no filing rank (ADR-MAIL, 2026-11-14): a message's one file
-is ``<store>/messages/YYYY/MM/<stem>.eml``, and a row is linked to every domain it
-touches by its ``from``/``to``/``cc``/``bcc``.
+A message's one file is ``<store>/messages/YYYY/MM/<stem>.eml`` (ADR-MAIL,
+2026-11-14), and a row is linked to every domain it touches by its
+``from``/``to``/``cc``/``bcc``.
 
 - **The router** (`route_threads`): which store a thread belongs in.
 - **The thread opener** (`opener`): a thread's earliest-``date`` row, whose thread id a
@@ -16,10 +16,10 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable, Iterable
-from datetime import datetime, timezone
 
 from wicket.domains import DOMAIN_RE, expand_domain
 from wicket.manifest import Row
+from wicket.message import earliest
 
 # Resolves an address to the store that owns it, or None when nothing does. Supplied
 # by an api (`env.account_of` bound to the alias map and the stores that exist), so a
@@ -53,20 +53,15 @@ def build_domain_query(
 # --- The thread rule -----------------------------------------------------
 
 
-def _when(row: Row) -> datetime:
-    """A row's ``date`` as an aware UTC datetime; an unreadable one sorts last."""
-    try:
-        parsed = datetime.fromisoformat(str(row.get("date", "")))
-    except ValueError:
-        return datetime.max.replace(tzinfo=timezone.utc)
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed
-
-
 def opener(rows: Iterable[Row]) -> Row | None:
-    """The thread's opener: its earliest-``date`` row, ties broken by ``id``; None if empty."""
-    return min(rows, key=lambda r: (_when(r), str(r.get("id", ""))), default=None)
+    """The thread's opener: its earliest-``date`` row, ties broken by ``id``; None if empty.
+
+    A row read from a shard has a UTC ISO-8601 ``date`` (`manifest.utc_date`), so
+    sorting the strings sorts the times.
+    """
+    return min(
+        rows, key=lambda r: (str(r.get("date", "")), str(r.get("id", ""))), default=None
+    )
 
 
 # --- The router ----------------------------------------------------------
@@ -99,14 +94,14 @@ def participants(
 def route_threads(
     members_by_thread: dict[str, list[dict[str, object]]],
     account_for: AccountFor,
-    route_for: AccountFor = lambda _: None,
+    route_for: AccountFor,
 ) -> tuple[dict[str, list[str]], list[str]]:
     """Assign each thread to the store it belongs in.
 
     **The thread is the routing unit, not the message.** A conversation where you
     were addressed on some replies and merely cc'd on others would otherwise
     split across two stores, breaking the one invariant the archive relies on:
-    a thread has one ``thread_id`` and one folder. So every member votes, and the
+    a thread has one ``thread_id`` and one store. So every member votes, and the
     whole thread files where the vote lands.
 
     Two rules, and **the mailbox wins**:
@@ -135,11 +130,11 @@ def route_threads(
     routed: dict[str, list[str]] = {}
     unrouted: list[str] = []
     for tid, members in members_by_thread.items():
-        earliest = min(members, key=lambda m: (m["date"], str(m["id"])))
+        first = earliest(members)
         for resolve in (account_for, route_for):
             scored = participants(members, resolve)
             if scored:
-                first_choice = set(participants([earliest], resolve))
+                first_choice = set(participants([first], resolve))
                 routed.setdefault(_winner(scored, first_choice), []).append(tid)
                 break
         else:

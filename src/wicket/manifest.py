@@ -30,12 +30,9 @@ from collections.abc import Collection, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Settlement fields a catalog rewrite carries forward (filing owns them): whether
-# the body is archived, and its file's stem.
-SETTLEMENT_FIELDS = ("downloaded", "stem")
-# Fields a catalog rewrite carries forward: settlement, and ``excluded`` (a message on
-# the mailbox not kept locally).
-CARRIED_FIELDS = (*SETTLEMENT_FIELDS, "excluded")
+# Fields a catalog rewrite carries forward: filing's settlement (whether the body is
+# archived, its file's stem) and ``excluded`` (a message on the mailbox not kept locally).
+CARRIED_FIELDS = ("downloaded", "stem", "excluded")
 
 Row = dict[str, object]
 Shard = dict[str, Row]  # keyed by `id`
@@ -140,12 +137,18 @@ def latest_shard_year(store_dir: Path) -> int | None:
     return max(years) if years else None
 
 
+def read_shards(store_dir: Path) -> dict[int, Shard]:
+    """Every year shard of a store by its UTC year, oldest first; empty if none."""
+    return {int(path.stem): read_shard(path) for path in store_shards(store_dir)}
+
+
 def load_store(store_dir: Path) -> Shard:
-    """Load every shard into one ``{id: row}`` map."""
-    rows: Shard = {}
-    for path in store_shards(store_dir):
-        rows.update(read_shard(path))
-    return rows
+    """Load every shard into one ``{id: row}`` map; a later shard wins an id seen twice."""
+    return {
+        id_: row
+        for rows in read_shards(store_dir).values()
+        for id_, row in rows.items()
+    }
 
 
 def is_excluded(row: Row, excluded_lists: Collection[str]) -> bool:
@@ -196,12 +199,20 @@ def eml_on_disk(row: Row, files: Collection[str]) -> bool:
     return bool(stem) and str(stem) in files
 
 
-def merge_settlement(prior: Shard, settlements: Shard) -> Shard:
-    """Merge settlement fields into matching rows, adding rows that are new.
+def is_held(row: Row, files: Collection[str]) -> bool:
+    """Whether a row is archived: ``downloaded``, and its ``.eml`` on disk (`eml_on_disk`).
 
-    Filing owns ``downloaded`` / ``stem`` and may run before catalog
-    has observed a message, so a settlement with no prior observation row becomes
-    a new, partial row (ADR 0002 progressive enrichment).
+    The one home for the test catalog, fetch and ingest key a message against
+    (`message.mailbox_keys`'s ``held``), and ingest skips a message by.
+    """
+    return bool(row.get("downloaded")) and eml_on_disk(row, files)
+
+
+def merge_settlement(prior: Shard, settlements: Shard) -> Shard:
+    """Merge each row's fields into the row with its id, adding rows that are new.
+
+    Filing may run before catalog has observed a message, so fields with no prior
+    observation row become a new, partial row (ADR 0002 progressive enrichment).
     """
     merged = dict(prior)
     for id_, fields in settlements.items():

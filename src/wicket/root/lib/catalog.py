@@ -69,12 +69,11 @@ from wicket.env import DEFAULT_THREADS
 from wicket.exclusions import normalize_list_id
 from wicket.manifest import (
     Shard,
-    eml_on_disk,
+    is_held,
     merge_catalog,
     message_files,
-    read_shard,
+    read_shards,
     shard_path,
-    store_shards,
     write_shard,
 )
 from wicket.message import (
@@ -531,9 +530,7 @@ def _merge_observed(  # pylint: disable=too-many-arguments
     sweep merges incompletely, so nothing in it is dropped or tombstoned.
     Returns how many shards were merged.
     """
-    prior: dict[int, Shard] = {
-        int(p.stem): read_shard(p) for p in store_shards(store_dir)
-    }
+    prior: dict[int, Shard] = read_shards(store_dir)
     rows: dict[str, MailRow] = {}
     year_of: dict[str, int] = {}
     for year in sorted(prior):  # a later shard wins an id seen twice
@@ -542,10 +539,6 @@ def _merge_observed(  # pylint: disable=too-many-arguments
             year_of[id_] = year
 
     files = message_files(messages_dir) if messages_dir is not None else {}
-
-    def held(row: MailRow) -> bool:
-        return bool(row.get("downloaded")) and eml_on_disk(row, files)
-
     requests = [
         KeyRequest(
             str(row["id"]),
@@ -555,7 +548,9 @@ def _merge_observed(  # pylint: disable=too-many-arguments
         )
         for row in observed
     ]
-    keys = mailbox_keys(requests, provider=provider, rows=rows, held=held)
+    keys = mailbox_keys(
+        requests, provider=provider, rows=rows, held=lambda row: is_held(row, files)
+    )
     by_year: dict[int, Shard] = {}
     for row in observed:
         key = row["id"] = keys[str(row["msgid"])]

@@ -1,12 +1,10 @@
-"""Provider-neutral message identity and the observation/settlement join.
+"""Provider-neutral message identity.
 
 One home (ADR 0002) for the things the unified manifest needs:
 
   * the **portable message key** — the normalized RFC ``Message-ID``, with a
     provider-tagged fallback — that replaces Gmail's ``X-GM-MSGID`` as the
     cross-store, cross-provider key;
-  * the **field-ownership** split between *observation*, *settlement*, and
-    *derived* fields;
   * the **send date** (``sent_date``), the parsed ``Date:`` header ingest
     stores and fetch matches against;
   * the **Message-ID reader** (``message_id_of``), the one way every verb reads
@@ -62,6 +60,11 @@ def normalize_message_id(raw: str | None) -> str | None:
     return candidate or None
 
 
+def _header_block(raw: bytes) -> email.message.Message:
+    """A message's headers, raw values (``compat32``), the body not parsed."""
+    return email.parser.BytesHeaderParser(policy=email.policy.compat32).parsebytes(raw)
+
+
 def message_id_of(header_bytes: bytes) -> str:
     """A message's ``Message-ID`` header exactly as written, unfolded; '' when absent.
 
@@ -75,9 +78,11 @@ def message_id_of(header_bytes: bytes) -> str:
     reads as it did under ``policy.default``), an invalid byte becoming U+FFFD.
     ``header_bytes`` may be a header block or a whole message.
     """
-    headers = email.parser.BytesHeaderParser(policy=email.policy.compat32).parsebytes(
-        header_bytes
-    )
+    return _message_id(_header_block(header_bytes))
+
+
+def _message_id(headers: email.message.Message) -> str:
+    """`message_id_of` over headers already parsed by `_header_block`."""
     raw = next(
         (str(v) for k, v in headers.raw_items() if k.lower() == "message-id"), ""
     )
@@ -123,11 +128,6 @@ def sent_date(header: object) -> datetime | None:
 # --- the file: its stem and its month (ADR-MAIL, 2026-11-14) ---------------
 
 
-def _header_block(raw: bytes) -> email.message.Message:
-    """A message's headers, raw values (``compat32``), the body not parsed."""
-    return email.parser.BytesHeaderParser(policy=email.policy.compat32).parsebytes(raw)
-
-
 def _utc_stamp(when: datetime | None) -> str:
     return when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if when else ""
 
@@ -143,7 +143,7 @@ def message_stem(raw: bytes) -> str:
     ``raw`` may be a whole message or its header block.
     """
     headers = _header_block(raw)
-    message_id = normalize_message_id(message_id_of(raw)) or ""
+    message_id = normalize_message_id(_message_id(headers)) or ""
     date = _utc_stamp(sent_date(headers.get("Date")))
     _, sender = email.utils.parseaddr(str(headers.get("From", "") or ""))
     text = f"{message_id}\n{date}\n{sender.strip().lower()}"
@@ -351,6 +351,11 @@ def _is_ingest_copy(
 # --- the header thread (a local export carries no provider thread id) ------
 
 
+def earliest(members: Iterable[dict[str, object]]) -> dict[str, object]:
+    """The earliest of a thread's messages by ``date``, ties broken by ``id``."""
+    return min(members, key=lambda m: (m["date"], str(m["id"])))
+
+
 class UnionFind:
     """Minimal union-find over opaque string nodes for thread grouping."""
 
@@ -420,8 +425,7 @@ def assign_threads(messages: list[dict[str, object]]) -> dict[str, str]:
 
     thread_of: dict[str, str] = {}
     for members in components.values():
-        root = min(members, key=lambda m: (m["date"], str(m["id"])))
-        thread_id = str(root["id"])
+        thread_id = str(earliest(members)["id"])
         for m in members:
             thread_of[str(m["id"])] = thread_id
     return thread_of

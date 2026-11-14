@@ -65,13 +65,13 @@ from wicket.auth import (
 from wicket.env import DEFAULT_THREADS
 from wicket.manifest import (
     Row,
-    eml_on_disk,
+    is_held,
     merge_settlement,
     message_files,
     read_shard,
+    read_shards,
     shard_path,
     staged_files,
-    store_shards,
     write_eml,
     write_shard,
 )
@@ -275,9 +275,8 @@ def _held(store_dir: Path | None) -> tuple[set[str], dict[str, Held]]:
     by_id: dict[str, Held] = {}
     if store_dir is None:
         return msgids, by_id
-    for shard in store_shards(store_dir):
-        year = int(shard.stem)
-        for id_, row in read_shard(shard).items():
+    for year, shard in read_shards(store_dir).items():
+        for id_, row in shard.items():
             if row.get("msgid") and (row.get("downloaded") or row.get("excluded")):
                 msgids.add(str(row["msgid"]))
             by_id[id_] = (row, year)
@@ -408,10 +407,6 @@ def _mailbox_keys(
     """
     work: dict[str, MailRow] = {id_: row for id_, (row, _year) in rows.items()}
     files = message_files(dest)
-
-    def held(row: MailRow) -> bool:
-        return bool(row.get("downloaded")) and eml_on_disk(row, files)
-
     requests = [
         KeyRequest(
             message_key(message_id=r[6], provider=provider.name, native_id=r[1]),
@@ -421,7 +416,9 @@ def _mailbox_keys(
         )
         for r in records
     ]
-    return mailbox_keys(requests, provider=provider, rows=work, held=held)
+    return mailbox_keys(
+        requests, provider=provider, rows=work, held=lambda row: is_held(row, files)
+    )
 
 
 def _plan(

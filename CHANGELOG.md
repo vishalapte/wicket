@@ -12,6 +12,9 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+### Changed
+- **Ingest and the store keep each rule once.** One row builder, one commit path and one lock rule serve both ingest sources, and `manifest.is_held` and `manifest.read_shards` replace the copies ingest, fetch and catalog each carried. No verb's behaviour or output changes.
+
 ### Fixed
 - **The package's agent rules describe `filing.py` as it is.** They named `compute_domain` and `thread_domain` and a row `domain`, all deleted in 0.20.0; they now name the router, the thread opener and the domain filter.
 
