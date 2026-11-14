@@ -14,6 +14,7 @@ All notable changes to this project are documented here, following
 
 ### Changed
 - **docs**: ADR-MAIL matches delphi's copy again: the store is `$WICKET_DATA_DIR`, references are listed by `delphi refs` and locked by `/enine-mail pin`, and delphi's SessionEnd hook pins only ids new since the last quit.
+- **ADR-MAIL and ADR 0002 record the 2026-11-14 store decisions.** A message is one file per account at `messages/YYYY/MM/<stem>.eml`, its stem a hash of its Message-ID, Date and From; a row lists `cc`, `bcc` and `attachments`; there are no folders, links or filing rank; and duplication is decided within an account only.
 
 ## 0.19.0 - 2026-11-06
 

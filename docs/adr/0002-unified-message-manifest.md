@@ -18,6 +18,37 @@ bearing: doctrine
 > has one home, `wicket.filing`, and reads a thread's opener. §3 and §4 below are
 > amended in place.
 >
+> **Amended 2026-11-14 (`messages/`, per ADR-MAIL).** A message's file lives once at
+> `<account>/messages/<YYYY>/<MM>/<stem>.eml` and never moves. There are no
+> folders: `archive/` is retired, and a folder view is a query over the row's
+> `from`, `to`, `cc`, `bcc`, `domain` and `attachments` (§3). `YYYY/MM` is
+> the UTC year and month of `MESSAGE_DATE`: the `Date:` header for mail received, the
+> sent date for mail sent. RFC 5322 is canon: `Date:` is the required origination date
+> (§3.6, §3.6.1); for a message whose `Date:` is missing or unreadable, and only for
+> it, `MESSAGE_DATE` falls back to the topmost `Received:` header (§3.6.7), else the
+> provider's INTERNALDATE. It is not the row's `date` (INTERNALDATE), so the file's
+> month and the row's shard can differ; §3's shard rule (the UTC year of the row's
+> `date`) is unchanged. The stem is a hash of the message, the same for every
+> provider (§1). The row stores `stem` in place of `path`: the stem never changes,
+> and a row's file is found by its stem under the account's `messages/` (the month
+> is not on the row). `path` is dropped. `deleted` stays on the row, with §6's
+> meaning, and the manifest stays year-sharded. A deliberate delete marks the row
+> `excluded` and keeps it (§6). §1, §3 and §6 are amended in place; the Examples
+> below are pre-amendment and show `path` in its old form
+> (`<folder>/<YYYY-MM>/<file>`). Not yet implemented: the code still writes `path`
+> under `archive/<folder>/`.
+>
+> **Amended 2026-11-14 (no filing rank, no `domain`).** The owner: "filing rank goes
+> away because a thread is linked to every relevant domain", and "a ranked mapping
+> means that it should have been a many to many". A row is linked to every domain it
+> touches by its `from`, `to`, `cc` and `bcc`; no single domain is chosen. So the rank
+> (anchor, `--domain`, list folder, self, sent, counterparty, fallback, unfiled), the
+> row fields `domain` and `filed`, `ingest --domain` and the list-folder map
+> (`list-folders.json`) are deleted, and reconcile drops `domain` and `filed` from every
+> row. A filter by domain (`held_messages(domains=...)`) matches a row when any of its
+> addresses, folded by `domain-aliases.json`, is in the set. Read §3's `domain` and
+> `filed` rows, §4's rank, and §6's "`domain` is `null`" as history.
+>
 > **Implementation status (2026-06-21):** the key, the year-sharded store, both
 > mutating verbs (`catalog`, `fetch`), the reconcile, and the two-boolean state
 > are implemented. `report` (read-only over the manifest) is a third verb added
@@ -71,6 +102,23 @@ no usable `Message-ID`, the key is `"<provider>:<native-id>"` (e.g.
 > INTERNALDATE, then `EMAILID`). A Fastmail message in two folders is one row whose
 > `labels` are both folders, and its archived file is named by a lowercase digest of
 > its `EMAILID`, which is mixed case. `wicket.provider` is the one home for each.
+>
+> **Amended 2026-11-14 (the file stem, per ADR-MAIL).** An archived file's name no
+> longer depends on the provider. For every provider, and for a local export, the
+> stem is `sha1(message-id + "\n" + date + "\n" + from)[:16]`: `message-id` is the
+> normalized `Message-ID` above, `date` is the `Date:` header in UTC
+> (`YYYY-MM-DDTHH:MM:SSZ`), `from` is the `From:` addr-spec in lower case, and a
+> missing header contributes `""`; an unreadable `Date:` contributes `""`, like a
+> missing one (the MESSAGE_DATE fallback sets the month only, never the stem). This replaces the per-provider names (Gmail's
+> `msgid`; the digest of Fastmail's `EMAILID` named above; `message.local_msgid` for
+> a local export). Two copies of one message in one account get one stem and are
+> stored once in that account; a stem the account already holds is not filed again.
+> Filing reports every stem match whose `Subject` differs, rather than skipping it
+> silently: usually a copy rewritten in transit, rarely a reused `Message-ID`; the
+> owner reads the report. Duplication exists only within an account: the same message in two accounts is
+> not a duplicate, each account keeps its own copy, and choosing a primary account
+> is not wicket's job. `msgid` and `thread_id` stay on the row for refetch. Not yet
+> implemented.
 
 ### 2. One store, account-scoped, year-sharded
 
@@ -102,9 +150,8 @@ affected year(s).
 | Field group | Written by | Present when |
 |---|---|---|
 | `id`, `msgid`, `thread_id`, `account` | identity | always |
-| `date`, `from`, `to`, `subject`, `size`, `labels`, `deleted` | `catalog` (observation) | observed |
-| `attachments` (filenames/types/sizes/count) | `--attachments` | enriched |
-| `downloaded`, `path`, `filed` | `ingest` (settlement; `fetch` until 2026-10-27) | filed |
+| `date`, `from`, `to`, `cc`, `bcc`, `subject`, `size`, `labels`, `attachments`, `deleted` | `catalog` (observation) | observed |
+| `downloaded`, `stem`, `filed` | `ingest` (settlement; `fetch` until 2026-10-27; `path` until 2026-11-14) | filed |
 | `domain` | reconcile (derived) | derived |
 
 `deleted` and `downloaded` are the two boolean axes (see §6). `domain` is the
@@ -144,6 +191,19 @@ mutation. wicket only ever reads the mailbox (`SELECT` is read-only).
 
 ### 5. `--force` and `--attachments` are verb-independent
 
+> **Amended 2026-11-14 (addresses and attachments on every row).** The owner: "the
+> softlinks are actually irrelevant if the manifest stores from correctly and to,
+> cc, and bcc as a list of addresses making the manifest eminently more useful and
+> searchable; similarly - if the manifest stores a list of filenames of all
+> attachments". So `cc` and `bcc` are address lists like `to` (lower-case
+> addr-specs), and `attachments` is the list of the message's attachment file
+> names, `[]` when it has none. All three are observation: `catalog` fetches the
+> `Cc` and `Bcc` headers and `BODYSTRUCTURE` for every message, in the same FETCH,
+> so `--attachments` is no longer a flag; `ingest` reads them from the `.eml` it
+> files, for a row catalog never observed. A row written before this amendment has
+> none until a catalog pass re-observes it or `migrate` reads its file. `--force`
+> below is unchanged and still unbuilt.
+
 Each flag means the same thing on either verb; `fetch --attachments` ≡
 `catalog --attachments`.
 
@@ -170,6 +230,18 @@ or stored, the booleans are the state.
   mailbox. Only a complete catalog sets it; an incremental or `--years` pass
   cannot, so the absence of `deleted` means present-or-unconfirmed, never
   asserted-gone.
+
+> **Amended 2026-11-14.** A third field, `excluded`, is **decided**, not observed:
+> the owner decided the message is not kept in the local store, and its value is
+> the reason (`"duplicate of <row id>"`, or a deliberate delete). Fetch never
+> downloads an `excluded` row, catalog carries it forward, and the reports leave it
+> out. Every deliberate delete marks the row `excluded` first, then removes the file
+> under `messages/`, and never drops the row; an interrupted delete leaves an
+> `excluded` row with its file present, which is harmless. So the
+> deleted-not-downloaded drop below never applies to an `excluded` row. A file
+> removed by hand (`rm`) leaves its row unmarked: it reads as lost (not
+> `excluded`, file missing), a defect to report, and is fetched again while the
+> mailbox holds it. ADR-MAIL reads a broken folder link against these fields.
 
 The four readings:
 
