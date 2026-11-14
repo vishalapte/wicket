@@ -181,9 +181,10 @@ def test_every_pass_appends_the_exclusion_to_its_search(
 
     ctx = fetch_lib.ThreadContext(
         dest=tmp_path,
-        account=ME,
-        domain_aliases={},
         dry_run=True,
+        store_dir=tmp_path / "manifest",
+        staging_dir=tmp_path / "staging",
+        duplicates_dir=tmp_path / ".duplicates",
         exclude=GMAIL.exclude_list(LIST),
     )
     monkeypatch.setattr(fetch_lib, "_discover_records", discover)

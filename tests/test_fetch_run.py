@@ -80,8 +80,6 @@ def _creds(tmp_path: Path) -> Path:
 def _ctx(tmp_path: Path, *, dry_run: bool = False) -> fetch_lib.ThreadContext:
     return fetch_lib.ThreadContext(
         dest=tmp_path / "messages",
-        account=ME,
-        domain_aliases={},
         dry_run=dry_run,
         store_dir=tmp_path / "manifest",
         staging_dir=tmp_path / "staging",

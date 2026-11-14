@@ -96,7 +96,7 @@ from wicket.manifest import (
     load_store,
     message_files,
 )
-from wicket.provider import Provider, Search, provider_of
+from wicket.provider import Provider, Search, parse_last, provider_of
 
 from .lib import report as report_lib
 from .lib.catalog import sweep
@@ -304,6 +304,8 @@ class FetchOptions:
             raise ValueError(
                 "pass at most one of domains=..., query=..., last=... or years=..."
             )
+        if self.last is not None:
+            parse_last(self.last)
 
 
 def _search(
@@ -401,8 +403,6 @@ def fetch(
     store = resolve_store_dir(resolved)
     ctx = ThreadContext(
         dest=resolve_messages_dir(resolved),
-        account=resolved,
-        domain_aliases=domain_aliases,
         dry_run=options.dry_run,
         store_dir=store,
         staging_dir=resolve_staging_dir(resolved),
@@ -801,8 +801,9 @@ def fetch_root(  # pylint: disable=too-many-arguments
     ``newer_than:<last>``); ``years`` (``2021,2022``) walks only those years; at most one
     of ``domains``, ``query``, ``last`` and ``years`` is given.
     """
-    if last is not None and not re.fullmatch("[1-9][0-9]*[dmy]", last):
-        raise ApiError(f"--last takes N then d, m or y (2d, 3m, 1y), not {last!r}")
+    if last is not None:
+        with refusing():  # before the one-filter check, so a bad --last is named first
+            parse_last(last)
     if (last is not None or years is not None) and len(
         [v for v in (domains, query, last, years) if v is not None]
     ) > 1:

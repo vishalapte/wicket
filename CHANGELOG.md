@@ -12,6 +12,9 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+### Changed
+- **The IMAP steps live in `auth`, once.** Fetch, catalog and `first_year` share one folder walk, one OK check, one logout and one UID SEARCH and FETCH, and a HALT is read once where it was tested then read. Catalog's label parser reuses its list parser, discovery no longer fetches From and To it never read, and `--last` has one grammar (`provider.parse_last`), so a bad value is refused before any search is sent.
+
 ## 0.20.1 - 2026-11-14
 
 ### Changed

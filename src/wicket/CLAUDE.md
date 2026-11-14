@@ -78,7 +78,8 @@ duplicate it here. Bound by the racecar standards (resolver:
     and the **store lock** (`store_lock`: `fcntl.flock` on
     `<manifest dir>/.lock`, non-blocking, `StoreBusy` naming the holder's pid; not
     re-entrant, so an api or worker takes each store's lock once). `auth` owns the
-    **HALT** (`write_halt`, `clear_halt`, `read_halt`, `list_halts`, `Halted`)
+    **HALT** (`write_halt`, `clear_halt`, `read_halt`, `halt_in_force`, `list_halts`,
+    `Halted`)
     and `first_year`, the one rule for where a whole-mailbox pass starts. `wicket.halt` reaches the HALT only through those.
   - **Three owner-authored maps at the mail root**, each answering a different
     question, and never conflated: `account-aliases.json` (addresses that ARE me;

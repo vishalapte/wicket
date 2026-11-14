@@ -60,7 +60,7 @@ def test_header_block_reads_a_colon_message_id_whole() -> None:
         b"From: Amazon <ship@amazon.com>\r\nTo: you@gmail.com\r\nSubject: order\r\n"
         b"Message-ID: <urn:correios:msg:1@amazon.com>\r\n\r\n"
     )
-    assert _parse_header_block(block)[3] == "<urn:correios:msg:1@amazon.com>"
+    assert _parse_header_block(block)["message_id"] == "<urn:correios:msg:1@amazon.com>"
 
 
 # --- keying observations against the whole store -------------------------

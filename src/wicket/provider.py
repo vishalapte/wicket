@@ -13,6 +13,7 @@ IMAP command; `wicket.auth` is the one door to IMAP and takes a provider.
 
 from __future__ import annotations
 
+import calendar
 import hashlib
 import os
 import re
@@ -54,12 +55,19 @@ def imap_date(day: date) -> str:
 def months_back(day: date, months: int) -> date:
     """``day`` moved back ``months`` calendar months, its day clamped to that month's last."""
     year, month = divmod(day.year * 12 + day.month - 1 - months, 12)
-    for last in range(day.day, 27, -1):
-        try:
-            return date(year, month + 1, last)
-        except ValueError:
-            continue
-    return date(year, month + 1, day.day)
+    return date(year, month + 1, min(day.day, calendar.monthrange(year, month + 1)[1]))
+
+
+def parse_last(last: str) -> tuple[int, str]:
+    """``--last`` as ``(N, unit)``: the one home of its grammar (`LAST_RE`).
+
+    Raises ``ValueError`` for anything else, so a bad ``--last`` is refused before any
+    search is built.
+    """
+    match = LAST_RE.fullmatch(last)
+    if match is None:
+        raise ValueError(f"--last takes N then d, m or y (2d, 3m, 1y), not {last!r}")
+    return int(match.group(1)), match.group(2)
 
 
 class Staged(NamedTuple):
@@ -135,6 +143,17 @@ class Provider:
     def year_search(self, year: int) -> Search:
         """Every message of ``year``."""
         raise NotImplementedError
+
+    def utc_year_search(self, year: int) -> Search:
+        """Every message whose INTERNALDATE *UTC* year may be ``year``: a superset.
+
+        IMAP SINCE/BEFORE compare the stored INTERNALDATE's date portion with its
+        timezone disregarded (`RFC 3501`), so a UTC-year boundary message can sit a
+        server-date day outside the year. The window is widened by one day on each
+        side; the caller's UTC bucketing drops the overshoot (catalog's
+        ``boundary_drops``), so sharding stays strictly UTC.
+        """
+        return ("SINCE", f"31-Dec-{year - 1}", "BEFORE", f"02-Jan-{year + 1}")
 
     def since_search(self, last: str, today: date) -> Search:
         """Every message of the last ``last`` (``2d``, ``3m``, ``1y``) up to ``today``."""
@@ -265,12 +284,7 @@ class Fastmail(Provider):
         return ("SINCE", f"1-Jan-{year}", "BEFORE", f"1-Jan-{year + 1}")
 
     def since_search(self, last: str, today: date) -> Search:
-        match = LAST_RE.match(last)
-        if match is None:
-            raise ValueError(
-                f"--last takes N then d, m or y (2d, 3m, 1y), not {last!r}"
-            )
-        n, unit = int(match.group(1)), match.group(2)
+        n, unit = parse_last(last)
         if unit == "d":
             since = date.fromordinal(today.toordinal() - n)
         else:

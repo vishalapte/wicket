@@ -437,4 +437,5 @@ def test_fetch_reconciles_as_the_account_not_the_login(
     )
 
     ctx: ThreadContext = seen["ctx"]  # type: ignore[assignment]
-    assert ctx.account == "you@enine.com"
+    account = tmp_path / "mail" / "you@enine.com"
+    assert ctx.dest == account / "messages" and ctx.store_dir == account / "manifest"

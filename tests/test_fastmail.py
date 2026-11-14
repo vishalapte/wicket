@@ -312,8 +312,6 @@ def _ctx() -> fetch_lib.ThreadContext:
     mail = env.MAIL_ROOT / ME
     return fetch_lib.ThreadContext(
         dest=mail / "messages",
-        account=ME,
-        domain_aliases={},
         dry_run=False,
         store_dir=mail / "manifest",
         staging_dir=mail / "staging",
@@ -332,7 +330,7 @@ def test_fetch_finds_a_message_in_two_folders_once(account: Path) -> None:
         provider=FASTMAIL,
     )
     assert (total, unheld) == (2, 2)  # Str0hkL1JFLB once, StqfklOovjb- once
-    assert sorted((r[1], r[8]) for r in records) == [
+    assert sorted((r.msgid, r.folder) for r in records) == [
         ("StqfklOovjb-", "Archive"),
         ("Str0hkL1JFLB", "INBOX"),  # found first in INBOX, not again in Archive
     ]

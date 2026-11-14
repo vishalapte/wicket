@@ -1,15 +1,16 @@
 """IMAP authentication with app passwords, for each provider in `wicket.provider`.
 
 No OAuth, no cloud project. The owner makes an "App password" once with the
-provider (Gmail: https://myaccount.google.com/apppasswords, which needs 2-Step
-Verification; Fastmail: Settings, Privacy & Security, App passwords) and saves it to
-the state dir. From then on every run logs in with that password — refresh tokens,
-browser consent, and per-app verification don't enter the picture.
+provider (where: `Provider.app_password_hint`) and saves it to the state dir. From
+then on every run logs in with that password — refresh tokens, browser consent, and
+per-app verification don't enter the picture.
 
 It is also the home of the **HALT**: a fact about the credential (the provider is
 throttling it, or has rejected it), so it lives beside the code that opens every
-connection. The folder helpers (`folders`, `select_folder`, `first_year`) are here too:
-every SELECT is read-only, and only this module issues one. ``open_mailbox`` is the one
+connection. The folder helpers (`folders`, `select_folder`, `visit`, `first_year`) are
+here too: every SELECT is read-only, and only this module issues one. So is the IMAP
+plumbing both workers share (`require_ok`, `uid_search`, `uid_fetch`, `internaldate`,
+`rfc822_size`, `chunked`, `logout_quietly`). ``open_mailbox`` is the one
 door to IMAP; it refuses past a HALT. `write_halt` is the one way a HALT is made and
 `clear_halt` the one way one is removed; each writes its line to the account's log, so
 every HALT set and cleared is recorded. They, `read_halt` and `list_halts` are the only
@@ -28,17 +29,16 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, Iterable, Iterator, NamedTuple
 
 from wicket.env import (
     IMAP_TIMEOUT_SECONDS,
     append_log,
-    normalize_account,
     resolve_halt_dir,
     resolve_halt_path,
     write_secret,
 )
-from wicket.provider import GMAIL, Provider, imap_quote
+from wicket.provider import GMAIL, Provider, Search, imap_quote
 
 # What an IMAP command raises when it is rejected (``IMAP4.error``, raised by the
 # workers for any answer that is not OK), aborted (``IMAP4.abort``, a subclass) or
@@ -46,6 +46,7 @@ from wicket.provider import GMAIL, Provider, imap_quote
 IMAP_FAILURES = (imaplib.IMAP4.error, OSError)
 
 _INTERNALDATE_RE = re.compile(rb'INTERNALDATE\s+"([^"]+)"')
+_SIZE_RE = re.compile(rb"RFC822\.SIZE\s+(\d+)")
 
 # Gmail answers `UID SEARCH ALL` (`first_year`) with a single line listing every
 # UID — ~1.2MB at 155k messages — which trips imaplib's hard-coded 1MB line guard.
@@ -88,12 +89,16 @@ def halt_path(credentials_path: Path) -> Path:
     return resolve_halt_path(credentials_path.parent.name)
 
 
-def current_halt(credentials_path: Path) -> Halted:
-    """A `Halted` describing the account's HALT file, which is in force."""
+def halt_in_force(credentials_path: Path) -> Halted | None:
+    """The account's HALT as a `Halted`, or None when it is not halted (no file).
+
+    One read of the file (`read_halt`), so a HALT cleared between a check and a read
+    is simply not in force.
+    """
     path = halt_path(credentials_path)
     info = read_halt(path.name)
     if info is None:
-        raise FileNotFoundError(path)
+        return None
     return Halted(path, f"halted since {info.halted:%Y-%m-%d %H:%M %Z}")
 
 
@@ -111,14 +116,16 @@ def write_halt(credentials_path: Path, cause: str) -> Halted:
     account's log; one already in force is kept and logs nothing. ``cause`` carries no
     password and no path. A file that cannot be made raises.
     """
-    account = normalize_account(credentials_path.parent.name)
     resolve_halt_dir(create=True)
-    path = resolve_halt_path(account)
+    path = halt_path(credentials_path)
     try:
         os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
     except FileExistsError:
-        return current_halt(credentials_path)
-    append_log(account, f"HALT set {_one_line(cause)}")
+        in_force = halt_in_force(credentials_path)
+        if in_force is None:
+            raise FileNotFoundError(path) from None
+        return in_force
+    append_log(path.name, f"HALT set {_one_line(cause)}")
     return Halted(path, _one_line(cause))
 
 
@@ -176,16 +183,77 @@ def _refuse_past_halt(credentials_path: Path) -> None:
 
     A HALT never expires; only `clear_halt` removes it.
     """
-    if halt_path(credentials_path).exists():
-        raise current_halt(credentials_path)
+    in_force = halt_in_force(credentials_path)
+    if in_force is not None:
+        raise in_force
 
 
-def parse_internaldate(value: bytes) -> datetime | None:
-    """Parse an INTERNALDATE (e.g. ``22-Mar-2024 14:53:21 +0000``)."""
+# --- IMAP plumbing: every command a worker sends goes through one of these ----------
+
+
+def require_ok(typ: str, what: str) -> None:
+    """A rejected command is a throttle, never an empty answer: raise so it HALTs."""
+    if typ != "OK":
+        raise imaplib.IMAP4.error(f"{what} answered {typ}")
+
+
+def logout_quietly(conn: imaplib.IMAP4_SSL) -> None:
+    """Log out; a failed logout must not mask the run's own result."""
     try:
-        return datetime.strptime(value.decode("ascii"), "%d-%b-%Y %H:%M:%S %z")
+        conn.logout()
+    except IMAP_FAILURES:
+        pass
+
+
+def chunked(items: list[bytes], size: int) -> Iterator[list[bytes]]:
+    """``items`` in consecutive slices of at most ``size`` (UIDs per FETCH)."""
+    for i in range(0, len(items), size):
+        yield items[i : i + size]
+
+
+def uid_search(conn: imaplib.IMAP4_SSL, search: Search) -> list[bytes]:
+    """The UIDs ``search`` (a provider's `provider.Search`) matches in the selected folder."""
+    typ, data = conn.uid("SEARCH", *search)
+    require_ok(typ, "UID SEARCH")
+    if not data or not data[0]:
+        return []
+    uids: list[bytes] = data[0].split()
+    return uids
+
+
+def uid_fetch(
+    conn: imaplib.IMAP4_SSL, uids: list[bytes], items: str, what: str
+) -> list[Any]:
+    """The reply items of ``UID FETCH`` of ``items`` for ``uids``; no UIDs sends nothing.
+
+    ``what`` names the command in the error a rejected FETCH raises (`require_ok`).
+    """
+    if not uids:
+        return []
+    typ, data = conn.uid("FETCH", b",".join(uids).decode("ascii"), items)
+    require_ok(typ, what)
+    return list(data)
+
+
+def internaldate(meta: bytes) -> datetime | None:
+    """The INTERNALDATE in FETCH reply ``meta`` (``22-Mar-2024 14:53:21 +0000``), in UTC.
+
+    None when the reply carries none or it cannot be read.
+    """
+    match = _INTERNALDATE_RE.search(meta)
+    if match is None:
+        return None
+    try:
+        when = datetime.strptime(match.group(1).decode("ascii"), "%d-%b-%Y %H:%M:%S %z")
     except ValueError:
         return None
+    return when.astimezone(timezone.utc)
+
+
+def rfc822_size(meta: bytes) -> int | None:
+    """The RFC822.SIZE in FETCH reply ``meta``, or None when it carries none."""
+    match = _SIZE_RE.search(meta)
+    return int(match.group(1)) if match else None
 
 
 # One line of a LIST answer: ``(<flags>) <delimiter> <name>``.
@@ -212,8 +280,7 @@ def folders(conn: imaplib.IMAP4_SSL, provider: Provider = GMAIL) -> list[str]:
     if provider.all_mail is not None:
         return [provider.all_mail]
     typ, data = conn.list()
-    if typ != "OK":
-        raise imaplib.IMAP4.error(f"LIST answered {typ}")
+    require_ok(typ, "LIST")
     skip = _UNSELECTABLE | {flag.lower() for flag in provider.skip_flags}
     found: list[str] = []
     for item in data:
@@ -239,8 +306,22 @@ def select_folder(conn: imaplib.IMAP4_SSL, name: str) -> None:
     raises ``imaplib.IMAP4.error``, so the caller maps it to a HALT.
     """
     typ, _ = conn.select(imap_quote(name), readonly=True)
-    if typ != "OK":
-        raise imaplib.IMAP4.error(f"SELECT {name!r} answered {typ}")
+    require_ok(typ, f"SELECT {name!r}")
+
+
+def visit(
+    conn: imaplib.IMAP4_SSL, provider: Provider, names: Iterable[str]
+) -> Iterator[str]:
+    """Yield each folder of ``names`` with it selected, for a command to run in.
+
+    A provider with an all-mail folder has it selected already (`open_mailbox`), so
+    nothing is sent; otherwise each is selected read-only (`select_folder`) first.
+    Every walk over folders goes through here, so no worker tests ``all_mail``.
+    """
+    for name in names:
+        if provider.all_mail is None:
+            select_folder(conn, name)
+        yield name
 
 
 def first_year(conn: imaplib.IMAP4_SSL, provider: Provider = GMAIL) -> int | None:
@@ -252,33 +333,21 @@ def first_year(conn: imaplib.IMAP4_SSL, provider: Provider = GMAIL) -> int | Non
     whole-mailbox pass starts, shared by `catalog` and `fetch`. A rejected command
     raises ``imaplib.IMAP4.error``, so the caller maps it to a HALT.
     """
-    if provider.all_mail is not None:
-        return _first_year_here(conn)
-    years = []
-    for name in folders(conn, provider):
-        select_folder(conn, name)
-        years.append(_first_year_here(conn))
+    years = [
+        _first_year_here(conn) for _ in visit(conn, provider, folders(conn, provider))
+    ]
     return min((y for y in years if y is not None), default=None)
 
 
 def _first_year_here(conn: imaplib.IMAP4_SSL) -> int | None:
     """The UTC year of the lowest UID's INTERNALDATE in the selected folder."""
-    typ, data = conn.uid("SEARCH", "ALL")
-    if typ != "OK":
-        raise imaplib.IMAP4.error(f"UID SEARCH ALL answered {typ}")
-    if not data or not data[0]:
+    uids = uid_search(conn, ("ALL",))
+    if not uids:
         return None
-    lowest = data[0].split()[0]
-    typ, data = conn.uid("FETCH", lowest.decode("ascii"), "(INTERNALDATE)")
-    if typ != "OK":
-        raise imaplib.IMAP4.error(f"UID FETCH INTERNALDATE answered {typ}")
-    for item in data:
-        chunk = item if isinstance(item, bytes) else item[0]
-        date_match = _INTERNALDATE_RE.search(chunk)
-        if date_match:
-            parsed = parse_internaldate(date_match.group(1))
-            if parsed is not None:
-                return parsed.astimezone(timezone.utc).year
+    for item in uid_fetch(conn, uids[:1], "(INTERNALDATE)", "UID FETCH INTERNALDATE"):
+        when = internaldate(item if isinstance(item, bytes) else item[0])
+        if when is not None:
+            return when.year
     return None
 
 
@@ -346,25 +415,17 @@ def _require_capability(
         return
     try:
         typ, data = conn.capability()
-        if typ != "OK":
-            raise imaplib.IMAP4.error(f"CAPABILITY answered {typ}")
-    except (imaplib.IMAP4.error, OSError) as exc:
-        _logout(conn)
+        require_ok(typ, "CAPABILITY")
+    except IMAP_FAILURES as exc:
+        logout_quietly(conn)
         raise throttle_halt(credentials_path, "capability", exc) from exc
     announced = b" ".join(d for d in data if isinstance(d, bytes)).upper().split()
     if needed.encode("ascii") not in announced:
-        _logout(conn)
+        logout_quietly(conn)
         raise AuthError(
             f"{provider.host} does not announce {needed}: wicket cannot key its "
             f"{provider.label} messages, so nothing ran"
         )
-
-
-def _logout(conn: imaplib.IMAP4_SSL) -> None:
-    try:
-        conn.logout()
-    except (imaplib.IMAP4.error, OSError):
-        pass
 
 
 def open_mailbox(
@@ -422,9 +483,8 @@ def open_mailbox(
     mailbox = mailbox or provider.all_mail or "INBOX"
     try:
         typ, _ = conn.select(f'"{mailbox}"', readonly=readonly)
-        if typ != "OK":
-            raise imaplib.IMAP4.error(f"SELECT {mailbox!r} answered {typ}")
-    except (imaplib.IMAP4.error, OSError) as exc:
-        _logout(conn)
+        require_ok(typ, f"SELECT {mailbox!r}")
+    except IMAP_FAILURES as exc:
+        logout_quietly(conn)
         raise throttle_halt(credentials_path, "select", exc) from exc
     return conn

@@ -4,10 +4,11 @@ For every message in the mailbox (optionally restricted to INTERNALDATE years), 
 the provider's native id and thread (Gmail's X-GM-MSGID and X-GM-THRID, Fastmail's
 EMAILID and THREADID), RFC822.SIZE, INTERNALDATE, the labels (Gmail's X-GM-LABELS; on
 Fastmail the folders holding it), and the ``From:``, ``To:``, ``Subject:``,
-``Message-ID:``, ``Date:`` and ``List-Id:`` headers — never bodies — and write one JSON Lines
+``Cc:``, ``Bcc:``, ``Message-ID:``, ``Date:`` and ``List-Id:`` headers, and the
+attachment names its ``BODYSTRUCTURE`` declares — never bodies — and write one JSON Lines
 row per message, sharded by INTERNALDATE year (UTC):
 
-    <inventory-dir>/<YYYY>.jsonl
+    <store>/manifest/<YYYY>.jsonl
 
 Row shape (one JSON object per line, ADR 0002 unified schema)::
 
@@ -15,25 +16,23 @@ Row shape (one JSON object per line, ADR 0002 unified schema)::
      "thread_id": "<gmail-thrid>", "date": "<internaldate, `ISO-8601`>",
      "size": <bytes>,
      "from": "sender@example.com", "to": ["you@example.com"],
+     "cc": [], "bcc": [],
      "subject": "Your account statement is ready",
-     "labels": ["\\\\Inbox"], "list_id": "news.example.com"}
+     "labels": ["\\\\Inbox"], "attachments": ["statement.pdf"],
+     "list_id": "news.example.com"}
 
 ``subject`` is RFC 2047-decoded to plain Unicode ('' when absent). ``list_id`` is the
 ``List-Id`` header as `exclusions.normalize_list_id` reads it, and the key is absent when the
 message has none (never null): a fact about the message, which report reads against
 today's excluded-lists map (`manifest.is_excluded`). ``id`` is
 the provider-neutral key (normalized Message-ID, else ``gmail:<msgid>``)
-shared with the archive manifest so the two faces join; a second Gmail message
+shared with the filed rows so the two join; a second Gmail message
 with the same Message-ID is keyed ``<key>|gmail:<msgid>`` (``message.mailbox_key``).
 The workers only observe: the main thread keys every observation against the
 whole store, then merges each into the year shard its row already lives in. These are the
-observation-owned fields; the archive manifest owns the settlement fields
-(status / domain / path) under the same key.
-
-The inventory is the *observation* face of the mailbox (what exists,
-re-swept and replaced whole); the archive manifest is the *settlement*
-face (what has been saved or noop'd, append-only). Same key, two write
-regimes; they are never merged. Each shard is replaced atomically
+observation-owned fields; the same row carries filing's settlement (``downloaded``,
+``stem``) and the owner's ``excluded``, which `manifest.merge_catalog` carries over when
+a sweep replaces the row's observation, setting ``deleted``. Each shard is replaced atomically
 (tmp + rename, `0600`). A ``years``-restricted sweep replaces only the
 requested years' shards; a message whose row lives in another year's shard is
 merged there without dropping anything. (Removing stale year shards on a full sweep is
@@ -54,16 +53,21 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, cast
+from typing import cast
 
 from wicket.auth import (
     IMAP_FAILURES,
+    chunked,
     first_year,
     folders,
+    internaldate,
+    logout_quietly,
     open_mailbox,
-    parse_internaldate,
-    select_folder,
+    rfc822_size,
     throttle_halt,
+    uid_fetch,
+    uid_search,
+    visit,
 )
 from wicket.env import DEFAULT_THREADS
 from wicket.exclusions import normalize_list_id
@@ -87,11 +91,19 @@ from wicket.message import (
     rfc2231_param,
     sent_date,
 )
-from wicket.provider import GMAIL, Provider
+from wicket.provider import GMAIL, Provider, imap_quote
 
-BATCH_SIZE = 1000  # UIDs per IMAP FETCH; headers only, so larger than archive's.
-_SIZE_RE = re.compile(rb"RFC822\.SIZE\s+(\d+)")
-_INTERNALDATE_RE = re.compile(rb'INTERNALDATE\s+"([^"]+)"')
+BATCH_SIZE = 1000  # UIDs per IMAP FETCH; headers only, so a large batch is cheap.
+# The stats a sweep returns, in the order it returns them; a year's sweep fills the
+# per-message ones, and `sweep` sums them.
+STAT_KEYS = (
+    "messages",
+    "shards",
+    "removed",
+    "parse_skips",
+    "label_misses",
+    "boundary_drops",
+)
 # The headers catalog reads. The FETCH and the marker its reply carries are both made from
 # this one tuple, so they cannot drift apart.
 _HEADER_FIELDS = ("FROM", "TO", "CC", "BCC", "SUBJECT", "MESSAGE-ID", "DATE", "LIST-ID")
@@ -103,154 +115,8 @@ _LITERAL_SIZE_RE = re.compile(rb"\{\d+\}\s*$")
 logger = logging.getLogger(__name__)
 
 
-# --- IMAP plumbing -------------------------------------------------------
-
-
-def _quoted(literal: bytes) -> bytes:
-    """An IMAP literal as a quoted string, so the parsers see one token, not ``{n}``."""
-    return b'"' + literal.replace(b"\\", b"\\\\").replace(b'"', b'\\"') + b'"'
-
-
-def _chunked(items: list[bytes], size: int) -> Iterator[list[bytes]]:
-    for i in range(0, len(items), size):
-        yield items[i : i + size]
-
-
-def _search_year_uids(conn: imaplib.IMAP4_SSL, year: int) -> list[bytes]:
-    """UIDs whose INTERNALDATE *UTC* year may be `year`.
-
-    IMAP SINCE/BEFORE compare the stored INTERNALDATE's date portion with
-    its timezone disregarded (`RFC 3501`), so a UTC-year boundary message can
-    sit a server-date day outside the year. Widen the window by one day on
-    each side; the caller's UTC bucketing drops the overshoot. Sharding
-    stays strictly UTC; the search is merely a superset.
-    """
-    typ, data = conn.uid(
-        "SEARCH", "SINCE", f"31-Dec-{year - 1}", "BEFORE", f"02-Jan-{year + 1}"
-    )
-    if typ != "OK":
-        raise imaplib.IMAP4.error(f"UID SEARCH {year} answered {typ}")
-    if not data or not data[0]:
-        return []
-    uids: list[bytes] = data[0].split()
-    return uids
-
-
 # --- FETCH response parsing ----------------------------------------------
 
-
-def _tokenize_labels(inner: bytes) -> list[str]:
-    """Split the inside of ``X-GM-LABELS (...)`` into label strings.
-
-    Quote-aware: a quoted label may contain spaces and backslash escapes;
-    unquoted tokens (``\\\\Inbox``-style system labels) are taken verbatim.
-    """
-    labels: list[str] = []
-    token = bytearray()
-    in_quote = False
-    escaped = False
-    for byte in inner:
-        char = bytes([byte])
-        if escaped:
-            token += char
-            escaped = False
-        elif in_quote and char == b"\\":
-            escaped = True
-        elif char == b'"':
-            in_quote = not in_quote
-        elif char == b" " and not in_quote:
-            if token:
-                labels.append(token.decode("utf-8", "replace"))
-                token = bytearray()
-        else:
-            token += char
-    if token:
-        labels.append(token.decode("utf-8", "replace"))
-    return labels
-
-
-def _parse_labels(meta: bytes, item: str) -> list[str] | None:
-    """Extract the label list (FETCH item ``item``) from FETCH metadata bytes.
-
-    Returns None when the list cannot be recovered (e.g. a label was
-    transmitted as an IMAP literal, which splits the response): the row
-    then records ``labels: null`` — an honest gap, never a guess.
-    """
-    opening = f"{item} (".encode("ascii")
-    start = meta.find(opening)
-    if start == -1:
-        return None
-    i = start + len(opening)
-    depth = 1
-    in_quote = False
-    escaped = False
-    inner = bytearray()
-    while i < len(meta):
-        char = meta[i : i + 1]
-        if escaped:
-            escaped = False
-        elif in_quote and char == b"\\":
-            escaped = True
-        elif char == b'"':
-            in_quote = not in_quote
-        elif not in_quote and char == b"(":
-            depth += 1
-        elif not in_quote and char == b")":
-            depth -= 1
-            if depth == 0:
-                return _tokenize_labels(bytes(inner))
-        inner += meta[i : i + 1]
-        i += 1
-    return None  # unbalanced — labels arrived as a literal; punt.
-
-
-def _parse_header_block(
-    header_block: bytes,
-) -> tuple[str, list[str], str, str, datetime | None, str, list[str], list[str]]:
-    """Return ``(from_address, to_addresses, subject, message_id, sent, list_id, cc,
-    bcc)`` from a raw header block (`_HEADER_FIELDS`). ``cc`` and ``bcc`` are sorted
-    lower-case addr-specs (`message.address_list`), like ``to``.
-
-    ``email.policy.default`` unfolds continuation lines and decodes RFC 2047
-    encoded-words, so the subject is plain Unicode and addresses survive a
-    display-name wrapper. ``from`` is the single lowercased address; ``to`` is
-    the sorted set of lowercased recipient addresses (what the filing-domain
-    rule consumes); ``message_id`` is the raw header (normalized downstream),
-    read by ``message.message_id_of`` rather than ``policy.default``, which
-    cuts some ids short; ``sent`` is the ``Date:`` header (``message.sent_date``);
-    ``list_id`` is the ``List-Id:`` header (``exclusions.normalize_list_id``).
-    All default to '' / [] / None when absent or unparseable.
-    """
-    parsed = email.message_from_bytes(header_block, policy=email.policy.default)
-    _, from_addr = email.utils.parseaddr(str(parsed.get("From", "") or ""))
-    to_addrs = sorted(
-        {
-            addr.strip().lower()
-            for _, addr in email.utils.getaddresses([str(parsed.get("To", "") or "")])
-            if addr
-        }
-    )
-    subject = str(parsed.get("Subject", "") or "")
-    message_id = message_id_of(header_block)
-    sent = sent_date(parsed.get("Date"))
-    list_id = normalize_list_id(str(parsed.get("List-Id", "") or ""))
-    cc = address_list(parsed.get_all("Cc", []))
-    bcc = address_list(parsed.get_all("Bcc", []))
-    return (
-        from_addr.strip().lower(),
-        to_addrs,
-        subject,
-        message_id,
-        sent,
-        list_id,
-        cc,
-        bcc,
-    )
-
-
-# --- BODYSTRUCTURE: the attachment names (ADR 0002 §5, amended 2026-11-14) ---------
-
-_BODYSTRUCTURE_RE = re.compile(rb"\bBODYSTRUCTURE\s+\(")
 _TOKEN_RE = re.compile(rb'\s*(?:(\()|(\))|"((?:[^"\\]|\\.)*)"|([^\s()"]+))')
 
 
@@ -266,7 +132,7 @@ def _sexpr(data: bytes, start: int) -> tuple[list[object], int]:
     while True:
         match = _TOKEN_RE.match(data, i)
         if match is None:
-            raise ValueError("unbalanced BODYSTRUCTURE")
+            raise ValueError("unbalanced IMAP list")
         i = match.end()
         opening, closing, quoted, atom = match.groups()
         if opening:
@@ -284,6 +150,57 @@ def _sexpr(data: bytes, start: int) -> tuple[list[object], int]:
             text = atom.decode("utf-8", "replace")
             value = None if text.upper() == "NIL" else text
         stack[-1].append(value)
+
+
+def _parse_labels(meta: bytes, item: str) -> list[str] | None:
+    """The label list (FETCH item ``item``) in FETCH metadata bytes, by `_sexpr`.
+
+    A label sent as a literal is already inlined, quoted (`_fetch_rows_batch`), so the
+    list is balanced. None when the item is absent or its list does not close: the row
+    then records ``labels: null``, an honest gap, never a guess. A bare ``NIL`` label
+    stays the text ``NIL``.
+    """
+    start = meta.find(f"{item} (".encode("ascii"))
+    if start == -1:
+        return None
+    try:
+        labels, _ = _sexpr(meta, start + len(item) + 1)
+    except (ValueError, IndexError):
+        return None
+    return ["NIL" if label is None else str(label) for label in labels]
+
+
+def _parse_header_block(header_block: bytes) -> dict[str, object]:
+    """The row fields a raw header block (`_HEADER_FIELDS`) gives.
+
+    ``from``, ``to``, ``cc``, ``bcc``, ``subject``, ``message_id``, ``_sent`` and
+    ``list_id``. ``email.policy.default`` unfolds continuation lines and decodes RFC 2047
+    encoded-words, so the subject is plain Unicode and addresses survive a
+    display-name wrapper. ``from`` is the single lowercased address; ``to`` (the first
+    ``To:`` header), ``cc`` and ``bcc`` are sorted lower-case addr-specs
+    (`message.address_list`); ``message_id`` is the raw header (normalized downstream),
+    read by ``message.message_id_of`` rather than ``policy.default``, which
+    cuts some ids short; ``_sent`` is the ``Date:`` header (``message.sent_date``);
+    ``list_id`` is the ``List-Id:`` header (``exclusions.normalize_list_id``).
+    All default to '' / [] / None when absent or unparseable.
+    """
+    parsed = email.message_from_bytes(header_block, policy=email.policy.default)
+    _, from_addr = email.utils.parseaddr(str(parsed.get("From", "") or ""))
+    return {
+        "from": from_addr.strip().lower(),
+        "to": address_list([parsed.get("To", "")]),
+        "cc": address_list(parsed.get_all("Cc", [])),
+        "bcc": address_list(parsed.get_all("Bcc", [])),
+        "subject": str(parsed.get("Subject", "") or ""),
+        "message_id": message_id_of(header_block),
+        "_sent": sent_date(parsed.get("Date")),
+        "list_id": normalize_list_id(str(parsed.get("List-Id", "") or "")),
+    }
+
+
+# --- BODYSTRUCTURE: the attachment names (ADR 0002 §5, amended 2026-11-14) ---------
+
+_BODYSTRUCTURE_RE = re.compile(rb"\bBODYSTRUCTURE\s+\(")
 
 
 def _params(value: object) -> dict[str, str]:
@@ -351,36 +268,33 @@ def _finalize_record(
     """
     msgid = provider.parse_id(meta)
     thread_id = provider.parse_thread(meta)
-    size_match = _SIZE_RE.search(meta)
-    date_match = _INTERNALDATE_RE.search(meta)
-    if not (msgid and thread_id and size_match and date_match):
+    size = rfc822_size(meta)
+    internal_dt = internaldate(meta)
+    if not (msgid and thread_id and size is not None and internal_dt):
         return None
-    internal_dt = parse_internaldate(date_match.group(1))
-    if internal_dt is None:
-        return None
-    from_addr, to_addrs, subject, message_id, sent, list_id, cc, bcc = (
-        _parse_header_block(header_block)
-    )
+    header = _parse_header_block(header_block)
     labels_item = provider.labels_item
     row: dict[str, object] = {
         "id": message_key(
-            message_id=message_id, provider=provider.name, native_id=msgid
+            message_id=str(header["message_id"]),
+            provider=provider.name,
+            native_id=msgid,
         ),
         "msgid": msgid,
         "thread_id": thread_id,
-        "date": internal_dt.astimezone(timezone.utc).isoformat(),
-        "size": int(size_match.group(1)),
-        "from": from_addr,
-        "to": to_addrs,
-        "cc": cc,
-        "bcc": bcc,
-        "subject": subject,
+        "date": internal_dt.isoformat(),
+        "size": size,
+        "from": header["from"],
+        "to": header["to"],
+        "cc": header["cc"],
+        "bcc": header["bcc"],
+        "subject": header["subject"],
         "labels": _parse_labels(meta, labels_item) if labels_item else None,
         "attachments": _attachments(meta),
-        "_sent": sent,
+        "_sent": header["_sent"],
     }
-    if list_id:
-        row["list_id"] = list_id
+    if header["list_id"]:
+        row["list_id"] = header["list_id"]
     return row
 
 
@@ -406,24 +320,18 @@ def _fetch_rows_batch(
     matched anywhere in that segment: the segment also carries the literal's
     ``{size}`` after it, so a fixed window from its end misses a long marker.
     """
-    if not uids:
-        return [], 0
-    typ, data = conn.uid(
-        "FETCH", b",".join(uids).decode("ascii"), _fetch_items(provider)
-    )
-    if typ != "OK":
-        raise imaplib.IMAP4.error(f"UID FETCH headers answered {typ}")
     rows: list[dict[str, object]] = []
     skips = 0
     meta = bytearray()
     header_block = b""
-    for item in data:
+    for item in uid_fetch(conn, uids, _fetch_items(provider), "UID FETCH headers"):
         if isinstance(item, tuple):
             if _HEADER_LITERAL_MARKER in item[0]:
                 meta += item[0]
                 header_block = item[1]
             else:  # another literal (a file name, a label): inline it, quoted
-                meta += _LITERAL_SIZE_RE.sub(b"", item[0]) + _quoted(item[1])
+                quoted = imap_quote(item[1].decode("latin-1")).encode("latin-1")
+                meta += _LITERAL_SIZE_RE.sub(b"", item[0]) + quoted
         elif isinstance(item, bytes):
             meta += item
             if item.endswith(b")"):
@@ -440,13 +348,6 @@ def _fetch_rows_batch(
 # --- Per-year worker ------------------------------------------------------
 
 
-def _logout_quietly(conn: imaplib.IMAP4_SSL) -> None:
-    try:
-        conn.logout()
-    except (imaplib.IMAP4.error, OSError):
-        pass  # logout failure must not mask the sweep result
-
-
 def _sweep_year(
     *,
     credentials_path: Path,
@@ -457,7 +358,7 @@ def _sweep_year(
     """Sweep one year on its own IMAP connection; return its rows and stats.
 
     Keeps only rows whose INTERNALDATE-UTC year matches `year` — the
-    widened search window (see `_search_year_uids`) means boundary
+    widened search window (`Provider.utc_year_search`) means boundary
     messages surface in two adjacent workers, and this filter is what
     guarantees each lands in exactly one worker. Writes nothing: the main
     thread keys and merges every year's rows (`_merge_observed`). A provider with no
@@ -474,41 +375,33 @@ def _sweep_year(
     )
     rows_for_year: list[dict[str, object]] = []
     by_msgid: dict[str, dict[str, object]] = {}
-    parse_skips = 0
-    label_misses = 0
-    boundary_drops = 0
-    walk = provider.all_mail is None
+    stats = dict.fromkeys(STAT_KEYS, 0)
     try:
-        for folder in folders(conn, provider) if walk else [mailbox or ""]:
-            if walk:
-                select_folder(conn, folder)
-            for chunk in _chunked(_search_year_uids(conn, year), BATCH_SIZE):
+        for folder in visit(conn, provider, folders(conn, provider)):
+            uids = uid_search(conn, provider.utc_year_search(year))
+            for chunk in chunked(uids, BATCH_SIZE):
                 rows, skips = _fetch_rows_batch(conn, chunk, provider)
-                parse_skips += skips
+                stats["parse_skips"] += skips
                 for row in rows:
                     if datetime.fromisoformat(str(row["date"])).year != year:
-                        boundary_drops += 1
+                        stats["boundary_drops"] += 1
                         continue
-                    if walk:  # its labels are the folders holding it
+                    if provider.labels_item is None:  # the folders holding it
                         row["labels"] = [folder]
                     seen = by_msgid.get(str(row["msgid"]))
                     if seen is not None:  # one message in a second folder
                         seen["labels"] = sorted({*seen["labels"], folder})  # type: ignore[misc]
                         continue
                     if row["labels"] is None:
-                        label_misses += 1
+                        stats["label_misses"] += 1
                     by_msgid[str(row["msgid"])] = row
                     rows_for_year.append(row)
     except IMAP_FAILURES as exc:
         raise throttle_halt(credentials_path, f"catalog {year}", exc) from exc
     finally:
-        _logout_quietly(conn)
-    return rows_for_year, {
-        "messages": len(rows_for_year),
-        "parse_skips": parse_skips,
-        "label_misses": label_misses,
-        "boundary_drops": boundary_drops,
-    }
+        logout_quietly(conn)
+    stats["messages"] = len(rows_for_year)
+    return rows_for_year, stats
 
 
 def _merge_observed(  # pylint: disable=too-many-arguments
@@ -592,7 +485,7 @@ def sweep(  # pylint: disable=too-many-arguments
 ) -> dict[str, int]:
     """Run one inventory sweep, one worker (and IMAP connection) per year.
 
-    Returns a stats dict for the CLI to print. Keys: ``messages`` (rows
+    Returns a stats dict for the CLI to print. Keys (`STAT_KEYS`): ``messages`` (rows
     written/counted), ``shards`` (year shards), ``removed`` (always 0;
     stale-shard removal is not yet implemented), ``parse_skips`` (FETCH
     responses that could
@@ -622,17 +515,10 @@ def sweep(  # pylint: disable=too-many-arguments
         except IMAP_FAILURES as exc:
             raise throttle_halt(credentials_path, "catalog first year", exc) from exc
         finally:
-            _logout_quietly(conn)
+            logout_quietly(conn)
         if first is None:
             logger.info("[discover] mailbox is empty")
-            return {
-                "messages": 0,
-                "shards": 0,
-                "removed": 0,
-                "parse_skips": 0,
-                "label_misses": 0,
-                "boundary_drops": 0,
-            }
+            return dict.fromkeys(STAT_KEYS, 0)
         targets = list(range(first, datetime.now(timezone.utc).year + 1))
 
     workers = max(1, min(threads, len(targets)))
@@ -681,11 +567,9 @@ def sweep(  # pylint: disable=too-many-arguments
     if failure is not None:
         raise failure
 
-    return {
-        "messages": sum(s["messages"] for s in per_year),
-        "shards": shards,
-        "removed": 0,
-        "parse_skips": sum(s["parse_skips"] for s in per_year),
-        "label_misses": sum(s["label_misses"] for s in per_year),
-        "boundary_drops": sum(s["boundary_drops"] for s in per_year),
-    }
+    totals = dict.fromkeys(STAT_KEYS, 0)
+    for stats in per_year:
+        for key in STAT_KEYS:
+            totals[key] += stats[key]
+    totals["shards"] = shards
+    return totals
