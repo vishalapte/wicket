@@ -69,7 +69,7 @@ from wicket.auth import (
     uid_search,
     visit,
 )
-from wicket.env import DEFAULT_THREADS
+from wicket.env import DEFAULT_THREADS, event
 from wicket.exclusions import normalize_list_id
 from wicket.manifest import (
     Shard,
@@ -111,7 +111,8 @@ _HEADER_ITEM = f"HEADER.FIELDS ({' '.join(_HEADER_FIELDS)})"
 _HEADER_LITERAL_MARKER = f"BODY[{_HEADER_ITEM}]".encode("ascii")
 # A literal's ``{size}`` at the end of the segment that announces it.
 _LITERAL_SIZE_RE = re.compile(rb"\{\d+\}\s*$")
-# Progress, one line per step; the CLI's `main()` shows it on stderr.
+# Progress, one record per step: a human message for stderr and an event for wicket.log
+# (`env.configure_logging`, which the CLI's `main()` calls).
 logger = logging.getLogger(__name__)
 
 
@@ -454,7 +455,14 @@ def _merge_observed(  # pylint: disable=too-many-arguments
     for year in touched:
         observed_year = by_year.get(year, {})
         if dry_run:
-            logger.info("[dry-run] %s: %s row(s)", year, len(observed_year))
+            logger.info(
+                "[dry-run] %s: %s row(s)",
+                year,
+                len(observed_year),
+                extra=event(
+                    "catalog.year", year=year, observed=len(observed_year), dry_run=True
+                ),
+            )
             continue
         merged = merge_catalog(
             prior.get(year, {}), observed_year, complete=year in swept
@@ -465,6 +473,12 @@ def _merge_observed(  # pylint: disable=too-many-arguments
             year,
             len(observed_year),
             len(merged),
+            extra=event(
+                "catalog.year",
+                year=year,
+                observed=len(observed_year),
+                in_shard=len(merged),
+            ),
         )
     return len(touched)
 
@@ -517,7 +531,10 @@ def sweep(  # pylint: disable=too-many-arguments
         finally:
             logout_quietly(conn)
         if first is None:
-            logger.info("[discover] mailbox is empty")
+            logger.info(
+                "[discover] mailbox is empty",
+                extra=event("catalog.discover", empty=True, dry_run=dry_run),
+            )
             return dict.fromkeys(STAT_KEYS, 0)
         targets = list(range(first, datetime.now(timezone.utc).year + 1))
 
@@ -528,6 +545,14 @@ def sweep(  # pylint: disable=too-many-arguments
         targets[0],
         targets[-1],
         workers,
+        extra=event(
+            "catalog.plan",
+            years=len(targets),
+            first=targets[0],
+            last=targets[-1],
+            threads=workers,
+            dry_run=dry_run,
+        ),
     )
 
     per_year: list[dict[str, int]] = []

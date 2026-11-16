@@ -33,8 +33,8 @@ duplicate it here. Bound by the racecar standards (resolver:
     `interactive`, dispatch into the worker, return its stats dict) and one
     request function per verb (`<verb>_root`, bound in `VERBS`) that the face
     calls: it takes the command line's arguments, says every refusal as an
-    `ApiError` (a HALT, a busy store and a bad request exit 2, an IMAP error 1),
-    and returns the verb's TypedDict (`root/lib/results.py`). The read helpers
+    `ApiError` with its code, and returns the verb's TypedDict
+    (`root/lib/results.py`). The read helpers
     `held_messages` and `manifest` live there too. Each worker is
     `root/lib/<verb>.py`; every line the verbs print is in
     `root/lib/renderer/plaintext.py`, and the api calls the same formatters for
@@ -50,6 +50,32 @@ duplicate it here. Bound by the racecar standards (resolver:
     reader's `ValueError` into the `ApiError` the face prints.
     `store` writes domain-routes.json for `--from` and account-aliases.json for
     `--to`, both or neither.
+  - **Refusals** (`errors.py`, `error-codes.jsonl`): `error-codes.jsonl` is the one
+    home of the closed list of refusal codes, one JSON object per line (`reason`,
+    `exit`, `when`, `fix`), shipped as package data and read once into
+    `errors.CODES`. An exception class names its code with a `reason` class
+    attribute and its facts in `facts` (`env.NoMailRoot`, `auth.Halted`,
+    `env.StoreBusy`, ...); a class with none is `bad_request`. `ApiError(message,
+    reason, **facts)` looks its exit code up (an unlisted reason, or a placeholder
+    in the fix with no fact, raises) and its text is the message, then
+    `fix: <the code's fix>` with `<placeholders>` filled from its facts. A message says only what happened; advice is the code's `fix`.
+    Every request function in each api's `VERBS` is wrapped in `errors.refusals`,
+    which logs the refusal's event and re-raises. Adding a code is a line in the
+    file and a raise that names it; `tests/test_error_codes.py` holds the two in step.
+  - **Logging** (`env`): one formatter, `env.LogfmtFormatter`, writes every log
+    line: `TIME HOST wicket[PID]:` then logfmt, `account=`, `level=`, `event=`
+    (`<verb>.<step>`) first; a field with no value is left out. The events table
+    is in `env` beside it; a new log statement adds a row. Code logs a human
+    message, an event (`extra=env.event(name, **fields)`), or both. Every face's
+    `main` calls `env.configure_logging()`: the stderr handler prints messages as
+    the terminal always showed them, and the `wicket.log` handler appends every
+    event to `$XDG_STATE_HOME/wicket/log/wicket.log` in every run (best effort).
+    `env.append_log(account, name, **fields)` is the one writer of an account's
+    log (durable: it raises), and hands the same record on to `wicket.log`. The api
+    sets the process account (`env.set_process_account`), which a line with no
+    account of its own takes; a module global, so worker threads see it, cleared by
+    `errors.refusals` when each request starts. A dry run's events
+    carry `dry_run=true` and reach `wicket.log` alone.
   - `filing.py` (package root, one layer above the shared modules): which store a
     thread belongs in (the router, `route_threads`, voting with `participants`), a
     thread's opener (`opener`: its earliest-`date` row, whose thread id a local
@@ -74,7 +100,9 @@ duplicate it here. Bound by the racecar standards (resolver:
     `domains` reuses for its two maps). `env` also owns the **halt dir** and the
     **log dir**, never one dir (`resolve_halt_path`: `$XDG_STATE_HOME/wicket/
     halt/<account>`; `resolve_log_path`: `.../log/<account>.log`, written only by
-    `append_log`, the one log writer; each dir made `0700` by its first writer)
+    `append_log`, the one account-log writer; `resolve_wicket_log_path`:
+    `.../log/wicket.log`, written only by the `wicket.log` handler; each dir made
+    `0700` by its first writer, each log file `0600`)
     and the **store lock** (`store_lock`: `fcntl.flock` on
     `<manifest dir>/.lock`, non-blocking, `StoreBusy` naming the holder's pid; not
     re-entrant, so an api or worker takes each store's lock once). `auth` owns the
@@ -116,8 +144,8 @@ duplicate it here. Bound by the racecar standards (resolver:
   `__main__` → `wicket.root.api` and each noun's `api` → each root verb's
   worker (`wicket.root.lib.<verb>`), the root renderer and each noun's `lib` →
   `wicket.root.lib.results` → `reconcile` → `filing` → shared
-  (`auth`/`domains`/`message`/`manifest`) → `env` and `provider`, downward only
-  (acyclic).
+  (`auth`/`domains`/`message`/`manifest`) → `errors` → `env` and `provider`,
+  downward only (acyclic).
   The workers and nouns are independent siblings (no cross-imports). The face → api →
   lib routing is convention, not a wall: the contract gates direction and
   acyclicity (defects); a face that bypasses its api is a reviewed
@@ -145,7 +173,7 @@ duplicate it here. Bound by the racecar standards (resolver:
   HALT. Never open a connection any other way, never write a HALT except
   through `auth.write_halt` (first cause wins; every worker checks the file
   before its next unit of work), and never remove one except through
-  `auth.clear_halt`; each logs one line, and nothing else touches `halt/`. A HALT is an empty, touched file:
+  `auth.clear_halt`; each logs one event (`halt.set`, `halt.clear`), and nothing else touches `halt/`. A HALT is an empty, touched file:
   the name is the account, the timestamp is when. A logged cause never carries
   the password or a path.
 - Keep `--non-interactive` failing **loudly** (non-zero exit). Cron/launchd

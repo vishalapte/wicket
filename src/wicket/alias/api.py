@@ -15,7 +15,7 @@ from pathlib import Path
 
 import wicket.env as env  # pylint: disable=consider-using-from-import
 from wicket.domains import domain_aliases_path, parse_domain_aliases
-from wicket.errors import refusing
+from wicket.errors import refusals, refusing
 from wicket.maps import create_entry, edit, read_map, remove_items, update_entry
 
 from .lib import rows
@@ -30,6 +30,7 @@ def _path() -> Path:
     return domain_aliases_path(env.require_mail_root())
 
 
+@refusals
 def create_alias(primary: str, item: list[str] | None = None) -> CreateAlias:
     """Add a primary domain and the domains that fold into it."""
     with refusing():
@@ -41,6 +42,7 @@ def create_alias(primary: str, item: list[str] | None = None) -> CreateAlias:
     return {"primary": primary, "domains": after[primary]}
 
 
+@refusals
 def delete_alias(primary: str, item: list[str] | None = None) -> DeleteAlias:
     """Delete a primary, or the named domains under it."""
     with refusing():
@@ -50,6 +52,7 @@ def delete_alias(primary: str, item: list[str] | None = None) -> DeleteAlias:
     return {"primary": primary, "domains": after.get(primary, [])}
 
 
+@refusals
 def list_alias() -> ListAlias:
     """List every alias entry."""
     with refusing():
@@ -57,6 +60,7 @@ def list_alias() -> ListAlias:
     return {"aliases": rows(mapping)}
 
 
+@refusals
 def update_alias(
     primary: str, add: list[str] | None = None, remove: list[str] | None = None
 ) -> UpdateAlias:

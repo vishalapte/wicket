@@ -259,7 +259,7 @@ def test_a_short_body_is_never_written_and_halts(tmp_path: Path) -> None:
     assert not (tmp_path / "messages").exists()  # fetch files nothing
     assert result.halt is not None
     assert _halt_file().read_text() == ""
-    assert "HALT set short body: 2 message(s)" in _log()
+    assert 'event=halt.set cause="short body: 2 message(s)' in _log()
 
 
 def test_a_size_after_the_literal_is_read() -> None:
@@ -284,7 +284,7 @@ def test_a_failed_month_halts_and_the_rest_are_skipped(
     )
     assert (written, failed) == ([], 1)
     assert halt is not None and halt.line.startswith("month 2024-01")
-    assert "HALT set month 2024-01" in _log()
+    assert 'event=halt.set cause="month 2024-01' in _log()
 
 
 def test_a_refused_worker_skips_its_months_and_writes_no_second_halt(
@@ -298,7 +298,8 @@ def test_a_refused_worker_skips_its_months_and_writes_no_second_halt(
     )
     assert (written, failed) == ([], 0)  # skipped, not failed
     assert halt is not None and halt.line.startswith("halted since ")
-    assert _log().count("HALT set") == 1 and "HALT set the first cause" in _log()
+    assert _log().count("event=halt.set") == 1
+    assert 'event=halt.set cause="the first cause"' in _log()
 
 
 def test_a_worker_checks_the_stop_before_each_month(
@@ -338,7 +339,7 @@ def test_a_rejected_search_halts_the_pass(tmp_path: Path) -> None:
         threads=1,
     )
     assert halt is not None and counts["downloaded"] == 0
-    assert "HALT set discovery" in _log()
+    assert 'event=halt.set cause="discovery' in _log()
 
 
 # --- the api and the face -------------------------------------------------------
@@ -366,9 +367,52 @@ def test_the_api_runs_years_with_no_filter_and_logs_counts_only(
     state = Path(os.environ["XDG_STATE_HOME"]) / "wicket"
     log = (state / "log" / f"{ME}.log").read_text()
     assert not (state / ME).exists()  # no per-account run dir any more
-    assert f"{this} pass 1:" in log and "3 downloaded" in log and "run end:" in log
-    assert "@" not in log and "/" not in log  # no address, no path
+    assert f"event=fetch.year year={this} " in log and " downloaded=3 " in log
+    assert "event=fetch.start pass=all" in log and "event=fetch.end" in log
+    for line in log.splitlines():  # no address but the account= value, no path
+        rest = line.replace(f" account={ME} ", " ")
+        assert "@" not in rest and "/" not in rest, line
     assert stats["halted"] is False
+
+
+def _log_bodies(path: Path) -> list[str]:
+    """A log's lines without their header: the logfmt part."""
+    if not path.exists():
+        return []
+    return [line.split(": ", 1)[1] for line in path.read_text().splitlines()]
+
+
+def test_a_years_run_logs_start_year_and_end_with_their_fields(
+    account: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    del account
+    Years(monkeypatch, {2024: [3]})
+    root_api.fetch(ME, options=root_api.FetchOptions(years=[2024]))
+    log = Path(os.environ["XDG_STATE_HOME"]) / "wicket" / "log" / f"{ME}.log"
+    assert _log_bodies(log) == [
+        f"account={ME} level=info event=fetch.start pass=years years=2024",
+        f"account={ME} level=info event=fetch.year year=2024 matched=0 candidates=3 "
+        "downloaded=3 failed=0 linked=0 got=3",
+        f"account={ME} level=info event=fetch.end downloaded=3 failed=0 linked=0",
+    ]
+
+
+def test_a_dry_run_logs_its_events_to_wicket_log_alone_with_dry_run(
+    account: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    del account
+    env.configure_logging()
+    Years(monkeypatch, {2024: [3]})
+    root_api.fetch(ME, options=root_api.FetchOptions(years=[2024], dry_run=True))
+    logs = Path(os.environ["XDG_STATE_HOME"]) / "wicket" / "log"
+    assert not (logs / f"{ME}.log").exists()  # a dry run writes no account log
+    assert _log_bodies(logs / "wicket.log") == [
+        f"account={ME} level=info event=fetch.start pass=years years=2024 dry_run=true",
+        f"account={ME} level=info event=fetch.year year=2024 matched=0 candidates=3 "
+        "downloaded=3 failed=0 linked=0 got=3 dry_run=true",
+        f"account={ME} level=info event=fetch.end downloaded=3 failed=0 linked=0 "
+        "dry_run=true",
+    ]
 
 
 def test_the_options_take_no_filter_but_not_two() -> None:
@@ -456,7 +500,9 @@ def test_the_face_exits_2_on_a_halt_and_names_the_file(
     assert "halted: throttle 2026-10-27T08:00:00Z" in err
     assert "HALT at /state/wicket/halt/you@gmail.com" in err
     assert "python -m wicket.halt clear --mail-account you@gmail.com" in err
-    assert "aside" not in err
+    # fetch's summary never reports duplicates "set aside" (they count as got). The
+    # `halted` fix's own "move aside the credential file" is advice, not that count.
+    assert "set aside" not in err
 
 
 def test_the_face_exits_2_when_the_api_raises_halted(
@@ -493,7 +539,7 @@ def test_catalog_maps_a_timeout_to_a_throttle_halt_and_exits_2(
     )
     assert code == 2
     assert _halt_file().read_text() == ""
-    assert "HALT set catalog 2024: TimeoutError" in _log()
+    assert 'event=halt.set cause="catalog 2024: TimeoutError"' in _log()
     err = capsys.readouterr().err
     assert "halted: catalog 2024: TimeoutError" in err
     assert f"python -m wicket.halt clear --mail-account {ME}" in err

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import os
-from collections.abc import Callable
+import sys
+import threading
+from collections.abc import Callable, Iterator
 
 import pytest
 
@@ -57,3 +60,27 @@ def _no_real_state(
         env.STATE_HOME_ENV_VAR, str(tmp_path_factory.mktemp("state-home"))
     )
     monkeypatch.setattr(env, "DEFAULT_STATE_DIR", tmp_path_factory.mktemp("state"))
+
+
+@pytest.fixture(autouse=True)
+def _no_logging_left() -> Iterator[None]:
+    """Put wicket's logging back as the test found it.
+
+    A face's ``main`` sets it up (`env.configure_logging`): two handlers on the ``wicket``
+    logger, its level, and both excepthooks. After each test those handlers are removed,
+    the level and the hooks restored, and the process account cleared, so no test sees
+    another's. `_no_real_state` already points ``wicket.log`` at a temp dir.
+    """
+    logger = logging.getLogger(env.LOGGER_NAME)
+    level = logger.level
+    hooks = (sys.excepthook, threading.excepthook)
+    yield
+    for handler in [
+        h
+        for h in logger.handlers
+        if isinstance(h, (env.StderrHandler, env.WicketLogHandler))
+    ]:
+        logger.removeHandler(handler)
+    logger.setLevel(level)
+    sys.excepthook, threading.excepthook = hooks
+    env.set_process_account(None)

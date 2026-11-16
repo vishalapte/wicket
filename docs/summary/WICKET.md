@@ -6,13 +6,14 @@ generator:
 target:
   repo: wicket
   date: 2026-09-04
-  version: "0.20.1"
+  version: "0.21.0"
 bundle:
   - WICKET.md
   - WICKET-DOSSIER.md
 external_paths:
   - provider.py                          # Phase 2; the MailProvider seam does not exist yet
   - imap.json                            # the credential file, outside the tree under the state dir
+  - log/wicket.log                       # the run log, outside the tree under the state dir
   - myaccount.google.com/apppasswords    # where a Gmail app password is minted
 ---
 
@@ -325,9 +326,9 @@ table, and no compiler. The fidelity checker that would drift-check that table
 ships with the compiler and does not exist yet.
 
 **Honest gaps:** no backup of the archive; no integrity verification of
-downloaded bodies; no full-text search; no scheduler, healthcheck, metrics, or
-log configuration — observability is each verb's stdout summary and its exit
-code. The consumers named as dependents have not been rewired yet, so the code
+downloaded bodies; no full-text search; no scheduler, healthcheck or metrics —
+observability is each verb's stdout summary, its exit code, and `log/wicket.log`, one
+logfmt line per event of every run, with a `reason=` code for every refusal. The consumers named as dependents have not been rewired yet, so the code
 this repo replaced still lives in the repo it was lifted out of.
 
 ## Seams, and the invariants a change may not cost

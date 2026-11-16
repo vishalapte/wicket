@@ -12,7 +12,17 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+## 0.21.0 - 2026-11-16
+
+### Added
+- **Every run logs its events to `wicket.log`, in one line shape.** `$XDG_STATE_HOME/wicket/log/wicket.log` holds every event of every run, from any command, cron or a terminal: `TIME HOST wicket[PID]:` then logfmt fields, `account=`, `level=`, `event=` (`<verb>.<step>`) first. A refusal logs `wicket.end outcome=refused` with its exit and its code, a crash `outcome=crashed` with where it happened. The terminal's text is unchanged, and stderr shows no log line.
+- **Refusal codes, with a fix each.** `src/wicket/error-codes.jsonl` lists every refusal: its `reason`, `exit`, `when` and `fix`. Every refusal on stderr now ends with a `fix:` line, and the advice that sat inside eleven messages moved there. A host that cannot be reached now exits 1, like an IMAP error, since a retry may pass.
+- **`ingest` writes to the account's log.** A run that files appends `event=ingest.end` with its counts to each account it filed to; a dry run writes nothing there, and logs its events to `wicket.log` with `dry_run=true`, as a dry fetch and catalog do.
+- **`no_provider`.** An `imap.json` that links to no known provider is refused with its own code; the fix names `python -m wicket.account delete`, then `create`. The seeding prompt shows where that provider makes an app password, and refuses such an `imap.json` before it asks for anything.
+
 ### Changed
+- **The forced account-mismatch warning drops its last sentence** ("Re-run with --mail-account ..., or pass --force if you meant it."): it was the refusal's advice, now the `account_mismatch` fix, and under `--force` it was already followed.
+- **The account log takes the same line shape.** `HALT set <cause>`, `HALT cleared`, `run start`, `<year> pass 1: ...` and `run end: ...` become `event=halt.set cause=...`, `event=halt.clear`, `event=fetch.start`, `event=fetch.year` and `event=fetch.end`, each with its fields. Old lines stay as they are.
 - **The IMAP steps live in `auth`, once.** Fetch, catalog and `first_year` share one folder walk, one OK check, one logout and one UID SEARCH and FETCH, and a HALT is read once where it was tested then read. Catalog's label parser reuses its list parser, discovery no longer fetches From and To it never read, and `--last` has one grammar (`provider.parse_last`), so a bad value is refused before any search is sent.
 
 ## 0.20.1 - 2026-11-14

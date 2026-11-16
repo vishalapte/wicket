@@ -16,7 +16,7 @@ from pathlib import Path
 import wicket.env as env  # pylint: disable=consider-using-from-import
 from wicket.domains import domain_routes_path, parse_domain_routes
 from wicket.env import account_aliases_path, parse_account_aliases
-from wicket.errors import ApiError, refusing
+from wicket.errors import ApiError, refusals, refusing
 from wicket.maps import Map, add_items, read_map, remove_items, write_maps
 
 from .lib import row, rows
@@ -62,6 +62,7 @@ def _change(
     return routes, accounts
 
 
+@refusals
 def create_store(
     store: str, from_: list[str] | None = None, to: list[str] | None = None
 ) -> CreateStore:
@@ -69,6 +70,7 @@ def create_store(
     return row(store, *_change(store, from_, to, add_items))
 
 
+@refusals
 def delete_store(
     store: str, from_: list[str] | None = None, to: list[str] | None = None
 ) -> DeleteStore:
@@ -76,6 +78,7 @@ def delete_store(
     return row(store, *_change(store, from_, to, remove_items))
 
 
+@refusals
 def list_store() -> ListStore:
     """List every store with its sender domains and owner addresses."""
     with refusing():

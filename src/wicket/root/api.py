@@ -27,8 +27,8 @@ messages/staging/store/credential paths, turns the one filter given (``domains``
 `lib.fetch.download_years` (no filter: every year until throttled). A real run holds the
 store's lock (`env.store_lock`) and appends counts and years, never subjects, addresses
 or paths, to the account's log (`env.append_log`: ``log/<account>.log`` under
-``$XDG_STATE_HOME/wicket``). The read-side helper `held_messages` (no IMAP, no
-credentials) lives here too.
+``$XDG_STATE_HOME/wicket``), as events (``fetch.start``, ``fetch.year``, ``fetch.end``).
+The read-side helper `held_messages` (no IMAP, no credentials) lives here too.
 
 ingest: resolve paths, dispatch to the worker. Read-only on any mailbox: ingest reads
 ``.eml`` already on disk and files them additively into the manifest + messages/, so there
@@ -44,11 +44,19 @@ has two, and the default is the safe one:
 - **Single-target** (an explicit account): everything lands in that one store.
   ``--mail-account`` is a destination, not a filter, so the worker refuses when the
   folder is plainly addressed to a different account (``force`` overrides).
+
+A run that files appends ``ingest.end`` to each account it filed to (`env.append_log`).
+
+Every request function (`VERBS`) is wrapped in `errors.refusals`, which logs each
+refusal's event, and sets the process account (`env.set_process_account`) to the account
+it names, then to the account it resolves (`_resolve`), so every log line of the run
+names it.
 """
 
 from __future__ import annotations
 
 import imaplib
+import logging
 import re
 from collections import Counter
 from collections.abc import Callable
@@ -76,8 +84,10 @@ from wicket.env import (
     account_dirs,
     account_of,
     append_log,
+    event,
     known_accounts,
     load_account_aliases,
+    normalize_account,
     require_mail_root,
     resolve_account,
     resolve_duplicates_dir,
@@ -85,9 +95,10 @@ from wicket.env import (
     resolve_staging_dir,
     resolve_state_dir,
     resolve_store_dir,
+    set_process_account,
     store_lock,
 )
-from wicket.errors import ApiError, refusing
+from wicket.errors import ApiError, refusals, refused, refusing
 from wicket.exclusions import excluded_for, excluded_lists_path, load_excluded_lists
 from wicket.filing import AccountFor, build_domain_query
 from wicket.manifest import (
@@ -131,6 +142,25 @@ __all__ = [
     "report",
     "sender_counts",
 ]
+
+logger = logging.getLogger(__name__)
+
+
+def _named(account: str | None) -> None:
+    """A request that names an account makes it the process account (`env`), normalized
+    as every noun normalizes it, so every line the run logs names it, a refusal's too.
+    `errors.refusals` clears it when each request starts."""
+    if account:
+        set_process_account(normalize_account(account))
+
+
+def _resolve(account: str | None) -> str:
+    """`env.resolve_account`, and the result made the process account. Used by the verbs
+    whose runs log (catalog, fetch, ingest, the report summary); the read helpers
+    (`report`, `manifest`, `held_messages`...) log nothing and set nothing."""
+    resolved = resolve_account(account)
+    set_process_account(resolved)
+    return resolved
 
 
 def report(account: str | None = None) -> dict[str, int]:
@@ -241,7 +271,7 @@ def catalog(
     sweep wrote one, and `env.StoreBusy` when another process holds the store's lock.
     """
     opts = options if options is not None else CatalogOptions()
-    resolved = resolve_account(account)
+    resolved = _resolve(account)
     store = opts.store_dir
     if store is None:
         store = resolve_store_dir(resolved)
@@ -344,24 +374,32 @@ def _excluded(account: str, state_dir: Path | None = None) -> list[str]:
     return excluded_for(account, mapping)
 
 
-def _run_log(account: str) -> Callable[[str], None]:
-    """Append one timestamped line to the account's log (`env.append_log`)."""
+def _run_log(account: str, dry_run: bool) -> Callable[..., None]:
+    """Where a fetch run's events go: ``log(name, **fields)``.
 
-    def log(line: str) -> None:
-        append_log(account, line)
+    A real run appends each to the account's log (`env.append_log`), which hands it on to
+    ``wicket.log``; a dry run writes no account log, so its events reach ``wicket.log``
+    alone, each with ``dry_run=true``.
+    """
+
+    def log(name: str, **fields: object) -> None:
+        if dry_run:
+            logger.info("", extra=event(name, account=account, **fields, dry_run=True))
+        else:
+            append_log(account, name, **fields)
 
     return log
 
 
-def _summary(stats: dict[str, object]) -> str:
-    """The run's closing log line: counts, and whether it halted (never the HALT's text)."""
-    line = (
-        f"run end: {stats.get('downloaded', 0)} downloaded, "
-        f"{stats.get('failed', 0)} failed, {stats.get('linked', 0)} linked"
-    )
-    if stats.get("halted"):
-        line += "; HALT"
-    return line
+def _summary(stats: dict[str, object]) -> dict[str, object]:
+    """The run's closing event's fields: counts, and whether it halted (never the HALT's
+    text)."""
+    return {
+        "downloaded": stats.get("downloaded", 0),
+        "failed": stats.get("failed", 0),
+        "linked": stats.get("linked", 0),
+        "halted": bool(stats.get("halted")),
+    }
 
 
 def fetch(
@@ -386,9 +424,10 @@ def fetch(
     `lib.download` or `lib.download_years` and returns its stats dict, which
     carries ``halted`` (and the HALT's ``halt`` line and ``halt_file``) when a
     throttle stopped it. Raises `env.StoreBusy` when another process holds the
-    store's lock; a dry run takes no lock and writes no log.
+    store's lock; a dry run takes no lock and writes no account log (its events reach
+    ``wicket.log`` alone).
     """
-    resolved = resolve_account(account)
+    resolved = _resolve(account)
     state = resolve_state_dir(resolved, options.state_dir)
     alias_path = options.alias_file or domain_aliases_path(MAIL_ROOT)
     domain_aliases = load_domain_aliases(alias_path)
@@ -410,18 +449,17 @@ def fetch(
         provider=provider,
         exclude=exclude,
     )
-    log: Callable[[str], None] = (
-        (lambda _line: None) if options.dry_run else _run_log(resolved)
-    )
+    log = _run_log(resolved, options.dry_run)
     lock: AbstractContextManager[None] = (
         nullcontext() if options.dry_run else store_lock(store)
     )
     with lock:
         if search is None:
             if options.years is None:
-                log("run start: every year")
+                log("fetch.start", **{"pass": "all"})
             else:
-                log(f"run start: years {', '.join(map(str, options.years))}")
+                years = ",".join(map(str, options.years))
+                log("fetch.start", **{"pass": "years", "years": years})
             stats = download_years(
                 ctx=ctx,
                 credentials_path=credentials_path,
@@ -431,7 +469,7 @@ def fetch(
                 years=options.years,
             )
         else:
-            log("run start: one filtered pass")
+            log("fetch.start", **{"pass": "filtered"})
             stats = download(
                 search=search,
                 ctx=ctx,
@@ -439,7 +477,7 @@ def fetch(
                 limit=options.limit,
                 threads=options.threads,
             )
-        log(_summary(stats))
+        log("fetch.end", **_summary(stats))
     return stats
 
 
@@ -543,26 +581,62 @@ def _target(account: str, options: IngestOptions) -> Target:
     )
 
 
+def _staged_end(stats: dict[str, object]) -> dict[str, object]:
+    """A staged run's ``ingest.end`` fields: the counts the staged worker returns, never
+    ``filed``'s paths. It returns no ``skipped``; ``archived`` and ``duplicates`` are
+    not logged (the plan's row does not name them)."""
+    refused_names = cast(list[str], stats.get("refused") or [])
+    unrecognized = cast(list[str], stats.get("unrecognized") or [])
+    return {
+        "added": stats.get("added"),
+        "copies": stats.get("copies"),
+        "excluded": stats.get("excluded"),
+        "excluded_lists": stats.get("excluded_lists"),
+        "refused": len(refused_names),
+        "unrecognized": len(unrecognized),
+    }
+
+
+def _src_end(stats: dict[str, object]) -> dict[str, object]:
+    """A ``--src`` run's ``ingest.end`` fields for one account: its own counts."""
+    return {"added": stats.get("added"), "skipped": stats.get("skipped")}
+
+
+def _ingest_end(account: str, dry_run: bool, fields: dict[str, object]) -> None:
+    """``ingest.end`` for one account: to its log (`env.append_log`, and on to
+    ``wicket.log``), or for a dry run to ``wicket.log`` alone with ``dry_run=true``."""
+    if dry_run:
+        logger.info(
+            "", extra=event("ingest.end", account=account, **fields, dry_run=True)
+        )
+    else:
+        append_log(account, "ingest.end", **fields)
+
+
 def ingest(account: str | None = None, *, options: IngestOptions) -> dict[str, object]:
     """File the new ``.eml`` under ``options.src`` (routed or into one account), or staged.
 
     With ``options.staged``, ``account`` resolves as every verb resolves it
-    (`env.resolve_account`) and that one store's staged mail is filed.
+    (`env.resolve_account`) and that one store's staged mail is filed. A run that is no
+    dry run appends ``ingest.end`` to the log of each account it filed to; a dry run
+    logs the same events to ``wicket.log`` alone, with ``dry_run=true`` (`_ingest_end`).
     """
     account_for, accounts = _resolver()
 
     if options.staged:
-        resolved = resolve_account(account)
-        return ingest_staged(
+        resolved = _resolve(account)
+        stats = ingest_staged(
             target=_target(resolved, options),
             staging_dir=resolve_staging_dir(resolved),
             duplicates_dir=resolve_duplicates_dir(resolved),
             dry_run=options.dry_run,
         )
+        _ingest_end(resolved, options.dry_run, _staged_end(stats))
+        return stats
     src = options.src
     assert src is not None  # IngestOptions: exactly one of src / staged
     if account is None:
-        return ingest_routed(
+        stats = ingest_routed(
             src=src,
             targets={a: _target(a, options) for a in sorted(accounts)},
             account_for=account_for,
@@ -570,9 +644,12 @@ def ingest(account: str | None = None, *, options: IngestOptions) -> dict[str, o
             dry_run=options.dry_run,
             to_trash=options.to_trash,
         )
+        for got in cast(list[dict[str, object]], stats["accounts"]):
+            _ingest_end(str(got["account"]), options.dry_run, _src_end(got))
+        return stats
 
-    resolved = resolve_account(account)
-    return ingest_folder(
+    resolved = _resolve(account)
+    stats = ingest_folder(
         src=src,
         target=_target(resolved, options),
         account_for=account_for,
@@ -580,20 +657,27 @@ def ingest(account: str | None = None, *, options: IngestOptions) -> dict[str, o
         force=options.force,
         to_trash=options.to_trash,
     )
+    _ingest_end(resolved, options.dry_run, _src_end(stats))
+    return stats
 
 
 # --- the request functions: one per verb, bound in VERBS ---------------------------
 
 
 def _refused(exc: Exception) -> ApiError:
-    """A refused catalog or fetch run, as the message and exit code it reports."""
+    """A refused catalog or fetch run, as the message, code and facts it reports.
+
+    The code is the exception's own (`errors.refused`): ``halted``, ``busy``, an auth
+    code, a map's or the account's; imaplib's error is ``imap``; anything else is a bad
+    request.
+    """
     if isinstance(exc, Halted):
-        return ApiError(halt_text(exc.line, str(exc.path)))
+        return refused(exc, halt_text(exc.line, str(exc.path)))
     if isinstance(exc, AuthError):
-        return ApiError(f"auth error: {exc}")
+        return refused(exc, f"auth error: {exc}")
     if isinstance(exc, imaplib.IMAP4.error):
-        return ApiError(f"IMAP error: {exc}", exit_code=1)
-    return ApiError(str(exc))  # a bad request, or a store another process holds
+        return ApiError(f"IMAP error: {exc}", "imap")
+    return refused(exc)  # a bad request, or a store another process holds
 
 
 def _parse_years(raw: str) -> list[int]:
@@ -616,6 +700,7 @@ def _parse_years(raw: str) -> list[int]:
     return sorted(years)
 
 
+@refusals
 def catalog_root(  # pylint: disable=too-many-arguments
     *,
     mail_account: str | None = None,
@@ -629,6 +714,7 @@ def catalog_root(  # pylint: disable=too-many-arguments
     dry_run: bool = False,
 ) -> CatalogRoot:
     """Observe the mailbox into the year-sharded manifest; headers only, never bodies."""
+    _named(mail_account)
     swept = _parse_years(years) if years else None
     try:
         options = CatalogOptions(
@@ -743,6 +829,7 @@ def _accounts_view() -> AccountsView:
     )
 
 
+@refusals
 def report_root(
     mail_account: str | None = None,
     senders: bool = False,
@@ -753,6 +840,7 @@ def report_root(
     """Read-only reports over the manifest: a summary, senders, addresses, a bucket's
     view, every account by year, or, with no view and no ``mail_account``, every
     account's counts."""
+    _named(mail_account)
     with refusing():
         if by_year:
             return {"view": "by_year", "by_year": _by_year_view()}
@@ -771,7 +859,7 @@ def report_root(
         if mail_account is None:
             return {"view": "accounts", "accounts": _accounts_view()}
         counts = report(mail_account)
-        store_dir = resolve_store_dir(resolve_account(mail_account))
+        store_dir = resolve_store_dir(_resolve(mail_account))
     return {
         "view": "summary",
         "store_dir": str(store_dir),
@@ -779,6 +867,7 @@ def report_root(
     }
 
 
+@refusals
 def fetch_root(  # pylint: disable=too-many-arguments
     *,
     mail_account: str | None = None,
@@ -801,6 +890,7 @@ def fetch_root(  # pylint: disable=too-many-arguments
     ``newer_than:<last>``); ``years`` (``2021,2022``) walks only those years; at most one
     of ``domains``, ``query``, ``last`` and ``years`` is given.
     """
+    _named(mail_account)
     if last is not None:
         with refusing():  # before the one-filter check, so a bad --last is named first
             parse_last(last)
@@ -842,7 +932,13 @@ def fetch_root(  # pylint: disable=too-many-arguments
     )
     if result["halted"]:
         halt = halt_text(str(stats.get("halt")), str(stats.get("halt_file")))
-        raise ApiError("\n".join([*fetch_lines(result), halt]))
+        # The refusal's own account is the HALT file's name (one home: `halt_file`); the
+        # worker's `halt_facts` add the cause or since.
+        facts = {
+            **cast(dict[str, object], stats.get("halt_facts") or {}),
+            "account": Path(str(stats.get("halt_file"))).name,
+        }
+        raise ApiError("\n".join([*fetch_lines(result), halt]), "halted", **facts)
     return result
 
 
@@ -858,6 +954,7 @@ def _ingest_stats(stats: dict[str, object]) -> dict[str, object]:
     return out
 
 
+@refusals
 def ingest_root(  # pylint: disable=too-many-arguments
     *,
     mail_account: str | None = None,
@@ -873,8 +970,10 @@ def ingest_root(  # pylint: disable=too-many-arguments
     messages/.
 
     A routed run that skips a store another process holds is refused: the ``ApiError``
-    says what it filed, then each busy store.
+    says what it filed, then each busy store; each busy store is logged
+    (``ingest.busy``, under that store's account).
     """
+    _named(mail_account)
     if staged:
         mode = "staged"
     elif mail_account is None:
@@ -902,7 +1001,19 @@ def ingest_root(  # pylint: disable=too-many-arguments
         },
     )
     if result.get("busy"):
-        raise ApiError("\n".join([*ingest_lines(result), *busy_lines(result["busy"])]))
+        for store in result["busy"]:
+            logger.warning(
+                "",
+                extra=event(
+                    "ingest.busy",
+                    account=store["account"],
+                    lock_pid=store["pid"] or None,
+                    left=store["messages"],
+                ),
+            )
+        raise ApiError(
+            "\n".join([*ingest_lines(result), *busy_lines(result["busy"])]), "busy"
+        )
     return result
 
 

@@ -7,9 +7,11 @@ the api returns, so what it prints cannot drift from them.
 
 from __future__ import annotations
 
-import sys
+import logging
 
 from ..results import CreateAlias, DeleteAlias, ListAlias, UpdateAlias
+
+logger = logging.getLogger(__name__)
 
 
 def _entry(primary: str, domains: list[str]) -> None:
@@ -38,5 +40,6 @@ def print_update(result: UpdateAlias) -> None:
 
 
 def error(message: str) -> None:
-    """A refusal the api raised, on stderr, so stdout stays empty."""
-    print(message, file=sys.stderr)
+    """A refusal the api raised, on stderr, so stdout stays empty: a message-only record
+    (the api logged its event, `errors.refusals`)."""
+    logger.error(message)

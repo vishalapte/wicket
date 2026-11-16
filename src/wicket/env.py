@@ -11,12 +11,18 @@ from __future__ import annotations
 import errno
 import fcntl
 import json
+import logging
 import os
 import re
+import socket
+import sys
+import threading
+import traceback
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from types import TracebackType
 
 # Secrets live OUTSIDE the repo (never committed, never on the command line).
 # One folder per account, ``accounts/<account>/``, holding ``imap.json``: a link to the
@@ -118,11 +124,19 @@ MAIL_ROOT = Path(
 # mail and never a secret. XDG's state home, so it sits outside both the vault and
 # ~/.config, which is for configuration. Read at call time, so a test can point it at a
 # temp dir. Two dirs under it, never one: ``halt/<account>`` (present means halted) and
-# ``log/<account>.log`` (counts, years and HALT causes).
+# ``log/``, which holds ``<account>.log`` (counts, years and HALT causes) and
+# ``wicket.log`` (every event of every run). An account is an address, so no account's
+# log is named ``wicket.log``.
 STATE_HOME_ENV_VAR = "XDG_STATE_HOME"
 DEFAULT_STATE_HOME = Path.home() / ".local" / "state"
 HALT_DIRNAME = "halt"
 LOG_DIRNAME = "log"
+WICKET_LOG_FILENAME = "wicket.log"
+
+# The logger every module of the package logs under (``logging.getLogger(__name__)`` is a
+# child of it), and the program name in each log line's header.
+LOGGER_NAME = "wicket"
+PROGRAM = "wicket"
 
 # The store lock's file, inside the manifest dir it guards (the lock follows the data).
 LOCK_FILENAME = ".lock"
@@ -161,6 +175,30 @@ def normalize_account(address: str) -> str:
     return f"{local}@{domain}"
 
 
+class NoMailRoot(ValueError):
+    """The mail root does not exist: a locked vault, never an empty store."""
+
+    reason = "no_mail_root"
+
+
+class NoAccount(ValueError):
+    """No account was named, and the accounts dir does not hold exactly one."""
+
+    reason = "no_account"
+
+
+class UnknownAccount(ValueError):
+    """The named account has no store under the mail root."""
+
+    reason = "unknown_account"
+
+
+class BadMap(ValueError):
+    """An owner-authored map file is malformed."""
+
+    reason = "bad_map"
+
+
 def _is_address(value: object) -> bool:
     return isinstance(value, str) and bool(ADDRESS_RE.match(value))
 
@@ -195,25 +233,25 @@ def flatten_aliases(
     entry kind in error messages ("address", "domain").
     """
     if not isinstance(raw, dict):
-        raise ValueError(f"{path}: top-level value must be an object")
+        raise BadMap(f"{path}: top-level value must be an object")
     mapping: dict[str, str] = {}
     for primary, aliases in raw.items():
         if not isinstance(aliases, list):
-            raise ValueError(f"{path}: value for {primary!r} must be a list")
+            raise BadMap(f"{path}: value for {primary!r} must be a list")
         if not primary_ok(primary):
-            raise ValueError(f"{path}: invalid primary {noun} {primary!r}")
+            raise BadMap(f"{path}: invalid primary {noun} {primary!r}")
         if primary in mapping and mapping[primary] != primary:
-            raise ValueError(
+            raise BadMap(
                 f"{path}: {primary!r} is both a primary and an alias of "
                 f"{mapping[primary]!r}"
             )
         mapping[primary] = primary
         for alias in aliases:
             if not alias_ok(alias):
-                raise ValueError(f"{path}: invalid alias {noun} {alias!r}")
+                raise BadMap(f"{path}: invalid alias {noun} {alias!r}")
             existing = mapping.get(alias)
             if existing is not None and existing != primary:
-                raise ValueError(
+                raise BadMap(
                     f"{path}: {alias!r} aliased to both {existing!r} and {primary!r}"
                 )
             mapping[alias] = primary
@@ -236,11 +274,15 @@ def map_path(env_var: str, filename: str, mail_root: Path | None = None) -> Path
 def read_json_map(path: Path) -> object:
     """The JSON at ``path``, or ``{}`` when the file is absent: every map loader's read.
 
-    The caller's own rule checks what comes back; a malformed file raises ``ValueError``.
+    The caller's own rule checks what comes back; a file that is not JSON raises
+    `BadMap`, a ``ValueError``, with the decoder's text.
     """
     if not path.exists():
         return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise BadMap(str(exc)) from exc
 
 
 def account_aliases_path(mail_root: Path | None = None) -> Path:
@@ -320,11 +362,10 @@ def require_mail_root(mail_root: Path | None = None) -> Path:
     """
     root = mail_root or MAIL_ROOT
     if not root.exists():
-        raise ValueError(
+        raise NoMailRoot(
             f"mail root {root} does not exist. If it is an encrypted vault, it is "
-            f"not mounted — unlock it and retry. wicket will not create it: writing "
-            f"to an unmounted vault's mount point would leave your mail in plaintext "
-            f"underneath it. Set ${DATA_DIR_ENV_VAR} if the tree lives elsewhere."
+            f"not mounted. wicket will not create it: writing to an unmounted "
+            f"vault's mount point would leave your mail in plaintext underneath it."
         )
     return root
 
@@ -361,8 +402,9 @@ def resolve_account(account: str | None) -> str:
     The account set is closed once it exists: an unknown account is a hard error
     rather than a new directory, because a mistyped ``--mail-account`` is otherwise
     indistinguishable from a real one and silently files mail into a store that
-    should not exist. An empty mail root still bootstraps freely. Raises
-    ``ValueError`` with a face-neutral message; the caller turns it into an exit.
+    should not exist. An empty mail root still bootstraps freely. Raises `NoMailRoot`,
+    `NoAccount` or `UnknownAccount` (each a ``ValueError``) with a face-neutral message;
+    the caller turns it into an exit.
     """
     require_mail_root()  # before anything else: an absent root is a locked vault,
     # not an empty store, and must not read as "no account" (or worse, bootstrap).
@@ -370,21 +412,18 @@ def resolve_account(account: str | None) -> str:
     if not chosen:
         found = account_dirs()
         if len(found) != 1:
-            raise ValueError(
+            raise NoAccount(
                 f"no account: {len(found)} folders in {resolve_accounts_dir()} hold "
-                f"an {CREDENTIALS_FILENAME}, not one; pass --mail-account (or set "
-                f"${ACCOUNT_ENV_VAR})."
+                f"an {CREDENTIALS_FILENAME}, not one."
             )
         chosen = found[0].name
     resolved = normalize_account(chosen)
     existing = known_accounts()
     resolved = account_of(resolved, load_account_aliases(), existing) or resolved
     if existing and resolved not in existing:
-        raise ValueError(
+        raise UnknownAccount(
             f"unknown account {resolved!r}: it has no store under {MAIL_ROOT} and "
-            f"is not listed in {account_aliases_path().name}. If it is an address "
-            "you receive at, add it as an alias of the account that owns it; if it "
-            "is genuinely a new mailbox, create its store directory first."
+            f"is not listed in {account_aliases_path().name}."
         )
     return resolved
 
@@ -530,32 +569,319 @@ def resolve_log_path(account: str) -> Path:
     return _state_base() / LOG_DIRNAME / f"{normalize_account(account)}.log"
 
 
-def append_log(account: str, line: str) -> None:
-    """Append one locally timestamped line to the account's log: the one log writer.
+def resolve_wicket_log_path() -> Path:
+    """``wicket.log`` (``<state base>/log/wicket.log``): every event of every run.
 
-    The log dir is made owner-only (``0700``) and the file ``0600`` on first write. A line
-    carries counts, years and HALT causes only, never a subject, an address other
-    than the account's own, a path or a secret: the state dir sits outside the vault. The
-    caller owns what ``line`` says; a newline in it becomes a space, so one call is one line.
+    Beside the account logs, in the same owner-only dir. Never created here.
     """
-    path = resolve_log_path(account)
+    return _state_base() / LOG_DIRNAME / WICKET_LOG_FILENAME
+
+
+# --- The log line: one formatter, two logs ------------------------------------------
+#
+# A record carries a human message, an event with its fields (``extra=event(...)``), or
+# both. The stderr handler prints the message, as the terminal always showed it; the
+# ``wicket.log`` handler writes the event as one line in the syslog file shape with a
+# logfmt body:
+#
+#   2026-11-15T08:00:03-05:00 vulcan wicket[41205]: account=you@gmail.com level=info
+#   event=fetch.search matched=40 got=23 candidates=17
+#
+# (one line). The events and their fields:
+#
+#   fetch.start      pass=filtered|all|years years=           api, account log
+#   fetch.search     matched got candidates beyond_max         root.lib.fetch
+#   fetch.plan       pending months                            root.lib.fetch
+#   fetch.month      done total saved failed skipped           root.lib.fetch
+#   fetch.year       year matched candidates downloaded failed linked got   account log
+#   fetch.end        downloaded failed linked halted=true      api, account log
+#   catalog.plan     years first last threads                  root.lib.catalog
+#   catalog.year     year observed in_shard dry_run=true       root.lib.catalog
+#   catalog.discover empty=true                                root.lib.catalog
+#   catalog.end      parse_skips label_misses (warning)        renderer
+#   ingest.end       added copies excluded excluded_lists refused unrecognized
+#                    (staged); added skipped (src)             api, account log
+#   ingest.file      file outcome=refused|unrecognized (warning)            renderer
+#   ingest.route     forced=true reason=account_mismatch (warning)          renderer
+#   ingest.busy      lock_pid left (warning, account= the busy store)       api
+#   halt.set         cause                                     auth, account log
+#   halt.clear       (none)                                    auth, account log
+#   wicket.end       outcome=refused exit reason cause since lock_pid (error)
+#                                                              errors.refusals
+#   wicket.end       outcome=crashed error at (critical)       excepthook
+#   cron.run, cron.exit  verb args, verb code                  cronjob.sh
+#
+# A dry run's events (fetch, catalog, ingest) also carry ``dry_run=true``, and reach
+# ``wicket.log`` alone: a dry run writes no account log. A new log statement adds a row.
+# An event is ``<verb>.<step>``: a step is a place in the run, never an outcome; an
+# outcome is a field.
+
+# The account a run is for, read by the formatter when a record names none. A module
+# global, not a context variable: worker threads must see the value the api set. One
+# slot, ``"account"``; `errors.refusals` clears it when each request starts.
+_PROCESS: dict[str, str | None] = {"account": None}
+
+
+def set_process_account(account: str | None) -> None:
+    """Name the account this process runs for (the api sets it; None clears it)."""
+    _PROCESS["account"] = account
+
+
+def process_account() -> str | None:
+    """The account `set_process_account` named, or None."""
+    return _PROCESS["account"]
+
+
+def event(name: str, account: str | None = None, **fields: object) -> dict[str, object]:
+    """A record's ``extra=``: its event, the account it is about, and its fields, in order.
+
+    ``account`` names the record's own account where a process touches several (a
+    routed ingest, ``halt clear --all``, a worker's HALT); without it the line takes the
+    process account. A field with no value (None, empty or false) is left off the line.
+    """
+    return {"event": name, "account": account, "fields": fields}
+
+
+def _present(value: object) -> bool:
+    """Whether a field has a value: None, False and an empty string or collection have none."""
+    if value is None or value is False:
+        return False
+    if isinstance(value, (str, list, tuple, dict, set, frozenset)):
+        return bool(value)
+    return True
+
+
+def _needs_quotes(c: str) -> bool:
+    """A character that makes a value quoted: a space, ``=``, ``"``, or any character
+    ``str.isprintable`` rejects (controls, C1, U+2028 and every other character
+    ``str.splitlines`` breaks a line on)."""
+    return c in ' ="' or not c.isprintable()
+
+
+def _escaped(c: str) -> str:
+    """``c`` inside a quoted value: ``\\"``, ``\\\\``, ``\\n``, ``\\t``, ``\\uXXXX`` for any
+    other non-printable character (a UTF-16 surrogate pair above U+FFFF), else itself.
+    """
+    if c in '"\\':
+        return "\\" + c
+    if c == "\n":
+        return "\\n"
+    if c == "\t":
+        return "\\t"
+    if c.isprintable():
+        return c
+    code = ord(c)
+    if code <= 0xFFFF:
+        return f"\\u{code:04x}"
+    code -= 0x10000
+    return f"\\u{0xD800 + (code >> 10):04x}\\u{0xDC00 + (code & 0x3FF):04x}"
+
+
+def _logfmt_value(value: object) -> str:
+    """One logfmt value: bare, or double-quoted when it holds a space, ``=``, ``"`` or a
+    character that is not printable, escaped (`_escaped`) so a value never breaks the
+    line, whoever splits it."""
+    text = "true" if value is True else str(value)
+    if not any(_needs_quotes(c) for c in text):
+        return text
+    return '"' + "".join(_escaped(c) for c in text) + '"'
+
+
+class LogfmtFormatter(logging.Formatter):
+    """A record as one log line: ``TIME HOST wicket[PID]:``, then logfmt fields.
+
+    The header is rsyslog's file form: the record's time to the second, in local time
+    with its offset (RFC 3339), the host name up to its first dot, and ``wicket[pid]``.
+    The body is ``account=``, ``level=`` and ``event=``, then the event's fields in the
+    order given; a field with no value is left out. The one home of the line's shape.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        when = datetime.fromtimestamp(record.created).astimezone()
+        host = socket.gethostname().split(".", 1)[0]
+        head = (
+            f"{when.isoformat(timespec='seconds')} {host} {PROGRAM}[{record.process}]:"
+        )
+        pairs: list[tuple[str, object]] = [
+            ("account", getattr(record, "account", None) or _PROCESS["account"]),
+            ("level", record.levelname.lower()),
+            ("event", getattr(record, "event", None)),
+        ]
+        fields = getattr(record, "fields", None)
+        if isinstance(fields, dict):
+            pairs += list(fields.items())
+        body = " ".join(f"{k}={_logfmt_value(v)}" for k, v in pairs if _present(v))
+        return f"{head} {body}"
+
+
+def _append_line(path: Path, line: str) -> None:
+    """Append ``line`` to ``path`` in one ``O_APPEND`` write: dir ``0700``, file ``0600``.
+
+    Opened at each write, never held: a file another tool rotated away is made anew.
+    Raises on failure.
+    """
     _owner_only_dir(path.parent, True)
-    text = " ".join(line.splitlines())
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    with os.fdopen(fd, "a", encoding="utf-8") as handle:
-        handle.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} {text}\n")
+    try:
+        os.write(fd, f"{line}\n".encode("utf-8"))
+    finally:
+        os.close(fd)
+
+
+def append_log(account: str, name: str, **fields: object) -> None:
+    """Append event ``name`` to the account's log, then hand it on: the one account-log writer.
+
+    The line is `LogfmtFormatter`'s, written here directly, owner-only, and a failed
+    write raises: the account log is the durable record (`auth.clear_halt` logs, then
+    unlinks). Then the same record goes to the ``wicket`` logger, so ``wicket.log`` holds
+    the same line and stderr prints nothing (the record has no message). A line carries
+    counts, years and HALT causes only, never a subject, an address other than the
+    account's own (``account=``), a path or a secret: the state dir sits outside the vault.
+    """
+    logger = logging.getLogger(LOGGER_NAME)
+    record = logger.makeRecord(
+        LOGGER_NAME,
+        logging.INFO,
+        __file__,
+        0,
+        "",
+        (),
+        None,
+        extra=event(name, account=account, **fields),
+    )
+    _append_line(resolve_log_path(account), LogfmtFormatter().format(record))
+    logger.handle(record)
+
+
+class WicketLogHandler(logging.Handler):
+    """Append each record that carries an event to ``wicket.log``; skip the rest.
+
+    Best effort: a write that fails goes to ``handleError`` and the run goes on. The file
+    is opened at each write with mode ``0600`` (`_append_line`), never by
+    ``logging.FileHandler``, which would make it at the umask's mode.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if not getattr(record, "event", None):
+            return
+        try:
+            _append_line(resolve_wicket_log_path(), self.format(record))
+        except Exception:  # pylint: disable=broad-exception-caught
+            self.handleError(record)
+
+
+class StderrHandler(logging.Handler):
+    """Print each record that carries a human message on stderr, as the terminal shows it.
+
+    ``sys.stderr`` is read at each write, so a redirect made after setup is followed. A
+    record with no message (an event only) prints nothing.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            if not record.getMessage():
+                return
+            sys.stderr.write(self.format(record) + "\n")
+            sys.stderr.flush()
+        except Exception:  # pylint: disable=broad-exception-caught
+            self.handleError(record)
+
+
+_PACKAGE_DIR = Path(__file__).resolve().parent
+
+
+def _where(tb: TracebackType | None) -> str | None:
+    """``wicket/<file>.py:<line>`` of the innermost frame inside the package, or None."""
+    found = None
+    for frame, lineno in traceback.walk_tb(tb):
+        path = Path(frame.f_code.co_filename).resolve()
+        if _PACKAGE_DIR in path.parents:
+            found = f"{path.relative_to(_PACKAGE_DIR.parent)}:{lineno}"
+    return found
+
+
+def _log_crash(exc: BaseException, tb: TracebackType | None) -> None:
+    """``wicket.end outcome=crashed`` for an exception nothing caught: event only."""
+    logging.getLogger(LOGGER_NAME).critical(
+        "",
+        extra=event(
+            "wicket.end",
+            outcome="crashed",
+            error=f"{type(exc).__name__}: {exc}",
+            at=_where(tb),
+        ),
+    )
+
+
+def configure_logging() -> None:
+    """Set up wicket's logging for a face's run: every face's ``main`` calls it first.
+
+    Sets the ``wicket`` logger to INFO and adds the two handlers, once: `StderrHandler`
+    (human messages, as today) and `WicketLogHandler` (events, to ``wicket.log``, in every
+    run, whatever started it). Records also propagate to the root logger. A crash on the
+    main thread or a worker thread logs ``wicket.end outcome=crashed`` before the
+    hook that was in place prints its traceback; KeyboardInterrupt (and SystemExit in a
+    thread) passes to that hook untouched. Idempotent: the handlers present means set up.
+    """
+    logger = logging.getLogger(LOGGER_NAME)
+    logger.setLevel(logging.INFO)
+    if any(isinstance(h, (StderrHandler, WicketLogHandler)) for h in logger.handlers):
+        return
+    stderr = StderrHandler()
+    stderr.setFormatter(logging.Formatter("%(message)s"))
+    wicket_log = WicketLogHandler()
+    wicket_log.setFormatter(LogfmtFormatter())
+    logger.addHandler(stderr)
+    logger.addHandler(wicket_log)
+
+    previous = sys.excepthook
+
+    def crash(
+        kind: type[BaseException], exc: BaseException, tb: TracebackType | None
+    ) -> None:
+        if not issubclass(kind, KeyboardInterrupt):
+            _log_crash(exc, tb)
+        previous(kind, exc, tb)
+
+    previous_thread = threading.excepthook
+
+    def thread_crash(args: threading.ExceptHookArgs) -> None:
+        if args.exc_value is not None and not issubclass(
+            args.exc_type, (KeyboardInterrupt, SystemExit)
+        ):
+            _log_crash(args.exc_value, args.exc_traceback)
+        previous_thread(args)
+
+    sys.excepthook = crash
+    threading.excepthook = thread_crash
+
+
+# A library's logger: with no face's `configure_logging`, records go nowhere of wicket's
+# own (a consumer's root handlers still see them), and Python's last-resort handler never
+# prints an event-only record as an empty line.
+logging.getLogger(LOGGER_NAME).addHandler(logging.NullHandler())
 
 
 class StoreBusy(RuntimeError):
-    """Another process holds the store's lock. A face reports it as a refusal, exit 2."""
+    """Another process holds the store's lock. A face reports it as a refusal, exit 2.
+
+    ``facts`` are the refusal's: the store (``account``) and the holder's pid
+    (``lock_pid``, absent when the lock file names none).
+    """
+
+    reason = "busy"
 
     def __init__(self, manifest_dir: Path, pid: str) -> None:
         super().__init__(
             f"store {manifest_dir.parent.name} is busy: pid {pid or '?'} holds "
-            f"{manifest_dir / LOCK_FILENAME}; re-run when it finishes."
+            f"{manifest_dir / LOCK_FILENAME}."
         )
         self.manifest_dir = manifest_dir
         self.pid = pid
+        self.facts: dict[str, object] = {
+            "account": manifest_dir.parent.name,
+            "lock_pid": pid or None,
+        }
 
 
 @contextmanager

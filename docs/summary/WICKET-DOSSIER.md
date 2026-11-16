@@ -6,12 +6,13 @@ generator:
 target:
   repo: wicket
   date: 2026-09-04
-  version: "0.20.1"
+  version: "0.21.0"
 bundle:
   - WICKET.md
   - WICKET-DOSSIER.md
 external_paths:
   - imap.json                            # the credential file, outside the tree under the state dir
+  - log/wicket.log                       # the run log, outside the tree under the state dir
   - myaccount.google.com/apppasswords    # where a Gmail app password is minted
 
 entities:
@@ -408,7 +409,8 @@ The load-bearing detail:
 | `<mail-root>/excluded-lists.json` | Mailing lists never fetched or filed: `"*"` for every account, an account key for that one. `fetch` leaves them out of every search, `ingest` skips their mail; `catalog` records everything, each row's `list_id` too, and `report` leaves out a row whose `list_id` is on the map. Edited by `wicket.exclude`. |
 | `~/.config/wicket/accounts/<account>/imap.json` | Address and app password, through the account's link. File `0600`. Seeded on first run; `--state-dir` overrides the base; no account folder is a silent no-op. |
 | `~/.local/state/wicket/halt/<account>` | The account's HALT (`$XDG_STATE_HOME`); present means halted. Only `wicket.auth` writes or removes it. |
-| `~/.local/state/wicket/log/<account>.log` | fetch's counts and years, and every HALT set and cleared. Never a subject, another address, a path or a secret. |
+| `~/.local/state/wicket/log/<account>.log` | The account's durable record: fetch's counts and years, ingest's counts, and every HALT set and cleared, one line each in `log/wicket.log`'s shape (`event=fetch.start`, `fetch.year`, `fetch.end`, `ingest.end`, `halt.set`, `halt.clear`). Written by `env.append_log` alone, which raises on failure. Never a subject, another address, a path or a secret. |
+| `~/.local/state/wicket/log/wicket.log` | Every event of every run, any account, from cron or a terminal: `TIME HOST wicket[PID]:` then logfmt, `account=` `level=` `event=` (`<verb>.<step>`) first. A refusal is `event=wicket.end outcome=refused exit=<n> reason=<code>`, a crash `outcome=crashed`. Best-effort (a failed write never stops a run); `0600` in a `0700` dir. Never a subject, a body or a secret. |
 | `DEFAULT_THREADS = 4` | Worker pool per verb. One worker is one IMAP connection; Gmail caps simultaneous connections near 15, so stay well under. |
 
 All four maps are optional, and **nothing in them is inferred** — an entry exists because the owner wrote it.
@@ -505,13 +507,11 @@ Google does not publish a documented IMAP request limit, but **caps simultaneous
 
 ### §3.5 Errors
 
-| Code / message | Meaning | Recommended client action | Origin |
-|---|---|---|---|
-| `AuthError` | App password missing, rejected, or revoked | Re-seed `imap.json`, or regenerate the app password. Under `--non-interactive` this exits non-zero and loudly — intentional, for cron. | upstream |
-| exit 2, `mail root ... does not exist` | The mail root is absent — most likely a locked encrypted vault | Unlock the vault, or set `$WICKET_DATA_DIR`. **Do not** create the directory to make the error go away. | library |
-| exit 2, `unknown account` | The account has no store and is not in the alias map (probably a typo) | Fix the typo, add an alias, or `mkdir` the store deliberately. | library |
-| exit 2, `account mismatch` | `--mail-account` disagrees with who the folder is addressed to | Re-run with the account it names, or pass `--force` if you meant it. | library |
-| `[ALERT] Too many simultaneous connections` | Above Gmail's ~15-connection cap | Lower `--threads`. | upstream |
+Every refusal carries a `reason` code from `src/wicket/error-codes.jsonl`, the one home for each code's exit status, when it happens and its fix (`no_mail_root`, `unknown_account`, `account_mismatch`, `halted`, `busy`, `no_credentials`, `no_provider`, `unreachable`, `imap` and the rest). On a terminal the message is followed by `fix: ...` from that file; in `log/wicket.log` the refusal is `reason=<code>`. Exit 2 is a refusal to fix by hand, exit 1 a failure a retry may clear (`unreachable`, `imap`). A rejected app password is not a refusal code: it writes the account's HALT, and every later run is refused `halted` until `wicket.halt clear`. Under `--non-interactive` every refusal exits non-zero and loudly — intentional, for cron.
+
+| Upstream message | Meaning | Recommended client action |
+|---|---|---|
+| `[ALERT] Too many simultaneous connections` | Above Gmail's ~15-connection cap | Lower `--threads`. |
 
 ### §3.6 SDKs
 

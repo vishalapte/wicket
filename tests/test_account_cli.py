@@ -119,7 +119,10 @@ def test_create_refuses_a_link_to_another_target(
     argv = ["create", "you@gmail.com", "--config", str(other)]
     code, out, err = run_cli(cli.main, argv)
     assert (code, out) == (2, "")
-    assert err == f"link exists with different target ({config / 'imap.json'})\n"
+    assert err == (
+        f"link exists with different target ({config / 'imap.json'})\n"
+        "fix: Use update to change it, or delete it first.\n"
+    )
     code, out, err = run_cli(cli.main, [*argv, "--json"])
     assert (code, out) == (2, "")
     refusal = json.loads(err)
@@ -136,7 +139,11 @@ def test_create_refuses_a_config_path_that_does_not_exist(
     del config
     argv = ["create", "new@x.com", "--config", str(tmp_path / "absent")]
     code, out, err = run_cli(cli.main, argv)
-    assert (code, out, err) == (2, "", "--config path does not exist\n")
+    assert (code, out, err) == (
+        2,
+        "",
+        "--config path does not exist\nfix: Check the name, or use create to make it.\n",
+    )
     code, out, err = run_cli(cli.main, [*argv, "--json"])
     assert (code, out) == (2, "")
     refusal = json.loads(err)
@@ -213,7 +220,9 @@ def test_delete_refuses_when_the_new_name_is_taken_and_moves_nothing(
         (folder / name).write_text("old")
     code, out, err = run_cli(cli.main, ["delete", "you@gmail.com"])
     assert (code, out) == (2, "")
-    assert err.endswith(" exists; nothing moved\n")
+    assert err.endswith(
+        " exists; nothing moved\nfix: Use update to change it, or delete it first.\n"
+    )
     code, out, err = run_cli(cli.main, ["delete", "you@gmail.com", "--json"])
     assert (code, out) == (2, "")
     assert json.loads(err)["code"] == "conflict"

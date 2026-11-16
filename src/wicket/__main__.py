@@ -27,12 +27,11 @@ imap.json link. This node lists the five in `commands()` beside its verbs; a bar
 from __future__ import annotations
 
 import argparse
-import logging
 import signal
 import sys
 from pathlib import Path
 
-from wicket.env import ACCOUNT_ENV_VAR, DEFAULT_THREADS
+from wicket.env import ACCOUNT_ENV_VAR, DEFAULT_THREADS, configure_logging
 from wicket.errors import ApiError
 from wicket.lib.cli import NounParser, print_commands, run
 from wicket.lib.renderer import json as json_renderer
@@ -474,8 +473,9 @@ def main(argv: list[str] | None = None) -> int:
     # BrokenPipeError traceback.
     if hasattr(signal, "SIGPIPE"):
         signal.signal(signal.SIGPIPE, signal.SIG_DFL)
-    # The workers' progress goes through `logging`; this shows it on stderr, as printed.
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    # Progress and refusals go through `logging`: their text to stderr, as printed, and
+    # every event to wicket.log (`env.configure_logging`).
+    configure_logging()
     return run(
         parser(), argv, refusal=ApiError, error=plaintext.error, listing=_print_commands
     )

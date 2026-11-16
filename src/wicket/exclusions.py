@@ -22,6 +22,7 @@ from pathlib import Path
 from wicket.env import (
     EXCLUDED_LISTS_ENV_VAR,
     EXCLUDED_LISTS_FILENAME,
+    BadMap,
     map_path,
     normalize_account,
     read_json_map,
@@ -65,23 +66,23 @@ def parse_excluded_lists(
     the accounts dir the run resolves), so a mistyped key, or a bucket, refuses as a
     mistyped ``--mail-account`` does: nothing is silently excluded from nothing. Each
     item is a whole list-id (`LIST_ID_RE`). One list may sit under ``"*"`` and under an
-    account. Raises ``ValueError``.
+    account. Raises `env.BadMap`, a ``ValueError``.
     """
     if not isinstance(raw, dict):
-        raise ValueError(f"{path}: top-level value must be an object")
+        raise BadMap(f"{path}: top-level value must be an object")
     known = {normalize_account(a) for a in accounts}
     parsed: ExcludedLists = {}
     for key, items in raw.items():
         if key != EVERY_ACCOUNT and normalize_account(str(key)) not in known:
-            raise ValueError(
+            raise BadMap(
                 f"{path}: {key!r} is not {EVERY_ACCOUNT!r} or an account folder "
                 "holding imap.json"
             )
         if not isinstance(items, list):
-            raise ValueError(f"{path}: value for {key!r} must be a list")
+            raise BadMap(f"{path}: value for {key!r} must be a list")
         for item in items:
             if not isinstance(item, str) or not LIST_ID_RE.match(item):
-                raise ValueError(
+                raise BadMap(
                     f"{path}: {item!r} under {key!r} is not a list-id "
                     "(made-of-meat.googlegroups.com)"
                 )

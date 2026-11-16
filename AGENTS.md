@@ -49,7 +49,7 @@ mailbox owns, and topical grouping of mailbox-owned mail is a *view*
   source of truth: one `layers` contract, `wicket.__main__` (root face) →
   `wicket.root.api` (the four verbs' api) → each verb's worker under
   `wicket.root.lib` → `reconcile` → `filing` → shared
-  (`auth`/`domains`/`message`/`manifest`) → `env`, downward only (acyclic). The
+  (`auth`/`domains`/`message`/`manifest`) → `errors` → `env`, downward only (acyclic). The
   four workers are independent siblings (no cross-imports). The
   face → api → lib routing (a face reaches the engine through its api, not the
   worker/shared directly) is the recommended **convention**, reviewed not

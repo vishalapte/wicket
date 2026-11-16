@@ -11,8 +11,13 @@ from wicket.errors import ApiError
 
 
 class LinkRefused(ApiError):
-    """``create`` or ``delete`` refused: ``code`` is the error packet's code for it."""
+    """``create`` or ``delete`` refused: ``code`` is its reason, which is also the error
+    packet's code for it (``conflict`` or ``not_found``)."""
 
     def __init__(self, message: str, code: str) -> None:
-        super().__init__(message)
-        self.code = code
+        super().__init__(message, code)
+
+    @property
+    def code(self) -> str:
+        """The refusal's reason, as the error packet names it."""
+        return self.reason

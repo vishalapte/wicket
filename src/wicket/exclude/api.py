@@ -17,7 +17,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import wicket.env as env  # pylint: disable=consider-using-from-import
-from wicket.errors import refusing
+from wicket.errors import refusals, refusing
 from wicket.exclusions import (
     EVERY_ACCOUNT,
     excluded_lists_path,
@@ -39,10 +39,13 @@ def _path() -> Path:
 
 
 def _key(mail_account: str | None) -> str:
-    """The map key a request names: ``"*"`` with no account, else the account."""
-    return (
-        EVERY_ACCOUNT if mail_account is None else env.normalize_account(mail_account)
-    )
+    """The map key a request names: ``"*"`` with no account, else the account, which is
+    the process account (`env`)."""
+    if mail_account is None:
+        return EVERY_ACCOUNT
+    account = env.normalize_account(mail_account)
+    env.set_process_account(account)
+    return account
 
 
 def _check(mapping: Map, path: Path) -> None:
@@ -50,6 +53,7 @@ def _check(mapping: Map, path: Path) -> None:
     parse_excluded_lists(mapping, path, [p.name for p in env.account_dirs()])
 
 
+@refusals
 def create_exclude(list_: str, mail_account: str | None = None) -> CreateExclude:
     """Exclude a mailing list, for every account, or for --mail-account alone."""
     key, item = _key(mail_account), normalize_list_id(list_)
@@ -58,6 +62,7 @@ def create_exclude(list_: str, mail_account: str | None = None) -> CreateExclude
     return {"account": key, "lists": after[key]}
 
 
+@refusals
 def delete_exclude(list_: str, mail_account: str | None = None) -> DeleteExclude:
     """Stop excluding a mailing list, for every account, or for --mail-account alone."""
     key, item = _key(mail_account), normalize_list_id(list_)
@@ -66,6 +71,7 @@ def delete_exclude(list_: str, mail_account: str | None = None) -> DeleteExclude
     return {"account": key, "lists": after.get(key, [])}
 
 
+@refusals
 def list_exclude() -> ListExclude:
     """List every excluded mailing list, by account (* is every account)."""
     with refusing():

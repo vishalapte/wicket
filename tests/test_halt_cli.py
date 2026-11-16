@@ -111,7 +111,8 @@ def test_set_touches_an_empty_halt_and_logs_it(run_cli: Run) -> None:
     assert _halt().read_text() == ""  # a touched file: its timestamp is when
     assert out.startswith(f"halted {ME} at ")
     assert _log() and _log()[-1].endswith(
-        "HALT set by hand (python -m wicket.halt set)"
+        f" account={ME} level=info event=halt.set "
+        'cause="by hand (python -m wicket.halt set)"'
     )
 
 
@@ -173,7 +174,7 @@ def test_clear_removes_a_halt_through_clear_halt_and_logs_it(run_cli: Run) -> No
     assert (code, err) == (0, "")
     assert out.startswith(f"cleared {ME} (halted ")
     assert not _halt().exists() and list((_base() / "halt").iterdir()) == []
-    assert _log()[-1].endswith("HALT cleared")
+    assert _log()[-1].endswith(f" account={ME} level=info event=halt.clear")
 
 
 def test_clear_of_an_absent_halt_writes_nothing(run_cli: Run) -> None:
@@ -219,7 +220,7 @@ def test_clear_min_clears_only_a_halt_over_n_minutes_old(
     assert [r["account"] for r in result["cleared"]] == ([ME] if cleared else [])
     assert result["not_halted"] == ([] if cleared else [ME])
     assert _halt().exists() is not cleared
-    assert _log() == [] if not cleared else _log()[-1].endswith("HALT cleared")
+    assert _log() == [] if not cleared else _log()[-1].endswith(" event=halt.clear")
 
 
 def test_clear_all_min_clears_each_halt_over_n_minutes_old(run_cli: Run) -> None:
@@ -230,7 +231,8 @@ def test_clear_all_min_clears_each_halt_over_n_minutes_old(run_cli: Run) -> None
     assert out.startswith(f"cleared {ME} (halted ")
     assert out.endswith(f"not halted: {WORK}\n")
     assert not _halt().exists() and _halt(WORK).exists()
-    assert _log()[-1].endswith("HALT cleared") and _log(WORK) == []
+    assert _log()[-1].endswith(f" account={ME} level=info event=halt.clear")
+    assert _log(WORK) == []
 
 
 @pytest.mark.parametrize(

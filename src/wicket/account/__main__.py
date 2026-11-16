@@ -21,6 +21,7 @@ from typing import Any
 from wicket.account import api
 from wicket.account.lib import LinkRefused
 from wicket.account.lib.renderer import plaintext
+from wicket.env import configure_logging
 from wicket.errors import ApiError
 from wicket.lib.cli import NounParser, print_commands, run
 from wicket.lib.error._packet import packet
@@ -50,7 +51,7 @@ def _show(
         if not args.json:
             raise
         plaintext.error_packet(
-            packet(exc.code, noun="account", verb=args.phase, message=str(exc))
+            packet(exc.code, noun="account", verb=args.phase, message=exc.message)
         )
         return exc.exit_code
     return json_renderer.show(args, result, text)
@@ -128,6 +129,7 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     """Run one verb; with none, list the sub-nouns, or print the help when there are none."""
     listing = _print_commands if commands() else None
+    configure_logging()
     return run(parser(), argv, refusal=ApiError, error=plaintext.error, listing=listing)
 
 

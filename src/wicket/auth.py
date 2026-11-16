@@ -38,7 +38,7 @@ from wicket.env import (
     resolve_halt_path,
     write_secret,
 )
-from wicket.provider import GMAIL, Provider, Search, imap_quote
+from wicket.provider import GMAIL, Provider, Search, imap_quote, provider_of
 
 # What an IMAP command raises when it is rejected (``IMAP4.error``, raised by the
 # workers for any answer that is not OK), aborted (``IMAP4.abort``, a subclass) or
@@ -58,22 +58,52 @@ setattr(imaplib, "_MAXLINE", _NEW_MAXLINE)
 
 
 class AuthError(RuntimeError):
-    """Raised when usable IMAP credentials cannot be obtained."""
+    """Raised when usable IMAP credentials cannot be obtained. Raised as one of its
+    subclasses, each naming its refusal code (``reason``)."""
+
+
+class NoCredentials(AuthError):
+    """The account's credential file is missing or malformed, or its entry was aborted."""
+
+    reason = "no_credentials"
+
+
+class Unsupported(AuthError):
+    """The IMAP server lacks a capability wicket needs."""
+
+    reason = "unsupported"
+
+
+class Unreachable(AuthError):
+    """The IMAP host could not be reached (no network): no HALT, it may pass on a retry."""
+
+    reason = "unreachable"
 
 
 class Halted(AuthError):
     """A HALT is in force for this account: no IMAP connection opens past it.
 
-    ``path`` is the HALT file, whose name is the account (``python -m wicket.halt clear
-    --mail-account <account>`` clears it, after fixing its cause), and ``line`` says
-    why: the cause, in the run that set it, else when it was set. A face reports it as a
-    refusal, exit 2.
+    ``path`` is the HALT file, whose name is the account, and ``line`` says why: the
+    cause, in the run that set it, else when it was set. ``facts`` are the refusal's: the
+    ``account``, and the ``cause`` or ``since`` (when it was set, ISO 8601). A face
+    reports it as a refusal, exit 2; its fix names ``python -m wicket.halt clear``.
     """
 
-    def __init__(self, path: Path, line: str) -> None:
+    reason = "halted"
+
+    def __init__(
+        self,
+        path: Path,
+        line: str,
+        *,
+        cause: str | None = None,
+        since: str | None = None,
+    ) -> None:
         super().__init__(f"{line} (HALT at {path})")
         self.path = path
         self.line = line
+        found = {"account": path.name, "cause": cause, "since": since}
+        self.facts: dict[str, object] = {k: v for k, v in found.items() if v}
 
 
 class HaltInfo(NamedTuple):
@@ -99,7 +129,11 @@ def halt_in_force(credentials_path: Path) -> Halted | None:
     info = read_halt(path.name)
     if info is None:
         return None
-    return Halted(path, f"halted since {info.halted:%Y-%m-%d %H:%M %Z}")
+    return Halted(
+        path,
+        f"halted since {info.halted:%Y-%m-%d %H:%M %Z}",
+        since=info.halted.isoformat(timespec="seconds"),
+    )
 
 
 def _one_line(text: str) -> str:
@@ -112,9 +146,10 @@ def write_halt(credentials_path: Path, cause: str) -> Halted:
 
     The HALT is an empty file, made with ``O_EXCL`` like ``touch``: its name is
     the account, its timestamp is when it was set, and present means halted; only
-    `clear_halt` removes it. A HALT made here appends ``HALT set <cause>`` to the
-    account's log; one already in force is kept and logs nothing. ``cause`` carries no
-    password and no path. A file that cannot be made raises.
+    `clear_halt` removes it. A HALT made here appends ``event=halt.set cause=<cause>``
+    to the account's log (`env.append_log`); one already in force is kept and logs
+    nothing. ``cause`` carries no password and no path. A file that cannot be made
+    raises.
     """
     resolve_halt_dir(create=True)
     path = halt_path(credentials_path)
@@ -125,8 +160,9 @@ def write_halt(credentials_path: Path, cause: str) -> Halted:
         if in_force is None:
             raise FileNotFoundError(path) from None
         return in_force
-    append_log(path.name, f"HALT set {_one_line(cause)}")
-    return Halted(path, _one_line(cause))
+    line = _one_line(cause)
+    append_log(path.name, "halt.set", cause=line)
+    return Halted(path, line, cause=line)
 
 
 def throttle_halt(credentials_path: Path, what: str, exc: BaseException) -> Halted:
@@ -162,7 +198,7 @@ def list_halts() -> list[HaltInfo]:
 def clear_halt(account: str) -> HaltInfo | None:
     """Remove the account's HALT, logging it first. Returns what was cleared, else None.
 
-    Appends ``HALT cleared`` to the account's log, then unlinks the file: a crash
+    Appends ``event=halt.clear`` to the account's log, then unlinks the file: a crash
     between the two leaves the account still halted, never a removal the log does not
     hold. Not halted: writes nothing and returns None. A file another process removed
     first counts as cleared.
@@ -170,7 +206,7 @@ def clear_halt(account: str) -> HaltInfo | None:
     info = read_halt(account)
     if info is None:
         return None
-    append_log(info.account, "HALT cleared")
+    append_log(info.account, "halt.clear")
     try:
         resolve_halt_path(info.account).unlink()
     except FileNotFoundError:
@@ -356,27 +392,29 @@ def _load_secret_file(path: Path) -> tuple[str, str]:
     email = (data.get("email") or "").strip()
     password = data.get("app_password") or ""
     if not email or not password:
-        raise AuthError(
-            f"{path}: missing 'email' or 'app_password'. Expected a JSON file "
-            'of the form: {"email": "you@gmail.com", "app_password": "..."}.'
-        )
+        raise NoCredentials(f"{path}: missing 'email' or 'app_password'.")
     return email, password
 
 
 def _prompt_for_secret(path: Path) -> tuple[str, str]:
+    """Ask at a terminal for the login and app password, and save them owner-only.
+
+    The provider is the one ``path`` links to (`provider.provider_of`, which refuses a
+    credential that names none before anything is asked), and its ``app_password_hint``
+    says where to make the password: the one place a rejected password is made anew.
+    """
+    provider = provider_of(path)
+    hint = provider.app_password_hint
     sys.stderr.write(
-        "No credentials at "
-        f"{path}.\n"
-        "Make an app password with the provider (Gmail: "
-        "https://myaccount.google.com/apppasswords, which needs 2-Step Verification;\n"
-        "Fastmail: Settings, Privacy & Security, App passwords). Then enter it here; "
-        "it will be saved owner-only (0600).\n\n"
+        f"No credentials at {path}.\n"
+        f"{provider.label} app password: {hint[:1].upper()}{hint[1:]}. Then enter it "
+        "here; it will be saved owner-only (0600).\n\n"
     )
     email = input("Login address: ").strip()
     password = getpass.getpass("App password (spaces ok): ").strip()
     password = password.replace(" ", "")  # providers show it space-grouped
     if "@" not in email or len(password) < 8:
-        raise AuthError("aborted: email or password looked invalid.")
+        raise NoCredentials("aborted: email or password looked invalid.")
     write_secret(path, json.dumps({"email": email, "app_password": password}))
     return email, password
 
@@ -389,14 +427,13 @@ def load_credentials(
     """Return (email, app_password). Prompt to seed the file on first run.
 
     Pass ``interactive=False`` from cron/launchd: missing credentials raise
-    `AuthError` instead of blocking on a prompt that would never be answered.
+    `NoCredentials` instead of blocking on a prompt that would never be answered.
     """
     if credentials_path.exists():
         return _load_secret_file(credentials_path)
     if not interactive:
-        raise AuthError(
-            f"No credentials at {credentials_path} and running non-interactively. "
-            "Run once in a terminal (without --non-interactive) to seed it."
+        raise NoCredentials(
+            f"No credentials at {credentials_path} and running non-interactively."
         )
     return _prompt_for_secret(credentials_path)
 
@@ -408,7 +445,7 @@ def _require_capability(
 
     Fastmail's ids are RFC 8474's (OBJECTID); a server without it would reject every
     ``FETCH EMAILID``, and every rejected command HALTs, so its absence is said once,
-    as a refusal (`AuthError`), and nothing runs. A rejected CAPABILITY is a throttle.
+    as a refusal (`Unsupported`), and nothing runs. A rejected CAPABILITY is a throttle.
     """
     needed = provider.required_capability
     if needed is None:
@@ -422,7 +459,7 @@ def _require_capability(
     announced = b" ".join(d for d in data if isinstance(d, bytes)).upper().split()
     if needed.encode("ascii") not in announced:
         logout_quietly(conn)
-        raise AuthError(
+        raise Unsupported(
             f"{provider.host} does not announce {needed}: wicket cannot key its "
             f"{provider.label} messages, so nothing ran"
         )
@@ -440,7 +477,7 @@ def open_mailbox(
 
     ``mailbox`` defaults to the provider's all-mail folder, else ``INBOX``; a walk
     of every folder selects each in turn with `select_folder`. A server without the
-    provider's ``required_capability`` is refused (`AuthError`), no HALT.
+    provider's ``required_capability`` is refused (`Unsupported`), no HALT.
 
     Readonly by design: every tool here reads, never modifies. Pass
     ``readonly=False`` explicitly if a future tool ever needs to flag
@@ -448,10 +485,10 @@ def open_mailbox(
 
     The one door to IMAP, so the HALT is enforced here: raises `Halted` when the
     account's HALT is in force; a HALT never expires. A rejected app password writes a
-    HALT saying where the provider makes a new one; any other rejected login or select,
-    or a connect that times out, writes a HALT naming the command; each then raises
-    `Halted`. A host that cannot be reached for another reason (no network) raises
-    `AuthError`, no HALT.
+    HALT saying so (the ``halted`` fix says where the provider makes a new one); any
+    other rejected login or select, or a connect that times out, writes a HALT naming
+    the command; each then raises `Halted`. A host that cannot be reached for another
+    reason (no network) raises `Unreachable`, no HALT.
     """
     _refuse_past_halt(credentials_path)
     email, password = load_credentials(credentials_path, interactive=interactive)
@@ -466,15 +503,14 @@ def open_mailbox(
     except TimeoutError as exc:
         raise throttle_halt(credentials_path, f"connect to {host}", exc) from exc
     except OSError as exc:
-        raise AuthError(f"could not reach {host}: {exc}") from exc
+        raise Unreachable(f"could not reach {host}: {exc}") from exc
     try:
         conn.login(email, password)
     except imaplib.IMAP4.error as exc:
         if "AUTHENTICATIONFAILED" in str(exc):
             raise write_halt(
                 credentials_path,
-                f"{provider.label} rejected the app password (AUTHENTICATIONFAILED): "
-                f"{provider.app_password_hint} and re-seed the credential file",
+                f"{provider.label} rejected the app password (AUTHENTICATIONFAILED)",
             ) from exc
         raise throttle_halt(credentials_path, "login", exc) from exc
     except OSError as exc:

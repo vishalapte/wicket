@@ -210,7 +210,10 @@ class Gmail(Provider):
     id_item = "X-GM-MSGID"
     thread_item = "X-GM-THRID"
     labels_item = "X-GM-LABELS"
-    app_password_hint = "make a new one at https://myaccount.google.com/apppasswords"
+    app_password_hint = (
+        "make a new one at https://myaccount.google.com/apppasswords "
+        "(the account needs 2-Step Verification)"
+    )
     _id_re = re.compile(rb"X-GM-MSGID\s+(\d+)")
     _thread_re = re.compile(rb"X-GM-THRID\s+(\d+)")
     # The thread id, the msgid (hex) and the INTERNALDATE in UTC; nothing else is
@@ -328,27 +331,30 @@ def parse_staged(rel: str) -> Staged | None:
     return None
 
 
+class NoProvider(ValueError):
+    """An account's ``imap.json`` does not link to a known provider's file."""
+
+    reason = "no_provider"
+
+
 def provider_of(credentials_path: Path) -> Provider:
     """The provider an account's ``imap.json`` declares by where it links to.
 
     A link into ``~/.config/gmail/<login>/`` is Gmail, into ``~/.config/fastmail/<login>/``
     Fastmail (owner, 2026-10-28): the provider is the link target's grandparent dir.
     Anything else, a real file, a missing file or a link elsewhere, raises
-    ``ValueError``: no provider is assumed. A link whose target does not exist yet
+    `NoProvider` (a ``ValueError``): no provider is assumed. A link whose target does not exist yet
     still names its provider, so a first seed writes through it.
     """
     if not credentials_path.is_symlink():
-        raise ValueError(
-            f"{credentials_path} is not a link: link it to "
-            "~/.config/<gmail|fastmail>/<login>/imap.json, which names its provider"
-        )
+        raise NoProvider(f"{credentials_path} is not a link: no provider is assumed")
     target = Path(os.readlink(credentials_path))
     if not target.is_absolute():
         target = credentials_path.parent / target
     for provider in PROVIDERS:
         if target.parent.parent.name == provider.name:
             return provider
-    raise ValueError(
+    raise NoProvider(
         f"{credentials_path} links to {target}, under neither ~/.config/gmail/ nor "
         "~/.config/fastmail/: no provider is assumed"
     )

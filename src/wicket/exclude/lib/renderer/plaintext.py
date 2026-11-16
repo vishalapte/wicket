@@ -7,9 +7,11 @@ the api returns, so what it prints cannot drift from them.
 
 from __future__ import annotations
 
-import sys
+import logging
 
 from ..results import CreateExclude, DeleteExclude, ListExclude
+
+logger = logging.getLogger(__name__)
 
 
 def _entry(account: str, lists: list[str]) -> None:
@@ -33,5 +35,6 @@ def print_list(result: ListExclude) -> None:
 
 
 def error(message: str) -> None:
-    """A refusal the api raised, on stderr, so stdout stays empty."""
-    print(message, file=sys.stderr)
+    """A refusal the api raised, on stderr, so stdout stays empty: a message-only record
+    (the api logged its event, `errors.refusals`)."""
+    logger.error(message)

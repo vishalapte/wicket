@@ -141,17 +141,29 @@ def _parse_eml(path: Path) -> dict[str, object]:
     }
 
 
+class AccountMismatch(ValueError):
+    """A folder addressed to another account than the one named: its fact is ``leader``,
+    the account most of it is addressed to."""
+
+    reason = "account_mismatch"
+
+    def __init__(self, message: str, leader: str) -> None:
+        super().__init__(message)
+        self.facts: dict[str, object] = {"leader": leader}
+
+
 def check_account_matches(
     messages: list[dict[str, object]], account: str, account_for: AccountFor
-) -> str | None:
+) -> AccountMismatch | None:
     """Warn when ``account`` is not the account this folder was addressed to.
 
     ``--mail-account`` is a *destination*, not a filter: it says which store to write,
     and nothing about the folder. Naming the wrong one files the whole export
     into the wrong mailbox, silently and additively. So compare the folder's
     recipients against the target and refuse when another known account plainly
-    owns this mail. Returns the complaint, or None when the target is defensible
-    (it leads, it ties, or the alias map is too thin to tell).
+    owns this mail. Returns the complaint (`AccountMismatch`, which the caller raises
+    or, under ``--force``, reports), or None when the target is defensible (it leads, it
+    ties, or the alias map is too thin to tell).
     """
     tally = participants(messages, account_for)
     if not tally:
@@ -161,12 +173,12 @@ def check_account_matches(
     if mine >= top:
         return None
     counts = ", ".join(f"{acct} ({n})" for acct, n in tally.most_common())
-    return (
+    return AccountMismatch(
         f"account mismatch: {mine} of {len(messages)} message(s) are addressed to "
         f"{account}, but {top} are addressed to {leader}. Recipients here: {counts}. "
         f"--mail-account names the store to write into, it does not filter the "
-        f"folder, so this would file mail belonging to {leader} into {account}. "
-        f"Re-run with --mail-account {leader}, or pass --force if you meant it."
+        f"folder, so this would file mail belonging to {leader} into {account}.",
+        leader,
     )
 
 
@@ -535,15 +547,15 @@ def ingest_folder(
 
     ``src`` is a flat folder of ``.eml`` or a single ``.eml``. Returns a stats
     dict for the face to render. Raises ``FileNotFoundError`` when ``src`` holds
-    no ``.eml``, ``ValueError`` when the source is addressed to a different
-    account than ``target.account`` (unless ``force``), and `env.StoreBusy` when
+    no ``.eml``, `AccountMismatch` (a ``ValueError``) when the source is addressed to a
+    different account than ``target.account`` (unless ``force``), and `env.StoreBusy` when
     another process holds the store's lock.
     """
     files = source_files(src)
     messages, dup, files_by_id = _dedup_folder(files)
     complaint = check_account_matches(messages, target.account, account_for)
     if complaint and not force:
-        raise ValueError(complaint)
+        raise complaint
 
     thread_of = assign_threads(messages)
     with _lock(target.store_dir, idle=dry_run):
@@ -553,7 +565,8 @@ def ingest_folder(
     trashable, trashed = _trash_sources(
         files_by_id, durable, to_trash=to_trash, dry_run=dry_run
     )
-    stats["warning"] = complaint  # set only when --force overrode a mismatch
+    # set only when --force overrode a mismatch
+    stats["warning"] = str(complaint) if complaint else None
     stats["files"] = len(files)
     stats["unique"] = len(messages)
     stats["dup"] = dup

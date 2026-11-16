@@ -33,6 +33,17 @@ Stats = dict[str, object]
 
 HALT_LINE = "throttle 2026-10-27T08:00:00Z month 2026-03: abort"
 
+# Each refusal's last line: its code's fix in error-codes.jsonl, written out here as the
+# terminal shows it, so a change to the file's text moves these pins.
+FIX_BAD_REQUEST = "fix: Check the command against its --help.\n"
+FIX_BUSY = "fix: Wait for that process to finish, then run again.\n"
+FIX_IMAP = "fix: Run again later. If it repeats, check the provider's status page.\n"
+FIX_NO_CREDENTIALS = (
+    "fix: Run the command once in a terminal, without --non-interactive, to seed the "
+    "credential file. If the message names a malformed file, it must hold "
+    '{"email": ..., "app_password": ...}: correct it, or remove it and seed it again.\n'
+)
+
 
 @pytest.fixture(name="mail")
 def _mail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -85,13 +96,29 @@ def _run(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) ->
 def _halt_text(path: Path) -> str:
     return (
         f"halted: {HALT_LINE}\n"
-        f"HALT at {path}; clear it with `python -m wicket.halt clear --mail-account "
-        f"{path.name}` (if the provider rejected the app password, re-seed it first)\n"
+        f"HALT at {path}\n"
+        "fix: Read the cause in the account log. If the provider rejected the app "
+        "password: make a new one, move aside the credential file the account's "
+        "imap.json links to, and run the command once in a terminal to seed it again. "
+        f"Then run python -m wicket.halt clear --mail-account {path.name}.\n"
     )
 
 
+def _halted(path: Path) -> auth.Halted:
+    """The HALT a run raises, as `auth.write_halt` builds it."""
+    return auth.Halted(path, HALT_LINE, cause=HALT_LINE)
+
+
+def _logged(tmp_path: Path) -> list[str]:
+    """wicket.log's lines, each without its header: what the run logged as events."""
+    path = tmp_path / "xdg" / "wicket" / "log" / "wicket.log"
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    return [line.split(": ", 1)[1] for line in lines]
+
+
 def _busy_text(mail: Path, account: str = ME) -> str:
-    return f"{env.StoreBusy(mail / account / 'manifest', str(os.getpid()))}\n"
+    busy = env.StoreBusy(mail / account / "manifest", str(os.getpid()))
+    return f"{busy}\n{FIX_BUSY}"
 
 
 def _raises(exc: BaseException) -> Callable[..., object]:
@@ -160,7 +187,7 @@ def test_catalog_removed_and_boundary(
 
 
 def test_catalog_warnings(
-    mail: Path, run: Run, monkeypatch: pytest.MonkeyPatch
+    mail: Path, tmp_path: Path, run: Run, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _catalog(monkeypatch, _returns(_sweep(parse_skips=2, label_misses=1)))
     assert run(*CATALOG) == (
@@ -170,6 +197,10 @@ def test_catalog_warnings(
         "warning: 2 unparseable FETCH response(s)\n"
         "warning: 1 row(s) with labels unrecoverable (labels: null)\n",
     )
+    # One event for both lines; it takes the process account the request set.
+    assert _logged(tmp_path) == [
+        f"account={ME} level=warning event=catalog.end parse_skips=2 label_misses=1"
+    ]
 
 
 def test_catalog_not_linked(
@@ -186,7 +217,7 @@ def test_catalog_halt(
 ) -> None:
     del mail
     path = tmp_path / "xdg" / "wicket" / "halt" / ME
-    _catalog(monkeypatch, _raises(auth.Halted(path, HALT_LINE)))
+    _catalog(monkeypatch, _raises(_halted(path)))
     assert run(*CATALOG) == (2, "", _halt_text(path))
 
 
@@ -206,8 +237,7 @@ def test_catalog_auth(
         2,
         "",
         f"auth error: No credentials at {_creds_link(tmp_path)} and "
-        "running non-interactively. Run once in a terminal (without "
-        "--non-interactive) to seed it.\n",
+        "running non-interactively.\n" + FIX_NO_CREDENTIALS,
     )
 
 
@@ -216,7 +246,7 @@ def test_catalog_imap_error(
 ) -> None:
     del mail
     _catalog(monkeypatch, _raises(imaplib.IMAP4.error("NO [ALERT] refused")))
-    assert run(*CATALOG) == (1, "", "IMAP error: NO [ALERT] refused\n")
+    assert run(*CATALOG) == (1, "", "IMAP error: NO [ALERT] refused\n" + FIX_IMAP)
 
 
 def test_catalog_bad_years(mail: Path, run: Run) -> None:
@@ -224,7 +254,8 @@ def test_catalog_bad_years(mail: Path, run: Run) -> None:
     assert run("catalog", "--mail-account", ME, "--years", "x") == (
         2,
         "",
-        "bad --years: 'x' is not a year (four digits, 1970 or later)\n",
+        "bad --years: 'x' is not a year (four digits, 1970 or later)\n"
+        + FIX_BAD_REQUEST,
     )
 
 
@@ -233,7 +264,8 @@ def test_catalog_refuses_a_year_that_is_not_four_digits(mail: Path, run: Run) ->
     assert run("catalog", "--mail-account", ME, "--years", "202") == (
         2,
         "",
-        "bad --years: '202' is not a year (four digits, 1970 or later)\n",
+        "bad --years: '202' is not a year (four digits, 1970 or later)\n"
+        + FIX_BAD_REQUEST,
     )
 
 
@@ -261,8 +293,7 @@ raise SystemExit(root.main())
 def test_catalog_progress_goes_to_stderr(tmp_path: Path) -> None:
     """In a process of its own, as a user runs it: progress on stderr, the summary on stdout.
 
-    Under pytest the root logger already has handlers, so `main()`'s logging setup is a
-    no-op in-process; only a subprocess shows the stream a user sees.
+    A subprocess shows the stream a user sees, with nothing of pytest's in between.
     """
     home, mail = tmp_path / "home", tmp_path / "mail"
     (mail / ME).mkdir(parents=True)
@@ -318,6 +349,7 @@ def _fetched(
         "halted": halted,
         "halt": HALT_LINE if halted else None,
         "halt_file": str(Path("/state/wicket/halt") / ME) if halted else None,
+        "halt_facts": {"cause": HALT_LINE} if halted else None,
     }
 
 
@@ -435,7 +467,7 @@ def test_fetch_halted_before_work(
 ) -> None:
     del mail
     path = tmp_path / "xdg" / "wicket" / "halt" / ME
-    _fetch(monkeypatch, _raises(auth.Halted(path, HALT_LINE)))
+    _fetch(monkeypatch, _raises(_halted(path)))
     assert run(*FETCH) == (2, "", _halt_text(path))
 
 
@@ -455,8 +487,7 @@ def test_fetch_auth(
         2,
         "",
         f"auth error: No credentials at {_creds_link(tmp_path)} and "
-        "running non-interactively. Run once in a terminal (without "
-        "--non-interactive) to seed it.\n",
+        "running non-interactively.\n" + FIX_NO_CREDENTIALS,
     )
 
 
@@ -465,7 +496,7 @@ def test_fetch_imap_error(
 ) -> None:
     del mail
     _fetch(monkeypatch, _raises(imaplib.IMAP4.error("NO [ALERT] refused")))
-    assert run(*FETCH) == (1, "", "IMAP error: NO [ALERT] refused\n")
+    assert run(*FETCH) == (1, "", "IMAP error: NO [ALERT] refused\n" + FIX_IMAP)
 
 
 def test_fetch_empty_domains(mail: Path, run: Run) -> None:
@@ -473,7 +504,7 @@ def test_fetch_empty_domains(mail: Path, run: Run) -> None:
     assert run("fetch", "--domains", ",", "--non-interactive") == (
         2,
         "",
-        "domains was empty\n",
+        "domains was empty\n" + FIX_BAD_REQUEST,
     )
 
 
@@ -639,7 +670,7 @@ def test_ingest_routed_busy(
         f"  added 2 to {ME} (2026:2)\n" + FILED + "  trashed: 2 source file(s) -> "
         "~/.Trash\n"
         f"busy: {WORK} is locked by pid 4242; its 3 message(s) were left for the "
-        "next run\n",
+        "next run\n" + FIX_BUSY,
     )
 
 
@@ -656,6 +687,11 @@ def test_ingest_single_with_a_warning(
         "~/.Trash\n",
         f"warning: {warning}\n",
     )
+    assert _logged(tmp_path) == [
+        f"account={ME} level=info event=ingest.end added=2 skipped=0",
+        f"account={ME} level=warning event=ingest.route forced=true "
+        "reason=account_mismatch",
+    ]
 
 
 def test_ingest_single_busy(
@@ -666,7 +702,7 @@ def test_ingest_single_busy(
     assert run("ingest", "--src", str(tmp_path), "--mail-account", ME) == (
         2,
         "",
-        f"{busy}\n",
+        f"{busy}\n" + FIX_BUSY,
     )
 
 
@@ -685,7 +721,7 @@ def test_ingest_staged(mail: Path, run: Run, monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_ingest_staged_refused_and_unrecognized(
-    mail: Path, run: Run, monkeypatch: pytest.MonkeyPatch
+    mail: Path, tmp_path: Path, run: Run, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     del mail
     stats = _staged(
@@ -705,6 +741,18 @@ def test_ingest_staged_refused_and_unrecognized(
         "    notes.txt\n"
         "    t2/odd.eml\n",
     )
+    # A dry run: no account log, and every event says dry_run=true.
+    assert not (tmp_path / "xdg" / "wicket" / "log" / f"{ME}.log").exists()
+    assert _logged(tmp_path) == [
+        f"account={ME} level=info event=ingest.end added=0 copies=0 excluded=0 "
+        "excluded_lists=0 refused=1 unrecognized=2 dry_run=true",
+        f"account={ME} level=warning event=ingest.file "
+        "file=t1/m1@20260706T090004Z.eml outcome=refused dry_run=true",
+        f"account={ME} level=warning event=ingest.file file=notes.txt "
+        "outcome=unrecognized dry_run=true",
+        f"account={ME} level=warning event=ingest.file file=t2/odd.eml "
+        "outcome=unrecognized dry_run=true",
+    ]
 
 
 def test_ingest_no_eml(
@@ -712,7 +760,11 @@ def test_ingest_no_eml(
 ) -> None:
     del mail
     _ingest(monkeypatch, routed=_raises(FileNotFoundError(f"no .eml in {tmp_path}")))
-    assert run("ingest", "--src", str(tmp_path)) == (2, "", f"no .eml in {tmp_path}\n")
+    assert run("ingest", "--src", str(tmp_path)) == (
+        2,
+        "",
+        f"no .eml in {tmp_path}\n" + FIX_BAD_REQUEST,
+    )
 
 
 # --- report -----------------------------------------------------------------------
@@ -858,7 +910,8 @@ def test_report_unknown_account(mail: Path, run: Run) -> None:
         2,
         "",
         f"unknown account 'nobody@example.com': it has no store under {mail} and is "
-        "not listed in account-aliases.json. If it is an address you receive at, add "
-        "it as an alias of the account that owns it; if it is genuinely a new "
-        "mailbox, create its store directory first.\n",
+        "not listed in account-aliases.json.\n"
+        "fix: Check the address. If it is another address of a known account, add it "
+        "with python -m wicket.store create --store ACCOUNT --to ADDRESS. If it is a new "
+        "mailbox, mkdir its store under the mail root first; wicket never creates one.\n",
     )

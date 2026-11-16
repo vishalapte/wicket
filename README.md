@@ -189,7 +189,8 @@ With none, fetch gets every message in All Mail not yet got and not excluded, **
 throttles**: this year, last year, then every older year from All Mail's first, oldest first. Each
 year is one pass: every message in it not yet got is fetched, month by month, so no year is
 ever skipped and no done marker is kept. `--max` bounds the whole run. Each run appends counts and years, never subjects,
-addresses or paths, to the account's log, `~/.local/state/wicket/log/<account>.log`.
+addresses or paths, to the account's log, `~/.local/state/wicket/log/<account>.log` (see
+[Logs](#logs)).
 
 **The HALT.** The first throttle writes `~/.local/state/wicket/halt/<account>` (the state home is
 `$XDG_STATE_HOME` when set; present means halted, absent means not): an IMAP
@@ -200,10 +201,10 @@ is cleared. A HALT is an empty, touched file: its name is the account, its times
 was set, and it never expires; only `python -m wicket.halt clear` removes it. A hand-made
 `touch ~/.local/state/wicket/halt/<account>` halts the account the same way.
 
-Every HALT set and every HALT cleared is a line in the account's log (when, then `HALT set
-<cause>` or `HALT cleared`; a rejected app password's cause names the page to make a new one),
-because `wicket.auth` is the one door: nothing else writes `halt/`. No cleared HALT is kept as
-a file.
+Every HALT set and every HALT cleared is a line in the account's log (`event=halt.set
+cause=...` or `event=halt.clear`), because `wicket.auth` is the one door: nothing else writes
+`halt/`. A rejected app password's cause says so; re-seeding it in a terminal shows where
+that provider makes a new one. No cleared HALT is kept as a file.
 `python -m wicket.halt` is that door for the owner:
 
 ```
@@ -228,10 +229,15 @@ they write; a store another process holds is refused with its pid. `--dry-run` t
 | Exit | Meaning (`catalog`, `fetch`, `ingest`) |
 |---|---|
 | `0` | Done. |
-| `2` | Refused: bad input; credentials missing or unreadable; a HALT is in force, or this run wrote one (stderr names its cause, or when it was set, its file, and `python -m wicket.halt clear --mail-account <account>`); or another process holds a store's lock (its pid is named; re-run later). |
+| `1` | Refused, and a retry may pass: the IMAP host could not be reached, or the server returned an error. |
+| `2` | Refused: bad input; credentials missing or unreadable; a HALT is in force, or this run wrote one (stderr names its cause, or when it was set, and its file); or another process holds a store's lock (its pid is named). |
 
-A `fetch` that did work before it halted, and a routed `ingest` that filed the rest and
-skipped a busy store, print their summary on stderr with the refusal.
+Every refusal on stderr ends with a `fix:` line, what to do about it (a HALT's names
+`python -m wicket.halt clear --mail-account <account>`). Each refusal has a code; the codes,
+their exit codes and their fixes are `src/wicket/error-codes.jsonl`, one JSON object per line
+(`reason`, `exit`, `when`, `fix`). A `fetch` that did work before it halted, and a routed
+`ingest` that filed the rest and skipped a busy store, print their summary on stderr with the
+refusal.
 
 | Flag | Meaning |
 |---|---|
@@ -360,7 +366,7 @@ neither today:
 
 | Variable | What | Default | Read at |
 |---|---|---|---|
-| `XDG_STATE_HOME` | The state home; wicket's halt and log dirs are under `$XDG_STATE_HOME/wicket`. | `~/.local/state` | `wicket.env._state_base` |
+| `XDG_STATE_HOME` | The state home; wicket's halt and log dirs (`wicket.log` and the account logs) are under `$XDG_STATE_HOME/wicket`. | `~/.local/state` | `wicket.env._state_base` |
 | `CLAUDE_CONFIG_DIR` | Claude Code's config directory; `./install` writes its `settings.json`. The same name Claude Code, racecar's and delphi's `./install` read. | `~/.claude` | `install` (`main`) |
 
 ### Credentials and accounts
@@ -477,9 +483,34 @@ writes are the **halt dir** and the **log dir**, which hold no mail:
 | `<mail-root>/<store>/staging/<thread-id>/<msgid>@<INTERNALDATE>.eml` | What `fetch` got and `ingest --staged` has not yet filed. |
 | `<mail-root>/.duplicates/<store>/<label>/YYYY-MM/<msgid>.eml` | Copies of mail the store already holds. Never unlinked; `fetch` counts them as got. |
 | `~/.local/state/wicket/halt/<account>` | The account's HALT (`$XDG_STATE_HOME/wicket/halt/`): present means halted. Written and removed only by `wicket.auth`. |
-| `~/.local/state/wicket/log/<account>.log` | The account's log: fetch's counts and years, and every HALT set and cleared. Never a subject, another address, a path or a secret. |
+| `~/.local/state/wicket/log/<account>.log` | The account's log: fetch's counts and years, what each ingest filed, and every HALT set and cleared. Never a subject, another address, a path or a secret. |
+| `~/.local/state/wicket/log/wicket.log` | Every event of every run, from every command, whether a terminal or cron started it ([Logs](#logs)). Never a subject, a message body or a secret. |
 
-Both dirs are created owner-only (`0700`) by their first write; neither is a store.
+Both dirs are created owner-only (`0700`) by their first write, and each log file `0600`;
+neither is a store.
+
+### Logs
+
+Every log line has one shape, the syslog file header and then logfmt `key=value` fields:
+
+```
+2026-11-15T08:00:03-05:00 vulcan wicket[41205]: account=you@gmail.com level=info event=fetch.search matched=40 got=23 candidates=17
+```
+
+The header is the time to the second with its offset, the host, and `wicket[pid]`. Then
+`account=` (left out where none applies), `level=`, and `event=`, which is `<verb>.<step>`:
+the verb that ran and the place in the run it reached (`fetch.search`, `ingest.end`,
+`halt.set`). A field with no value is left out; a value with a space, `=`, `"` or a control
+character is quoted. A refusal is `event=wicket.end outcome=refused exit=<n> reason=<code>`;
+a crash is `outcome=crashed` with the error and where in wicket it happened.
+
+`wicket.log` holds every event of every run. `<account>.log` beside it holds the account's
+durable subset: fetch's start, years and end, `ingest.end`, and each HALT set and cleared.
+A `--dry-run` writes no account log; its events reach `wicket.log` alone, each with
+`dry_run=true`. The
+same line is in both. The terminal keeps its text: progress, summaries, warnings and refusals
+print as they always did, and no logfmt line reaches stderr. The events and their fields are
+listed once, in `wicket.env` beside the formatter. wicket never rotates `wicket.log`.
 
 A **store** is either an **account** (a real mailbox, named by its address:
 `you@gmail.com`) or a **bucket** (a topical destination that is not a mailbox:

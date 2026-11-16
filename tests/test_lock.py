@@ -81,7 +81,8 @@ def test_a_dry_run_fetch_takes_no_lock(
         code = _fetch(
             ["--mail-account", ME, "--query", "x", "--dry-run", "--non-interactive"]
         )
-    assert code == 2 and "could not reach" in capsys.readouterr().err
+    # `unreachable` exits 1 (error-codes.jsonl): a retry may pass
+    assert code == 1 and "could not reach" in capsys.readouterr().err
 
 
 def test_catalog_on_a_locked_store_is_busy(mail: Path) -> None:

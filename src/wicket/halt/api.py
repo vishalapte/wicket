@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from wicket.env import normalize_account
-from wicket.errors import ApiError
+from wicket.env import normalize_account, set_process_account
+from wicket.errors import ApiError, refusals
 
 from .lib import all_accounts, clear_one, rows, set_one
 from .lib.results import ClearHalt, ClearRow, ListHalt, SetHalt
@@ -22,7 +22,7 @@ def _accounts(mail_account: str | None, all_: bool) -> list[str]:
     """The one account ``mail_account`` names, normalized as text only, else every
     account for ``all_`` (`lib.all_accounts`). Exactly one of the two is required. Nothing
     outside the state base and the accounts dir is read: the noun depends on no mail root,
-    alias file or credential."""
+    alias file or credential. The one account named is the process account (`env`)."""
     if bool(mail_account) == bool(all_):
         raise ApiError("name exactly one of --mail-account or --all")
     if all_:
@@ -30,14 +30,17 @@ def _accounts(mail_account: str | None, all_: bool) -> list[str]:
     account = normalize_account(mail_account or "")
     if "@" not in account:
         raise ApiError(f"not an email address: {mail_account!r}")
+    set_process_account(account)
     return [account]
 
 
+@refusals
 def list_halt() -> ListHalt:
     """List every halted account: when it was halted (the file's timestamp) and its age."""
     return {"halts": rows()}
 
 
+@refusals
 def set_halt(
     mail_account: str | None = None,
     all_: bool = False,
@@ -47,6 +50,7 @@ def set_halt(
     return {"halts": [set_one(a) for a in _accounts(mail_account, all_)]}
 
 
+@refusals
 def clear_halt(
     mail_account: str | None = None, all_: bool = False, min_: int | None = None
 ) -> ClearHalt:

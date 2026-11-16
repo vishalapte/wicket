@@ -7,10 +7,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from collections.abc import Mapping
 
 from ..results import CreateAccount, DeleteAccount, ListAccount
+
+logger = logging.getLogger(__name__)
 
 
 def print_list(result: ListAccount) -> None:
@@ -31,8 +34,9 @@ def print_delete(result: DeleteAccount) -> None:
 
 
 def error(message: str) -> None:
-    """A refusal the api raised, on stderr, so stdout stays empty."""
-    print(message, file=sys.stderr)
+    """A refusal the api raised, on stderr, so stdout stays empty: a message-only record
+    (the api logged its event, `errors.refusals`)."""
+    logger.error(message)
 
 
 def error_packet(refusal: Mapping[str, object]) -> None:

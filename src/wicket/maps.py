@@ -16,16 +16,29 @@ import os
 from collections.abc import Callable
 from pathlib import Path
 
-from wicket.env import read_json_map
+from wicket.env import BadMap, read_json_map
 
 Map = dict[str, list[str]]
 
 
+class Conflict(ValueError):
+    """``create`` would make an entry that already exists."""
+
+    reason = "conflict"
+
+
+class NotFound(ValueError):
+    """``update`` names an entry that does not exist."""
+
+    reason = "not_found"
+
+
 def read_map(path: Path) -> Map:
-    """The map at ``path``, or ``{}`` when the file does not exist yet."""
+    """The map at ``path``, or ``{}`` when the file does not exist yet; `BadMap` when
+    it is not a JSON object."""
     raw = read_json_map(path)
     if not isinstance(raw, dict):
-        raise ValueError(f"{path}: top-level value must be an object")
+        raise BadMap(f"{path}: top-level value must be an object")
     return raw
 
 
@@ -85,16 +98,16 @@ def edit(
 
 
 def create_entry(mapping: Map, primary: str, items: list[str]) -> Map:
-    """Add a new ``primary``. Refuses one that already exists."""
+    """Add a new ``primary``. Refuses one that already exists (`Conflict`)."""
     if primary in mapping:
-        raise ValueError(f"{primary!r} already exists -- use update")
+        raise Conflict(f"{primary!r} already exists")
     return {**mapping, primary: sorted(set(items))}
 
 
 def update_entry(mapping: Map, primary: str, add: list[str], remove: list[str]) -> Map:
-    """Add and remove items on an existing ``primary``. Refuses an unknown one."""
+    """Add and remove items on an existing ``primary``. Refuses an unknown one (`NotFound`)."""
     if primary not in mapping:
-        raise ValueError(f"{primary!r} not found -- use create")
+        raise NotFound(f"{primary!r} not found")
     return {
         **mapping,
         primary: sorted((set(mapping[primary]) | set(add)) - set(remove)),

@@ -20,6 +20,7 @@ from pathlib import Path
 
 import wicket.env as env  # pylint: disable=consider-using-from-import
 from wicket.env import CREDENTIALS_FILENAME
+from wicket.errors import refusals
 
 from .lib import LinkRefused
 from .lib.results import CreateAccount, DeleteAccount, ListAccount
@@ -35,6 +36,7 @@ def _target(link: Path) -> str:
     return os.readlink(link) if link.is_symlink() else str(link)
 
 
+@refusals
 def list_account() -> ListAccount:
     """List each account: its name and the target of its imap.json link."""
     return {
@@ -44,6 +46,7 @@ def list_account() -> ListAccount:
     }
 
 
+@refusals
 def create_account(name: str, config: Path) -> CreateAccount:
     """Make ~/.config/wicket/accounts/<name>/ and link its imap.json to
     <config>/imap.json.
@@ -52,6 +55,7 @@ def create_account(name: str, config: Path) -> CreateAccount:
     ``imap.json`` naming another target are refused, and nothing is written. The target
     file need not exist yet: the first interactive fetch writes it through the link.
     """
+    env.set_process_account(name)
     folder = config.expanduser()
     target = folder / CREDENTIALS_FILENAME
     link = _link(name)
@@ -67,6 +71,7 @@ def create_account(name: str, config: Path) -> CreateAccount:
     return {"name": name, "config": str(target), "changed": True}
 
 
+@refusals
 def delete_account(name: str) -> DeleteAccount:
     """Remove the imap.json link of ~/.config/wicket/accounts/<name>/; a real file is
     renamed imap_YYYYMMDD_HHMM.json.
@@ -76,6 +81,7 @@ def delete_account(name: str) -> DeleteAccount:
     account; that name already there is refused, and nothing is moved. No ``imap.json``
     changes nothing; the folder itself is kept.
     """
+    env.set_process_account(name)
     link = _link(name)
     if link.is_symlink():
         link.unlink()

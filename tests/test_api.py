@@ -192,7 +192,8 @@ def test_resolve_account_refuses_with_no_folder_or_several(
         env.resolve_account(None)
     said = str(refused.value)
     assert said.startswith(f"no account: {len(names)} folders in {state / 'accounts'} ")
-    assert "pass --mail-account" in said
+    assert isinstance(refused.value, env.NoAccount)  # its advice is the code's fix
+    assert env.NoAccount.reason == "no_account"
 
 
 def test_resolve_account_no_longer_takes_the_only_store(
@@ -213,7 +214,8 @@ def test_a_verb_without_the_flag_exits_2_unless_one_folder_holds_imap_json(
     _account_folders(state, "a@x.com", "b@y.com")
     code, out, err = run_cli(root.main, [verb, "--non-interactive"])
     assert (code, out) == (2, "")
-    assert "no account: 2 folders in " in err and "pass --mail-account" in err
+    assert "no account: 2 folders in " in err
+    assert err.endswith("fix: Pass --mail-account, or set $WICKET_ACCOUNT.\n")
 
 
 def test_report_without_the_flag_counts_every_account(

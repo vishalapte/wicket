@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wicket"
-version = "0.20.1"
+version = "0.21.0"
 description = "Portable, read-only mail tooling over IMAP: catalog a mailbox into a year-sharded manifest, fetch matching .eml by counterparty domain, and report over the manifest. Gmail today, Fastmail planned."
 requires-python = ">=3.12"
 authors = [{ name = "Vishal Apte", email = "vishal@enine.com" }]
@@ -43,9 +43,10 @@ where = ["src"]
 include = ["wicket*"]
 
 # Ship the PEP 561 marker so consumers (meridian, factotum) type-check against
-# wicket under mypy --strict instead of treating it as untyped.
+# wicket under mypy --strict instead of treating it as untyped, and the refusal codes
+# `wicket.errors` reads at import.
 [tool.setuptools.package-data]
-wicket = ["py.typed"]
+wicket = ["py.typed", "error-codes.jsonl"]
 
 [tool.black]
 target-version = ["py312"]
@@ -144,8 +145,9 @@ exclude_lines = [
 # `report`) are the root noun's: `wicket.__main__` is their face, `wicket.root.api`
 # their api, and each has its own worker under `wicket.root.lib`; the nouns
 # (`alias`, `store`, `halt`, `account`) each co-locate a thin __main__ face over
-# its api over its lib. faces > api > worker > results > reconcile > shared > env,
-# downward only; the workers and the nouns are independent siblings (no
+# its api over its lib. faces > api > worker > results > reconcile > shared > errors >
+# env, downward only (`errors` sits over `env` because its refusal wrapper logs an
+# `env.event`); the workers and the nouns are independent siblings (no
 # cross-imports). The face -> api -> lib routing is convention; this contract
 # gates direction and acyclicity (defects), it does not wall the shape.
 [tool.importlinter]
@@ -163,5 +165,6 @@ layers = [
   "wicket.reconcile",
   "wicket.filing",
   "wicket.auth | wicket.domains | wicket.message | wicket.manifest | wicket.maps | wicket.exclusions",
-  "wicket.env | wicket.errors | wicket.schema | wicket.lib | wicket.provider",
+  "wicket.errors",
+  "wicket.env | wicket.schema | wicket.lib | wicket.provider",
 ]

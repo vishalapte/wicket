@@ -2,14 +2,19 @@
 
 Every line this noun's cli prints is written here. Each ``print_<verb>`` takes that verb's
 result and writes it; it reads no store and decides nothing, and it reads the same types
-the api returns, so what it prints cannot drift from them.
+the api returns, so what it prints cannot drift from them. A diagnostic (a warning, a
+refusal) is a log record, not a print: the stderr handler shows its text as before, and
+a warning's event reaches ``wicket.log`` (`env.configure_logging`). A warning names its
+account from the result where the result has one; otherwise it takes the process account
+the request set.
 """
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
+import logging
 from typing import cast
+
+from wicket.env import event
 
 from ..results import (
     AccountCounts,
@@ -25,18 +30,17 @@ from ..results import (
     SubjectMismatch,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def halt_text(line: str, path: str) -> str:
-    """A HALT's first line, its file, and the command that clears it (named by account)."""
-    return (
-        f"halted: {line}\n"
-        f"HALT at {path}; clear it with `python -m wicket.halt clear --mail-account "
-        f"{Path(path).name}` (if the provider rejected the app password, re-seed it first)"
-    )
+    """A HALT's first line and its file. The command that clears it is the ``halted``
+    code's fix (``error-codes.jsonl``), printed after it."""
+    return f"halted: {line}\nHALT at {path}"
 
 
 def print_catalog(result: CatalogRoot) -> None:
-    """``wicket catalog`` as text: the summary on stdout, each warning on stderr.
+    """``wicket catalog`` as text: the summary on stdout, the warnings on stderr.
 
     An account with no folder prints nothing.
     """
@@ -53,16 +57,25 @@ def print_catalog(result: CatalogRoot) -> None:
             else ""
         )
     )
+    warnings = []
     if result["parse_skips"]:
-        print(
-            f"warning: {result['parse_skips']} unparseable FETCH response(s)",
-            file=sys.stderr,
+        warnings.append(
+            f"warning: {result['parse_skips']} unparseable FETCH response(s)"
         )
     if result["label_misses"]:
-        print(
+        warnings.append(
             f"warning: {result['label_misses']} row(s) with labels unrecoverable "
-            "(labels: null)",
-            file=sys.stderr,
+            "(labels: null)"
+        )
+    if warnings:
+        logger.warning(
+            "\n".join(warnings),
+            extra=event(
+                "catalog.end",
+                parse_skips=result["parse_skips"] or None,
+                label_misses=result["label_misses"] or None,
+                dry_run=result["dry_run"],
+            ),
         )
 
 
@@ -208,14 +221,28 @@ def _print_staged(result: IngestRoot) -> None:
     ):
         if count:
             print(f"  {count} {label}")
-    for names, label in (
-        (result["refused"], "refused (a different file is in the way; left staged)"),
-        (result["unrecognized"], "not a staged name (left alone)"),
+    for names, label, outcome in (
+        (
+            result["refused"],
+            "refused (a different file is in the way; left staged)",
+            "refused",
+        ),
+        (result["unrecognized"], "not a staged name (left alone)", "unrecognized"),
     ):
         if names:
-            print(f"  {len(names)} {label}:", file=sys.stderr)
+            logger.warning("  %s %s:", len(names), label)
             for name in names:
-                print(f"    {name}", file=sys.stderr)
+                logger.warning(
+                    "    %s",
+                    name,
+                    extra=event(
+                        "ingest.file",
+                        account=result.get("account"),
+                        file=name,
+                        outcome=outcome,
+                        dry_run=result["dry_run"],
+                    ),
+                )
     for line in mismatch_lines(result["subject_mismatches"]):
         print(line)
     for filed in _filed_lines(result["filed"]):
@@ -228,7 +255,17 @@ def print_ingest(result: IngestRoot) -> None:
         _print_staged(result)
         return
     if result.get("warning"):
-        print(f"warning: {result['warning']}", file=sys.stderr)
+        logger.warning(
+            "warning: %s",
+            result["warning"],
+            extra=event(
+                "ingest.route",
+                account=result.get("account"),
+                forced=True,
+                reason="account_mismatch",
+                dry_run=result["dry_run"],
+            ),
+        )
     for line in ingest_lines(result):
         print(line)
 
@@ -352,5 +389,6 @@ def print_report(result: ReportRoot) -> None:
 
 
 def error(message: str) -> None:
-    """A refusal the api raised, on stderr, so stdout stays empty."""
-    print(message, file=sys.stderr)
+    """A refusal the api raised, on stderr, so stdout stays empty: a message-only record
+    (the api logged its event, `errors.refusals`)."""
+    logger.error(message)

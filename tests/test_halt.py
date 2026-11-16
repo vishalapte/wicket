@@ -20,6 +20,7 @@ from typing import cast
 import pytest
 
 from wicket import auth, env
+from wicket.provider import GMAIL, NoProvider
 
 ACCOUNT = "you@gmail.com"
 PASSWORD = "abcdabcdabcdabcd"
@@ -142,7 +143,11 @@ def test_write_halt_touches_an_empty_file_and_logs_its_cause(state: Path) -> Non
     assert _halt_file().read_text() == ""  # a touched file: the name and the time
     assert before - 1 <= _halt_file().stat().st_mtime <= time.time() + 1
     assert halted.line == "month 2019-03: TimeoutError"
-    assert _log().splitlines()[-1].endswith("HALT set month 2019-03: TimeoutError")
+    assert (
+        _log()
+        .splitlines()[-1]
+        .endswith(' event=halt.set cause="month 2019-03: TimeoutError"')
+    )
 
 
 def test_write_halt_keeps_the_first_halt_and_its_time(state: Path) -> None:
@@ -153,16 +158,61 @@ def test_write_halt_keeps_the_first_halt_and_its_time(state: Path) -> None:
     assert second.line.startswith("halted since ") and "later" not in _log()
 
 
-def test_a_rejected_app_password_logs_the_page(state: Path, connects: Net) -> None:
+def test_a_rejected_app_password_logs_what_happened_and_no_page(
+    state: Path, connects: Net
+) -> None:
+    """The cause says what happened; where to make a new password is shown by the
+    seeding prompt (`test_the_seeding_prompt_shows_where_the_provider_makes_one`)."""
     connects.next.append(
         FakeConn(login_error="[AUTHENTICATIONFAILED] Invalid credentials (Failure)")
     )
     with pytest.raises(auth.Halted) as refused:
         auth.open_mailbox(state, interactive=False)
     assert _halt_file().read_text() == ""
-    assert "https://myaccount.google.com/apppasswords" in _log()
+    last = _log().splitlines()[-1]
+    assert last.endswith(
+        ' event=halt.set cause="Gmail rejected the app password (AUTHENTICATIONFAILED)"'
+    )
+    assert "apppasswords" not in _log()
+    assert set(refused.value.facts) == {"account", "cause"}
     assert str(state) not in _log() and PASSWORD not in _log()
     assert PASSWORD not in str(refused.value)
+
+
+def test_the_seeding_prompt_shows_where_the_provider_makes_one(
+    state: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state.unlink()  # nothing seeded yet; the link names Gmail
+    link = tmp_path / "wicket" / "accounts" / ACCOUNT / "imap.json"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(state)
+    monkeypatch.setattr("builtins.input", lambda _prompt: ACCOUNT)
+    monkeypatch.setattr("getpass.getpass", lambda _prompt: PASSWORD)
+    assert auth.load_credentials(link, interactive=True) == (ACCOUNT, PASSWORD)
+    shown = capsys.readouterr().err
+    hint = GMAIL.app_password_hint
+    assert f"Gmail app password: {hint[:1].upper()}{hint[1:]}." in shown
+    assert (  # the page, and what the account needs, as the owner reads it
+        "Gmail app password: Make a new one at https://myaccount.google.com/apppasswords"
+        " (the account needs 2-Step Verification). Then enter it here;" in shown
+    )
+    assert state.stat().st_mode & 0o777 == 0o600  # seeded through the link
+
+
+def test_the_seeding_prompt_refuses_a_credential_that_names_no_provider(
+    state: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state.unlink()  # a missing file, not a link: no provider to ask for
+
+    def asked(_prompt: str) -> str:
+        raise AssertionError("prompted for a credential that names no provider")
+
+    monkeypatch.setattr("builtins.input", asked)
+    with pytest.raises(NoProvider, match="not a link"):
+        auth.load_credentials(state, interactive=True)
 
 
 @pytest.mark.parametrize(
@@ -183,7 +233,8 @@ def test_an_errors_text_is_never_logged(state: Path) -> None:
     error = OSError(28, "No space left on device", "/vault/you/staging/1/2.eml")
     halted = auth.throttle_halt(state, "month 2024-03", error)
     assert halted.line == "month 2024-03: OSError"
-    assert "/vault" not in _log() and _log().rstrip().endswith("month 2024-03: OSError")
+    assert "/vault" not in _log()
+    assert _log().rstrip().endswith('cause="month 2024-03: OSError"')
 
 
 def test_a_connect_timeout_writes_a_halt(
@@ -201,7 +252,7 @@ def test_a_connect_timeout_writes_a_halt(
 def test_an_unreachable_host_is_no_halt(
     state: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """No network is not Gmail throttling: an error, exit 2, and no HALT."""
+    """No network is not Gmail throttling: `Unreachable` (exit 1), and no HALT."""
 
     def unreachable(*_args: object, **_kwargs: object) -> None:
         raise OSError("nodename nor servname provided")
@@ -210,6 +261,7 @@ def test_an_unreachable_host_is_no_halt(
     with pytest.raises(auth.AuthError) as error:
         auth.open_mailbox(state, interactive=False)
     assert not isinstance(error.value, getattr(auth, "Halted", ()))
+    assert isinstance(error.value, auth.Unreachable)
     assert not _halt_file().exists()
 
 
@@ -245,10 +297,12 @@ def test_halt_and_log_follow_xdg_state_home_in_two_dirs_and_resolving_creates_no
     assert not (tmp_path / "xdg").exists()
     made = env.resolve_halt_dir(create=True)
     assert made == halt.parent and made.stat().st_mode & 0o777 == 0o700
-    env.append_log(ACCOUNT, "one\ntwo")
+    env.append_log(ACCOUNT, "halt.set", cause="one\ntwo")
     assert log.parent.stat().st_mode & 0o777 == 0o700
     assert log.stat().st_mode & 0o777 == 0o600
-    assert log.read_text().endswith(" one two\n")  # one call is one line
+    # one call is one line: the newline is escaped inside the quoted value
+    assert log.read_text().endswith(' event=halt.set cause="one\\ntwo"\n')
+    assert len(log.read_text().splitlines()) == 1
 
 
 def test_a_halt_lives_in_halt_and_its_log_in_log_never_one_dir(state: Path) -> None:
@@ -263,7 +317,7 @@ def test_a_halt_lives_in_halt_and_its_log_in_log_never_one_dir(state: Path) -> N
 
 def test_a_cause_is_logged_on_one_line(state: Path) -> None:
     auth.write_halt(state, "two\nlines")
-    assert _log().splitlines()[-1].endswith("HALT set two lines")
+    assert _log().splitlines()[-1].endswith(' event=halt.set cause="two lines"')
 
 
 def test_clear_halt_logs_then_removes(state: Path) -> None:
@@ -273,7 +327,7 @@ def test_clear_halt_logs_then_removes(state: Path) -> None:
     assert info is not None and info.account == ACCOUNT
     assert not _halt_file().exists()
     assert list(_halt_file().parent.iterdir()) == []  # no HALT.cleared-* left behind
-    assert _log().splitlines()[-1].endswith("HALT cleared")
+    assert _log().splitlines()[-1].endswith(" event=halt.clear")
 
 
 def test_an_unlink_that_finds_the_halt_gone_counts_as_cleared(

@@ -93,7 +93,9 @@ def test_guard_refuses_when_the_folder_belongs_to_another_account(
 
     complaint = check_account_matches(_parsed(tmp_path), ME, _account_for())
     assert complaint is not None
-    assert "work@corp.com" in complaint  # names the account that actually owns it
+    assert "work@corp.com" in str(complaint)  # names the account that actually owns it
+    assert complaint.facts == {"leader": "work@corp.com"}  # the fix's <leader>
+    assert "Re-run" not in str(complaint)  # the advice is the code's fix
 
 
 def test_guard_allows_the_account_the_folder_is_addressed_to(tmp_path: Path) -> None:
@@ -116,7 +118,7 @@ def test_guard_counts_a_burner_for_the_account_that_owns_it(tmp_path: Path) -> N
 def test_guard_counts_cc_not_just_to(tmp_path: Path) -> None:
     _eml(tmp_path, "a", frm="them@acme.com", to="x@acme.com", cc="work@corp.com")
     complaint = check_account_matches(_parsed(tmp_path), ME, _account_for())
-    assert complaint is not None and "work@corp.com" in complaint
+    assert complaint is not None and "work@corp.com" in str(complaint)
 
 
 def test_guard_is_silent_when_no_recipient_is_a_known_account(tmp_path: Path) -> None:

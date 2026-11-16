@@ -66,7 +66,7 @@ from wicket.auth import (
     visit,
     write_halt,
 )
-from wicket.env import DEFAULT_THREADS
+from wicket.env import DEFAULT_THREADS, event
 from wicket.manifest import (
     Row,
     is_held,
@@ -92,7 +92,8 @@ from wicket.reconcile import reconcile
 
 BATCH_SIZE = 500  # UIDs per IMAP FETCH; bounds memory + command size.
 _UID_RE = re.compile(rb"\bUID\s+(\d+)")
-# Progress, one line per step; the CLI's `main()` shows it on stderr.
+# Progress, one record per step: a human message for stderr and an event for wicket.log
+# (`env.configure_logging`, which the CLI's `main()` calls).
 logger = logging.getLogger(__name__)
 
 
@@ -596,7 +597,17 @@ def _retrieve_months(
                 msg += f", {failed} failed"
             if skipped:
                 msg += f", {skipped} skipped (halted)"
-            logger.info(msg)
+            logger.info(
+                msg,
+                extra=event(
+                    "fetch.month",
+                    done=done,
+                    total=len(months),
+                    saved=len(written_all),
+                    failed=failed or None,  # said only when non-zero, as the text
+                    skipped=skipped or None,
+                ),
+            )
     finally:
         for thread in pool:
             thread.join()
@@ -657,12 +668,21 @@ def _pass(
         return counts, throttle_halt(credentials_path, "discovery", exc)
     got = total - unheld
     candidates = unheld if limit is None else min(unheld, limit)
+    beyond = unheld - candidates if unheld > candidates else None
     logger.info(
         "[search] %s matched: %s got, %s to fetch%s",
         total,
         got,
         candidates,
-        f" ({unheld - candidates} beyond --max)" if unheld > candidates else "",
+        f" ({beyond} beyond --max)" if beyond else "",
+        extra=event(
+            "fetch.search",
+            matched=total,
+            got=got,
+            candidates=candidates,
+            beyond_max=beyond,
+            dry_run=ctx.dry_run,
+        ),
     )
     pending, linked = _plan(records, ctx, rows)
     counts.update(
@@ -685,7 +705,10 @@ def _pass(
         for entry in pending:
             by_month.setdefault(str(entry["month"]), []).append(entry)
         logger.info(
-            "[fetch] %s to download across %s month(s)", len(pending), len(by_month)
+            "[fetch] %s to download across %s month(s)",
+            len(pending),
+            len(by_month),
+            extra=event("fetch.plan", pending=len(pending), months=len(by_month)),
         )
         written, counts["failed"], halt = _retrieve_months(
             credentials_path=credentials_path,
@@ -700,13 +723,23 @@ def _pass(
 def _result(
     totals: dict[str, int], passes: list[dict[str, object]], halt: Halted | None
 ) -> dict[str, object]:
-    """The stats a run returns: its counts, one record per pass, and its HALT."""
+    """The stats a run returns: its counts, one record per pass, and its HALT.
+
+    ``halt_facts`` are the HALT's facts but its account (`auth.Halted.facts`: the
+    ``cause`` or ``since``), which the api's refusal of a halted run carries; the
+    account is ``halt_file``'s name.
+    """
     return {
         **totals,
         "passes": passes,
         "halted": halt is not None,
         "halt": halt.line if halt is not None else None,
         "halt_file": str(halt.path) if halt is not None else None,
+        "halt_facts": (
+            {k: v for k, v in halt.facts.items() if k != "account"}
+            if halt is not None
+            else None
+        ),
     }
 
 
@@ -757,12 +790,13 @@ def _this_year() -> int:
 class RunHooks:
     """What a no-filter run takes from its surroundings, injected so tests do not wait.
 
-    ``this_year`` orders the years, and ``log`` receives one line per year and pass (counts and
-    years only; the api writes them to the account's log).
+    ``this_year`` orders the years, and ``log`` receives one event per year and pass, as
+    ``log(name, **fields)`` (counts and years only; the api writes them to the
+    account's log).
     """
 
     this_year: Callable[[], int] = _this_year
-    log: Callable[[str], None] = field(default=lambda _line: None)
+    log: Callable[..., None] = field(default=lambda _name, **_fields: None)
 
 
 @dataclass
@@ -856,9 +890,14 @@ def download_years(
             after = _got_count(ctx)
             run.add(year, 1, counts, after)
             hooks.log(
-                f"{year} pass 1: {counts['matched']} matched, "
-                f"{counts['candidates']} to fetch, {counts['downloaded']} downloaded, "
-                f"{counts['failed']} failed, {counts['linked']} linked; {after} got"
+                "fetch.year",
+                year=year,
+                matched=counts["matched"],
+                candidates=counts["candidates"],
+                downloaded=counts["downloaded"],
+                failed=counts["failed"],
+                linked=counts["linked"],
+                got=after,
             )
     finally:
         logout_quietly(conn)
