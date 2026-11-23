@@ -388,7 +388,15 @@ def _first_year_here(conn: imaplib.IMAP4_SSL) -> int | None:
 
 
 def _load_secret_file(path: Path) -> tuple[str, str]:
-    data = json.loads(path.read_text(encoding="utf-8"))
+    """(email, app_password) from ``path``; `NoCredentials` naming the file when it is
+    not a JSON object, or lacks either key: a malformed credential file, never a bad
+    command line."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise NoCredentials(f"{path}: not JSON ({exc.msg}).") from exc
+    if not isinstance(data, dict):
+        raise NoCredentials(f"{path}: not a JSON object.")
     email = (data.get("email") or "").strip()
     password = data.get("app_password") or ""
     if not email or not password:

@@ -12,6 +12,11 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+## 0.22.1 - 2026-11-22
+
+### Fixed
+- **An `imap.json` that is not JSON is refused as `no_credentials`, naming the file.** An empty or garbled credential file, plain or linked, was refused as `bad_request` with only the JSON parser's text (`Expecting value: line 1 column 1 (char 0)`) and a fix pointing at the command line. It now says `<path>: not JSON (...)` or `<path>: not a JSON object.`, with the `no_credentials` fix: correct the file, or remove it and seed it again.
+
 ## 0.22.0 - 2026-11-22
 
 ### Added

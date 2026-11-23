@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 import wicket.__main__ as root
-from wicket import env
+from wicket import env, errors
 from wicket.manifest import message_file, read_shard, shard_path, write_shard
 from wicket.message import message_date, message_stem
 from wicket.root import api as root_api
@@ -216,6 +216,48 @@ def test_a_verb_without_the_flag_exits_2_unless_one_folder_holds_imap_json(
     assert (code, out) == (2, "")
     assert "no account: 2 folders in " in err
     assert err.endswith("fix: Pass --mail-account, or set $WICKET_ACCOUNT.\n")
+
+
+@pytest.mark.parametrize("verb", ["catalog", "fetch"])
+def test_an_empty_plain_imap_json_is_no_credentials_naming_it(
+    verb: str, state: Path, run_cli: Callable[..., tuple[int, str, str]]
+) -> None:
+    """An empty imap.json that is a file, not a link, is a malformed credential:
+    no_credentials naming the file, never a JSON parser's message under bad_request."""
+    folder = state / "accounts" / "you@gmail.com"
+    folder.mkdir(parents=True)
+    (folder / "imap.json").touch()
+    code, out, err = run_cli(
+        root.main, [verb, "--mail-account", "you@gmail.com", "--non-interactive"]
+    )
+    assert (code, out) == (2, "")
+    assert f"{folder / 'imap.json'}: not JSON (Expecting value)." in err
+    assert err.endswith(f"fix: {errors.CODES['no_credentials'].fix}\n")
+
+
+@pytest.mark.parametrize("verb", ["catalog", "fetch"])
+@pytest.mark.parametrize(
+    ("text", "said"), [("", "not JSON"), ("[]", "not a JSON object")]
+)
+def test_a_linked_imap_json_that_is_not_a_json_object_is_no_credentials(
+    verb: str,
+    text: str,
+    said: str,
+    state: Path,
+    run_cli: Callable[..., tuple[int, str, str]],
+) -> None:
+    """A link to a Gmail credential file that is empty or not an object is a malformed
+    credential: no_credentials, naming the file."""
+    _account_folders(state, "you@gmail.com")
+    target = state / "gmail" / "you@gmail.com" / "imap.json"
+    target.parent.mkdir(parents=True)
+    target.write_text(text, encoding="utf-8")
+    code, out, err = run_cli(
+        root.main, [verb, "--mail-account", "you@gmail.com", "--non-interactive"]
+    )
+    assert (code, out) == (2, "")
+    assert f"{state / 'accounts' / 'you@gmail.com' / 'imap.json'}: {said}" in err
+    assert err.endswith(f"fix: {errors.CODES['no_credentials'].fix}\n")
 
 
 def test_report_without_the_flag_counts_every_account(
