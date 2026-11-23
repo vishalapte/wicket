@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install this repo's own settings into the local Claude Code config, and nothing else.
+"""Install this repo's own settings into the local Claude Code config, then its CLI command.
 
 The same file, byte for byte, in every repo that ships one. The repo's name is
 `[project].name` in its pyproject.toml, and its prefix is that name in capitals plus
@@ -20,6 +20,20 @@ Writes, into $CLAUDE_CONFIG_DIR (default ~/.claude):
    frontmatter removed), and one `@<NAME>.md` line in CLAUDE.md that imports it. The
    rest of CLAUDE.md is never touched.
 
+settings.json is printed one `path = value` line per setting, and only the settings that
+change, so a value that is not changing is never printed:
+- A setting added (its key absent today) is written without asking: `+path = value`.
+- A setting changed (`-path = old`, `+path = new`) or removed (`-path = old`) is written only
+  when the person at the terminal answers y or yes to "Replace <path>? [y/N]". With no
+  terminal, none is written, and the run says to run ./install in a terminal.
+- The additions are written either way, in the one write of settings.json.
+- `--dry-run` prints the same lines, asks nothing and writes nothing.
+
+Then, after those writes, the repo's command: `.racecar/scripts/install_cli.py <name>`
+writes ~/.local/bin/<name>, the launcher that runs this checkout's CLI from any
+directory. It runs whether settings.json was written or not. `--dry-run` is passed on,
+so it writes nothing either.
+
 The run refuses, exit 2, before writing anything when defaults.json is missing or is
 not a JSON object of string or null values, a key lacks the prefix, a placeholder
 names no string key of the file, or hooks.json is malformed.
@@ -31,14 +45,16 @@ hooks.json:
 
 Usage:
     ./install
-    ./install --dry-run      # print what would be written, write nothing
+    ./install --dry-run      # print what would be written, ask nothing, write nothing
 """
 
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -188,6 +204,47 @@ def with_import(claude_md: str, line: str) -> str:
     return (claude_md.rstrip("\n") + "\n\n" if claude_md.strip() else "") + line + "\n"
 
 
+def leaves(value: object, path: str = "") -> list[str]:
+    """One `path = value` line per leaf of a JSON value, so a diff names only what changes."""
+    if isinstance(value, dict) and value:
+        return [
+            line
+            for key, item in value.items()
+            for line in leaves(item, f"{path}.{key}" if path else str(key))
+        ]
+    if isinstance(value, list) and value:
+        return [
+            line
+            for index, item in enumerate(value)
+            for line in leaves(item, f"{path}[{index}]")
+        ]
+    return [f"{path} = {json.dumps(value)}"] if path else []
+
+
+def with_additions(before: object, after: object) -> object:
+    """`before` plus every key `after` adds to a dict; every value `before` holds is kept."""
+    if not (isinstance(before, dict) and isinstance(after, dict)):
+        return before
+    out = {key: with_additions(value, after.get(key)) for key, value in before.items()}
+    out.update({key: value for key, value in after.items() if key not in before})
+    return out
+
+
+def changed_lines(before: object, after: object) -> list[str]:
+    """`-path = old` and `+path = new` for each setting that differs, with no context."""
+    lines = difflib.unified_diff(leaves(before), leaves(after), n=0, lineterm="")
+    return [line for line in lines if not line.startswith(("---", "+++", "@@"))]
+
+
+def confirmed(path: Path) -> bool:
+    """True when the person at the terminal answers y or yes."""
+    try:
+        answer = input(f"Replace {path}? [y/N] ")
+    except EOFError:
+        return False
+    return answer.strip().lower() in ("y", "yes")
+
+
 def main(argv: list[str]) -> int:
     dry_run = argv == ["--dry-run"]
     if argv and not dry_run:
@@ -207,6 +264,7 @@ def main(argv: list[str]) -> int:
     config = Path(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude").expanduser()
     settings_path = config / "settings.json"
     raw = settings_path.read_text(encoding="utf-8") if settings_path.exists() else ""
+    current = json.loads(raw) if raw.strip() else {}
     settings = json.loads(raw) if raw.strip() else {}
     if env:
         settings.setdefault("env", {}).update(env)
@@ -224,8 +282,6 @@ def main(argv: list[str]) -> int:
         writes.append(
             (claude_md, before_md, with_import(before_md, f"@{name.upper()}.md"))
         )
-    writes.append((settings_path, raw, json.dumps(settings, indent=2) + "\n"))
-
     for path, before, after in writes:
         if before == after:
             print(f"install: {path} already up to date")
@@ -235,6 +291,44 @@ def main(argv: list[str]) -> int:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(after, encoding="utf-8")
             print(f"install: {'updated' if before else 'created'} {path}")
+
+    added = with_additions(current, settings)
+    additions = changed_lines(current, added)
+    changes = changed_lines(added, settings)
+    target = added
+    if not additions and not changes:
+        print(f"install: {settings_path} already up to date")
+    if additions:
+        print("\n".join(additions))
+        count = f"{len(additions)} setting(s)"
+        print(
+            f"install: {'would add' if dry_run else 'adding'} {count} to {settings_path}"
+        )
+    if changes:
+        print("\n".join(changes))
+        if dry_run:
+            print(f"install: would ask before replacing {settings_path}")
+        elif not (sys.stdin and sys.stdin.isatty()):
+            print(
+                f"install: {settings_path}: changes not written;"
+                " run ./install in a terminal to confirm"
+            )
+        elif confirmed(settings_path):
+            target = settings
+        else:
+            print(f"install: {settings_path}: changes not written")
+    if target != current and not dry_run:
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path.write_text(json.dumps(target, indent=2) + "\n", encoding="utf-8")
+        print(f"install: {'updated' if raw else 'created'} {settings_path}")
+
+    command = [sys.executable, str(ROOT / ".racecar" / "scripts" / "install_cli.py")]
+    command += [name, *(["--dry-run"] if dry_run else [])]
+    sys.stdout.flush()  # the lines above print before the child's
+    try:
+        subprocess.run(command, check=True)
+    except subprocess.CalledProcessError as exc:
+        return exc.returncode  # install_cli.py has printed why on stderr
     return 0
 
 

@@ -12,6 +12,15 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+## 0.23.0 - 2026-11-23
+
+### Added
+- **`wicket` is a native command.** `./install` writes `~/.local/bin/wicket`, a launcher of this checkout that runs in its venv from any directory: `wicket`, `wicket alias`, `wicket alias create ...`, with help, listings and usage that say `wicket alias create` rather than `python -m wicket.alias create`.
+- **`./install` asks before it changes a setting.** It prints one `path = value` line per setting it touches, never one it leaves alone. A setting it adds is written without asking; one it would change or remove is written only on `y` to `Replace <path>? [y/N]`, and not at all without a terminal. The command is installed either way.
+
+### Changed
+- **racecar tooling synced to v0.203.0.** `make venv` takes `RC_PYTHON_VERSION=3.14` to pin the venv's Python minor version; unset, it behaves as before.
+
 ## 0.22.1 - 2026-11-22
 
 ### Fixed

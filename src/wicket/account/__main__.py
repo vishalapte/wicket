@@ -95,7 +95,7 @@ def subcommands() -> list[tuple[str, str]]:
 def parser() -> argparse.ArgumentParser:
     """Build the parser without parsing: the audit and --help both read this."""
     p = NounParser(
-        prog="python -m wicket.account",
+        module="wicket.account",
         description=(
             "An account is a folder, ~/.config/wicket/accounts/<name>/, holding an "
             "imap.json link to its credential file."

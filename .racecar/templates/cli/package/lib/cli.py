@@ -34,6 +34,7 @@ import contextlib
 import copy
 import difflib
 import io
+import os
 import sys
 from collections.abc import Callable, Iterable
 from gettext import gettext
@@ -52,6 +53,24 @@ ONE_OF = gettext("one of the arguments %s is required").split("%s", maxsplit=1)
 
 #: Where a verb's parser records itself on the namespace when argparse chooses it.
 _CHOSEN = "_cli_verb_parser"
+
+#: Set by the installed launcher (`install_cli.py`) to `<pkg> <pid>`.
+LAUNCHER_ENV = "RC_CLI"
+
+
+def spelled(module: str, *words: str) -> str:
+    """The command that runs `module` with `words`, spelled the way this process was started.
+
+    `python -m acme.alias create` by default. In the process the installed launcher started
+    for `acme`, `acme alias create`: the launcher sets `RC_CLI` to `<pkg> <pid>` with its own
+    shell's pid and `exec`s Python, which keeps that pid. A child process (an audit probe, a
+    transcript run) has another pid and was started with `python -m`, so it says so.
+    """
+    named = os.environ.get(LAUNCHER_ENV, "").split()
+    parts = module.split(".")
+    if len(named) == 2 and named[1] == str(os.getpid()) and parts[0] == named[0]:
+        return " ".join([*parts, *words])
+    return " ".join([f"python -m {module}", *words])
 
 
 #: Section order and heading for a grouped listing (`print_commands(kinds=...)`). The
@@ -73,17 +92,18 @@ def print_commands(
 ) -> None:
     """Render a node's listing: its contained nouns, then its own verbs.
 
-    Every line is a full `python -m ...` invocation, runnable as printed.
+    Every line is a full invocation, runnable as printed and spelled the way this process was
+    started (`spelled`): `python -m <pkg>.<noun>`, or under the installed launcher `<pkg> <noun>`.
 
     Flat by default. With `kinds`, a `name -> key` map covering every noun and verb, the
     entries are grouped under `sections` in `sections` order, empty groups skipped, so a
     verb that writes is visibly apart from one that only reads. An entry missing from
     `kinds`, or keyed outside `sections`, raises: a new verb cannot silently drop out.
     """
-    rows = [(n, f"python -m {pkg}.{n}", d) for n, d in nodes]
-    rows += [(n, f"python -m {pkg} {n}", d) for n, d in verbs or []]
+    rows = [(n, spelled(f"{pkg}.{n}"), d) for n, d in nodes]
+    rows += [(n, spelled(pkg, n), d) for n, d in verbs or []]
     width = max((len(path) for _, path, _ in rows), default=0)
-    print(f"python -m {pkg}\n")
+    print(spelled(pkg) + "\n")
     if kinds is None:
         for index, (_, path, desc) in enumerate(rows):
             if index == len(nodes) and nodes:
@@ -160,6 +180,21 @@ class VerbParser(argparse.ArgumentParser):
     and exits 2. stdout stays empty in every case, so under `--json` it never holds text.
     """
 
+    def __init__(self, *args: Any, module: str | None = None, **kwargs: Any) -> None:
+        """Build the parser; `module=` spells its `prog` the way this process was started.
+
+        `module="acme.alias"` gives `python -m acme.alias`, or `acme alias` under the installed
+        launcher (`spelled`). A verb's parser takes its `prog` from this one, so every usage,
+        help and error line follows. A `prog=` is used as given; both together are refused.
+        """
+        if module is not None:
+            if "prog" in kwargs:
+                raise TypeError(
+                    "pass module= or prog=, not both: module= spells the prog"
+                )
+            kwargs["prog"] = spelled(module)
+        super().__init__(*args, **kwargs)
+
     def error(self, message: str) -> NoReturn:
         """Answer a bad invocation: help, then what was wrong."""
         needed = None
@@ -184,18 +219,27 @@ class NounParser(VerbParser):
         self,
         *args: object,
         nodes: list[tuple[str, str]] | None = None,
+        module: str | None = None,
         **kwargs: object,
     ) -> None:
-        """Build the parser, folding `nodes` into the epilog when the node has children."""
+        """Build the parser, folding `nodes` into the epilog when the node has children.
+
+        With `module=`, each child is spelled from it (`spelled`); with a `prog=` alone, each
+        child is that prog with `.<child>` appended, as before.
+        """
         self._verb_action: argparse._SubParsersAction[argparse.ArgumentParser] | None
         self._verb_action = None
         if nodes:
             prog = str(kwargs.get("prog", ""))
-            width = max(len(n) for n, _ in nodes)
-            listed = "\n".join(f"  {prog}.{n.ljust(width)}   {d}" for n, d in nodes)
+            paths = [
+                (spelled(f"{module}.{n}") if module else f"{prog}.{n}", d)
+                for n, d in nodes
+            ]
+            width = max(len(path) for path, _ in paths)
+            listed = "\n".join(f"  {path.ljust(width)}   {d}" for path, d in paths)
             kwargs["epilog"] = f"contained nodes:\n{listed}"
             kwargs["formatter_class"] = argparse.RawDescriptionHelpFormatter
-        super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+        super().__init__(*args, module=module, **kwargs)
 
     def add_subparsers(self, **kwargs: Any) -> Any:
         """Add the verbs, as `VerbParser`s unless told otherwise, and remember them."""

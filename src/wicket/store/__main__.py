@@ -95,7 +95,7 @@ def _entries(verb: argparse.ArgumentParser) -> None:
 def parser() -> argparse.ArgumentParser:
     """Build the parser without parsing: the audit and --help both read this."""
     p = NounParser(
-        prog="python -m wicket.store",
+        module="wicket.store",
         description=(
             "Which store mail goes to: a sender domain (--from, "
             "domain-routes.json) or one of your addresses (--to, "

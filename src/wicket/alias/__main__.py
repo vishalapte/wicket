@@ -79,7 +79,7 @@ def _primary(verb: argparse.ArgumentParser, items: bool = True) -> None:
 def parser() -> argparse.ArgumentParser:
     """Build the parser without parsing: the audit and --help both read this."""
     p = NounParser(
-        prog="python -m wicket.alias",
+        module="wicket.alias",
         description=(
             "A domain that is really another: their domain → the domain "
             "it files under (domain-aliases.json)."

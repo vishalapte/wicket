@@ -282,10 +282,26 @@ print-%:
 # interrupted before pip was installed), ensurepip adds pip and keeps what is installed.
 # Where Python does not run (an empty directory, a removed Python), the venv is rebuilt;
 # --clear only where pyvenv.cfg says the directory is already a venv.
+#
+# RC_PYTHON_VERSION pins the minor version the venv runs (`3.14`). Unset, the recipe is the
+# one above. Set, the interpreter is asked its version FIRST, before pip and ensurepip, since
+# a venv whose links followed a moved `python3` still runs and ensurepip would keep it; a
+# venv on another minor version, or whose Python does not run, is rebuilt by
+# python$(RC_PYTHON_VERSION). That builder is looked up on PATH without the venv's own bin,
+# which holds a `python$(RC_PYTHON_VERSION)` link that may run the version being replaced.
+RC_PYTHON_VERSION ?=
 venv: ## Create the venv (RC_VENV, default .venv) if its pip does not run
+ifeq ($(RC_PYTHON_VERSION),)
 	@$(RC_PIP) --version >/dev/null 2>&1 \
 	  || $(RC_VENV)/bin/python -m ensurepip >/dev/null 2>&1 \
 	  || { echo "venv: building $(RC_VENV)"; python3 -m venv $(if $(wildcard $(RC_VENV)/pyvenv.cfg),--clear) $(RC_VENV); }
+else
+	@$(RC_VENV)/bin/python -c 'import sys; sys.exit("%d.%d" % sys.version_info[:2] != "$(RC_PYTHON_VERSION)")' 2>/dev/null \
+	  && { $(RC_PIP) --version >/dev/null 2>&1 || $(RC_VENV)/bin/python -m ensurepip >/dev/null 2>&1; } \
+	  || { echo "venv: building $(RC_VENV) with python$(RC_PYTHON_VERSION)"; \
+	       p=; IFS=:; for d in $$PATH; do [ "$$d" -ef "$(RC_VENV)/bin" ] || p="$${p:+$$p:}$$d"; done; unset IFS; \
+	       env PATH="$$p" python$(RC_PYTHON_VERSION) -m venv $(if $(wildcard $(RC_VENV)/pyvenv.cfg),--clear) $(RC_VENV); }
+endif
 
 install: venv system-deps ## Bootstrap: editable library install + system deps
 	$(RC_PIP) install -q --upgrade 'pip>=25.1'

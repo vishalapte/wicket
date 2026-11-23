@@ -39,14 +39,15 @@
 .racecar/scripts/check_upward_imports.py
 .racecar/scripts/check_version_bump.py
 .racecar/scripts/clean_files.sh
+.racecar/scripts/cli_launcher.sh
 .racecar/scripts/commit_preflight.sh
 .racecar/scripts/docs_orchestrate.py
 .racecar/scripts/error.json
 .racecar/scripts/gate_orchestrate.py
-.racecar/scripts/gen_cli_launcher.py
 .racecar/scripts/graph.py
 .racecar/scripts/identifiers.json
 .racecar/scripts/identifiers.py
+.racecar/scripts/install_cli.py
 .racecar/scripts/install_cron.sh
 .racecar/scripts/lexicon.py
 .racecar/scripts/lib/__init__.py

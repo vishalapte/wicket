@@ -326,9 +326,17 @@ key. `./install` writes it into `~/.claude/settings.json` "env", so a Claude Cod
 runs wicket with it:
 
 ```bash
-./install              # set the variables in settings.json
-./install --dry-run    # print what would be written, write nothing
+./install              # show the settings.json change, ask, then install the wicket command
+./install --dry-run    # print what would be written, ask nothing, write nothing
 ```
+
+`./install` prints one `env.WICKET_X = "..."` line per setting it touches, and never a
+setting it leaves alone. A setting it adds (`+`, the key absent today) is written without
+asking. A setting it would change (`-` old, `+` new) or remove (`-`) is written only when you
+answer y to `Replace <path>? [y/N]`; with no terminal it is not written, and the run says to
+run `./install` in one. The additions are written either way. Then it writes
+`~/.local/bin/wicket`, the launcher that runs this checkout's CLI from any directory
+(`wicket alias create ...`).
 
 A null value is skipped, and a key of that name already in settings.json is kept.
 `<KEY>` is replaced with the value of KEY, another key of `defaults.json` (here
@@ -336,8 +344,8 @@ A null value is skipped, and a key of that name already in settings.json is kept
 (Claude Code does not expand `~` in "env"). Every key must start `WICKET_`, from
 `[project].name`; one that does not refuses the run. Only those keys are set; every other
 variable and every hook is kept, and a second run prints "already up to date".
-`$CLAUDE_CONFIG_DIR` names another config directory. `./install` is the same file, byte for
-byte, as delphi's.
+`$CLAUDE_CONFIG_DIR` names another config directory. `./install` was the same file, byte for
+byte, as delphi's; the diff and the prompt are wicket's alone until racecar delivers them.
 
 ### Environment variables
 

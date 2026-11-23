@@ -171,7 +171,7 @@ def _non_interactive(verb: argparse.ArgumentParser) -> None:
 def parser() -> argparse.ArgumentParser:  # pylint: disable=too-many-statements
     """Build the parser without parsing: the audit and --help both read this."""
     p = NounParser(
-        prog="python -m wicket",
+        module="wicket",
         description=(
             "Portable, read-only mail tooling over IMAP: catalog a mailbox, "
             "fetch matching .eml, report over the manifest, or ingest a local "

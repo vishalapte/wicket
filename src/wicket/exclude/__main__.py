@@ -96,7 +96,7 @@ def _target(verb: argparse.ArgumentParser) -> None:
 def parser() -> argparse.ArgumentParser:
     """Build the parser without parsing: the audit and --help both read this."""
     p = NounParser(
-        prog="python -m wicket.exclude",
+        module="wicket.exclude",
         description=(
             "A mailing list whose mail is never fetched or filed "
             "(excluded-lists.json), for every account or one."

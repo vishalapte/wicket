@@ -43,7 +43,7 @@ def subcommands() -> list[tuple[str, str]]:
 def parser() -> argparse.ArgumentParser:
     """Build the parser without parsing: the audit and --help both read this."""
     p = NounParser(
-        prog="python -m __PKG__",
+        module="__PKG__",
         description=__DESCRIPTION__,
         nodes=commands(),
     )

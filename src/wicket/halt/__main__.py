@@ -99,7 +99,7 @@ def _which(verb: argparse.ArgumentParser) -> None:
 def parser() -> argparse.ArgumentParser:
     """Build the parser without parsing: the audit and --help both read this."""
     p = NounParser(
-        prog="python -m wicket.halt",
+        module="wicket.halt",
         description=(
             "A HALT stops every IMAP connection to an account until it is "
             "cleared: a file under ~/.local/state/wicket/halt/ (present means "
