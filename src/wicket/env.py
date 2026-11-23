@@ -466,25 +466,37 @@ def resolve_state_dir(
     return path
 
 
-def account_dirs(override: str | os.PathLike[str] | None = None) -> list[Path]:
-    """Every account: each folder in ``~/.config/wicket/accounts`` holding ``imap.json``.
+def account_folders(override: str | os.PathLike[str] | None = None) -> list[Path]:
+    """Every folder in ``~/.config/wicket/accounts``, with or without ``imap.json``.
 
-    The one home of the list (owner, 2026-10-28: "list of accounts are all directories
-    that contain an imap.json"). A link counts even when its target does not exist yet;
-    a folder without one is no account. Sorted by name. Reads only; creates nothing.
-    ``override`` replaces the base, as `resolve_accounts_dir` takes it.
+    The one home of the folder listing, and what `report` lists (owner, 2026-11-22:
+    "report should look at any thing in ~/.config/wicket/accounts/ whether or not it
+    has an imap.json"), so an account whose mail is only ever ingested gets a row.
+    Dotted folders are skipped, as `known_accounts` skips them. Sorted by name. Reads
+    only; creates nothing. ``override`` replaces the base, as `resolve_accounts_dir`
+    takes it.
     """
     root = resolve_accounts_dir(override)
     if not root.is_dir():
         return []
     return [
+        p for p in sorted(root.iterdir()) if p.is_dir() and not p.name.startswith(".")
+    ]
+
+
+def account_dirs(override: str | os.PathLike[str] | None = None) -> list[Path]:
+    """Every IMAP account: each of `account_folders` holding ``imap.json``.
+
+    The one home of the IMAP account list (owner, 2026-10-28: "list of accounts are all
+    directories that contain an imap.json"), which every verb but `report` reads. A
+    link counts even when its target does not exist yet. Sorted by name. Reads only;
+    creates nothing. ``override`` replaces the base, as `resolve_accounts_dir` takes it.
+    """
+    return [
         p
-        for p in sorted(root.iterdir())
-        if p.is_dir()
-        and (
-            (p / CREDENTIALS_FILENAME).is_symlink()
-            or (p / CREDENTIALS_FILENAME).exists()
-        )
+        for p in account_folders(override)
+        if (p / CREDENTIALS_FILENAME).is_symlink()
+        or (p / CREDENTIALS_FILENAME).exists()
     ]
 
 

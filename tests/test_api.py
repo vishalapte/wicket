@@ -235,6 +235,25 @@ def test_report_without_the_flag_counts_every_account(
     ]
 
 
+@pytest.mark.parametrize("argv", [["report"], ["report", "--by-year"]])
+def test_report_lists_a_folder_without_imap_json(
+    argv: list[str],
+    state: Path,
+    run_cli: Callable[..., tuple[int, str, str]],
+) -> None:
+    """An account whose mail is only ever ingested has no imap.json, yet report lists it
+    (owner, 2026-11-22); every other verb's account list does not, and a dotted folder is
+    no account."""
+    _account_folders(state, "a@x.com")
+    _account_folders(state, "ingested@y.com", ".hidden", credential=False)
+    code, out, err = run_cli(root.main, argv)
+    assert (code, err) == (0, "")
+    rows = [line.split()[0] for line in out.splitlines()]
+    assert "a@x.com" in rows and "ingested@y.com" in rows
+    assert ".hidden" not in rows
+    assert [p.name for p in env.account_dirs()] == ["a@x.com"]
+
+
 def test_report_without_the_flag_refuses_an_absent_mail_root(
     state: Path,
     tmp_path: Path,

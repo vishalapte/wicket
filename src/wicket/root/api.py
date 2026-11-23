@@ -82,6 +82,7 @@ from wicket.env import (
     NotLinked,
     StoreBusy,
     account_dirs,
+    account_folders,
     account_of,
     append_log,
     event,
@@ -763,10 +764,11 @@ def _bucket_view(name: str) -> BucketView:
 
 
 def _by_year_view() -> ByYearView:
-    """Every account (a folder in ~/.config/wicket/accounts) by year: local, not local."""
+    """Every account (`account_folders`: a folder in ~/.config/wicket/accounts, with or
+    without imap.json) by year: local, not local."""
     rows: list[AccountYears] = []
     years: set[int] = set()
-    for folder in account_dirs():
+    for folder in account_folders():
         counts = report_lib.by_year(
             resolve_store_dir(folder.name), _excluded(folder.name)
         )
@@ -791,12 +793,13 @@ def _by_year_view() -> ByYearView:
 
 
 def _accounts_view() -> AccountsView:
-    """Every account (a folder in ~/.config/wicket/accounts): downloaded, excluded, not
-    downloaded and their total, each row sorted by `report_lib.row_state`, and its
-    last download (`report_lib.last_download` over its messages/ and staging)."""
+    """Every account (`account_folders`: a folder in ~/.config/wicket/accounts, with or
+    without imap.json): downloaded, excluded, not downloaded and their total, each row
+    sorted by `report_lib.row_state`, and its last download (`report_lib.last_download`
+    over its messages/ and staging)."""
     require_mail_root()
     rows: list[AccountCounts] = []
-    for folder in account_dirs():
+    for folder in account_folders():
         counts = report_lib.account_counts(
             resolve_store_dir(folder.name), _excluded(folder.name)
         )

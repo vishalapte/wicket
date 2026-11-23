@@ -255,7 +255,8 @@ refusal.
 | `--json` | Print the result as JSON instead of text: the run's counts, `passes` (one row per pass), and the HALT fields. |
 
 **`wicket report`** gives read-only summaries over the manifest (no IMAP, no credentials).
-With no flag, one row per account (a folder in `~/.config/wicket/accounts`): downloaded,
+With no flag, one row per account (a folder in `~/.config/wicket/accounts`, with or without
+an `imap.json`, so an account whose mail is only ever ingested is listed too): downloaded,
 excluded, not downloaded, their total and last download, with a total row. Excluded is a row you
 excluded or one on an excluded list; not downloaded is neither downloaded nor deleted, so a message
 the server deleted before it was downloaded is in no column. Last download is when the newest
@@ -269,7 +270,7 @@ account's one-screen summary.
 | `--senders` | Every From address with its message count, descending (`count<TAB>address`). |
 | `--addresses` | Every distinct address seen in From or To, sorted. |
 | `--bucket NAME` | Every message **any** store holds that this bucket claims (`travel`, `shopping`), grouped by store. A view, not a location; ignores `--mail-account`. |
-| `--by-year` | One row per account (a folder in `~/.config/wicket/accounts`), one column per year, each cell `local/not local`, with totals. Local is downloaded; not local is not downloaded and not deleted. An excluded row (yours, or on an excluded list) is in neither count. Ignores `--mail-account`. |
+| `--by-year` | One row per account (a folder in `~/.config/wicket/accounts`, with or without an `imap.json`), one column per year, each cell `local/not local`, with totals. Local is downloaded; not local is not downloaded and not deleted. An excluded row (yours, or on an excluded list) is in neither count. Ignores `--mail-account`. |
 | `--mail-account ACCOUNT` | Scopes the manifest store. Default `$WICKET_ACCOUNT`, else the only account folder. |
 | `--json` | Print the result as JSON instead of text: `view` (`summary`, `senders`, `addresses`, `bucket`, `by_year`) and that view's data. |
 

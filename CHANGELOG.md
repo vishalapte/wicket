@@ -12,6 +12,11 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+## 0.22.0 - 2026-11-22
+
+### Added
+- **`report` lists an account with no IMAP.** The no-flag view and `--by-year` show a row for every folder in `~/.config/wicket/accounts`, with or without an `imap.json`, so an account whose mail is only ever filed by `ingest --src` is counted. `mkdir ~/.config/wicket/accounts/<account>` adds it; fetch, catalog, `halt` and `account list` still act only on folders holding an `imap.json`.
+
 ## 0.21.0 - 2026-11-16
 
 ### Added
