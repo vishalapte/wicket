@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+"""Install this repo into the local agent config, then its CLI command.
+
+Delivered by racecar. A repo's `./install` is a symlink to this file, so every repo installs
+the same way and a fix reaches all of them on their next sync:
+
+    ln -s .racecar/install install
+
+It runs two delivered scripts beside it, in order, and stops at the first that fails:
+
+1. `scripts/install_settings.py`: defaults.json, hooks.json and CLAUDE_<NAME>.md into the
+   Claude Code config. Each file is skipped when the repo has none.
+2. `scripts/install_cli.py`: `~/.local/bin/<pkg>`, the repo's CLI as a native command.
+   Skipped when the package has no `__main__.py`.
+
+Usage:
+    ./install
+    ./install --dry-run      # print what would be written, ask nothing, write nothing
+"""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+#: Beside this file's real path, so the symlink at the repo root finds them.
+SCRIPTS = Path(__file__).resolve().parent / "scripts"
+STEPS = ("install_settings.py", "install_cli.py")
+
+
+def main(argv: list[str]) -> int:
+    """Run each step with `argv`; the first nonzero exit code, else 0."""
+    for step in STEPS:
+        sys.stdout.flush()  # the lines above print before the child's
+        code = subprocess.run([sys.executable, str(SCRIPTS / step), *argv], check=False)
+        if code.returncode:
+            return code.returncode
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

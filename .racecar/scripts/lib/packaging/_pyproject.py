@@ -24,8 +24,10 @@ from ._findings import Finding
 
 
 def check_dev_pins(dev: list[Any], label: str) -> list[Finding]:
-    """A Finding for each pinned canon dev tool the repo carries unpinned or at another version."""
-    pinned = {_dist_name(t): t for t in CANON_DEV_TOOLS if _dist_name(t) != t}
+    """A Finding for each bounded canon dev tool the repo carries without its bound."""
+    # A tool is pinned when its spec says more than its name; `types-PyYAML` only differs
+    # from its lowercased name in case.
+    pinned = {_dist_name(t): t for t in CANON_DEV_TOOLS if _dist_name(t) != t.lower()}
     out: list[Finding] = []
     for d in dev:
         if not isinstance(d, str) or _dist_name(d) not in pinned:
@@ -37,8 +39,7 @@ def check_dev_pins(dev: list[Any], label: str) -> list[Finding]:
                     "Finding",
                     label,
                     "[dependency-groups].dev",
-                    f"`{d}`: racecar requires `{want}`, the version it lints its "
-                    "delivered files under (PACKAGING.md §6)",
+                    f"`{d}`: racecar requires `{want}`; PACKAGING.md §6 says why",
                 )
             )
     return out

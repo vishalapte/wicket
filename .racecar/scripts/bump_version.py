@@ -216,6 +216,27 @@ def regenerate_inventories(root: Path, check: bool) -> list[Path]:
     return found
 
 
+def write_all(root: Path, edits: list[tuple[Path, str]]) -> list[Path]:
+    """Write `edits`, then regenerate the inventories; return the inventories regenerated.
+
+    The regeneration reads the new version from disk, so it runs after the writes. When it
+    fails, every file this wrote, the inventories included, is put back as it was, so a
+    failed bump leaves the tree as it found it.
+    """
+    before = {path: path.read_text(encoding="utf-8") for path, _ in edits}
+    before.update({p: p.read_text(encoding="utf-8") for p in inventories(root)})
+    for path, content in edits:
+        path.write_text(content, encoding="utf-8")
+    try:
+        return regenerate_inventories(root, check=False)
+    except RenumberError as exc:
+        for path, text in before.items():
+            path.write_text(text, encoding="utf-8")
+        raise RenumberError(
+            f"{exc}\nNothing changed: every file this run wrote is back as it was."
+        ) from exc
+
+
 def display(path: Path, root: Path) -> str:
     """Return `path` relative to `root` for reporting, or absolute when it is outside.
 
@@ -416,17 +437,17 @@ def run_assign(args: argparse.Namespace) -> int:
             f"nothing to assign (version home {home_path} is at {current})"
         )
 
-    verb = "would write" if args.check else "wrote"
-    for path, _ in edits:
-        print(f"  {verb}  {display(path, args.root)}")
     if args.check:
+        for path, _ in edits:
+            print(f"  would write  {display(path, args.root)}")
         for path in regenerate_inventories(args.root, check=True):
             print(f"  would regenerate  {display(path, args.root)}")
         print(f"bump_version: {len(edits)} artifact(s) pending {current} -> {new}")
         return 1
-    for path, content in edits:
-        path.write_text(content, encoding="utf-8")
-    for path in regenerate_inventories(args.root, check=False):
+    regenerated = write_all(args.root, edits)
+    for path, _ in edits:
+        print(f"  wrote  {display(path, args.root)}")
+    for path in regenerated:
         print(f"  regenerated  {display(path, args.root)}")
     print(
         f"bump_version: assigned {new} (from {current}, '{args.assign}') "
@@ -470,10 +491,9 @@ def run(args: argparse.Namespace) -> int:
             f"of them is defined relative to, never moved"
         )
 
-    verb = "would move" if args.check else "moved"
-    for path, _ in edits:
-        print(f"  {verb}  {display(path, args.root)}")
     if args.check:
+        for path, _ in edits:
+            print(f"  would move  {display(path, args.root)}")
         for path in regenerate_inventories(args.root, check=True):
             print(f"  would regenerate  {display(path, args.root)}")
         print(
@@ -481,9 +501,10 @@ def run(args: argparse.Namespace) -> int:
         )
         return 1
 
-    for path, content in edits:
-        path.write_text(content, encoding="utf-8")
-    for path in regenerate_inventories(args.root, check=False):
+    regenerated = write_all(args.root, edits)
+    for path, _ in edits:
+        print(f"  moved  {display(path, args.root)}")
+    for path in regenerated:
         print(f"  regenerated  {display(path, args.root)}")
     print(f"bump_version: {old} -> {args.new_version} across {len(edits)} artifact(s)")
     if args.message_file is None:

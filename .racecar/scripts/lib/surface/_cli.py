@@ -211,6 +211,11 @@ def _gates(root: Path, package: str, noun: str) -> list[str]:
         state, breaks = noun_state(noun_of(root, package, above))
         if state == "breaks":
             return [f"noun {above} does not conform: {b}" for b in breaks]
+        if state == "leaf":
+            return [
+                f"noun {above} is a verb leaf (one action, arch-python/CLI.md §8); "
+                "a verb or a noun beneath it makes it a noun with verbs, by hand"
+            ]
     return []
 
 

@@ -12,6 +12,9 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+### Changed
+- **racecar tooling synced to v0.209.0.** `./install` is now racecar's shared installer, with the same settings rule; `make venv` picks its Python from `requires-python = ">=3.12,<3.15"`, and `RC_PYTHON_VERSION` is gone. The dev group holds pytest below 9.2, the version racecar's lint profile still runs under.
+
 ## 0.23.0 - 2026-11-23
 
 ### Added

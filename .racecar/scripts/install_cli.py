@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Install a repo's CLI as a native command: `~/.local/bin/<pkg>`, run from any directory.
 
-    wicket alias create --primary example.com     # is: python -m wicket.alias create ...
+    acme widget create --name example             # is: python -m acme.widget create ...
     racecar graph topology check                  # is: python -m racecar.graph.topology check
 
 The installed file is the delivered shell launcher (`cli_launcher.sh`) with two lines filled
@@ -17,11 +17,17 @@ The launcher keeps no table of nouns or verbs. At run time a leading word is a n
 Usage::
 
     cd <repo>
+    python3 .racecar/scripts/install_cli.py                     # this repo's own package
     python3 .racecar/scripts/install_cli.py <pkg>               # write ~/.local/bin/<pkg>
     python3 .racecar/scripts/install_cli.py <pkg> --dir DIR     # write DIR/<pkg>
     python3 .racecar/scripts/install_cli.py <pkg> --dry-run     # say what it would write
 
-Every racecar repo's `./install` runs it once. It replaces only what is ours: a launcher it wrote
+With no `<pkg>`, the package is `[project].name` from pyproject.toml, `-` read as `_`; a repo
+whose package has no `__main__.py` has no CLI, and the run says so and exits 0. A `<pkg>` named
+outright with no `__main__.py` is refused.
+
+A repo's `./install`, the symlink to the delivered `.racecar/install`, runs it with no `<pkg>`,
+after `install_settings.py`. It replaces only what is ours: a launcher it wrote
 before, or a symlink into this repo (the old `bin/<pkg>` launcher). Anything else at the
 target is refused. Rerunning it writes nothing when the copy is current.
 
@@ -35,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import stat
 import sys
 from pathlib import Path
@@ -71,13 +78,38 @@ def render(pkg: str, repo: Path) -> str:
     return text.replace("@REPO@", str(repo), 1).replace("@PKG@", pkg, 1)
 
 
+def repo_name(root: Path = REPO_ROOT) -> str:
+    """`[project].name` from `root`'s pyproject.toml; ValueError when it cannot be read.
+
+    Read with a regular expression, not tomllib, which a 3.9 `python3` does not have.
+    """
+    path = root / "pyproject.toml"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"cannot read {path}: {exc}") from exc
+    section = re.search(r"^\[project\]\s*$(.*?)(?=^\[|\Z)", text, re.M | re.S)
+    found = section and re.search(r'^name\s*=\s*"([^"]+)"', section.group(1), re.M)
+    if not found:
+        raise ValueError(f"{path} has no [project] name")
+    return found.group(1)
+
+
+def identifier(name: str) -> str:
+    """A project name as Python spells it: `my-tool` -> `my_tool`."""
+    return re.sub(r"[^A-Za-z0-9]", "_", name)
+
+
+def main_module(name: str) -> Path:
+    """Where `<name>/__main__.py` would be, under the repo's package home."""
+    home = REPO_ROOT / "src" if (REPO_ROOT / "src").is_dir() else REPO_ROOT
+    return home / name / "__main__.py"
+
+
 def package(name: str) -> str:
     """`name`, once it is a package with a `__main__.py` under the repo's package home."""
-    home = REPO_ROOT / "src" if (REPO_ROOT / "src").is_dir() else REPO_ROOT
-    if not name.isidentifier() or not (home / name / "__main__.py").is_file():
-        raise SystemExit(
-            f"install_cli: no {home / name / '__main__.py'}; name the package"
-        )
+    if not name.isidentifier() or not main_module(name).is_file():
+        raise SystemExit(f"install_cli: no {main_module(name)}; name the package")
     return name
 
 
@@ -133,7 +165,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "package",
-        help="the package to launch, as imported (the command gets the same name)",
+        nargs="?",
+        help="the package to launch, as imported (the command gets the same name);"
+        " default: this repo's [project].name",
     )
     parser.add_argument(
         "--dir",
@@ -152,7 +186,18 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     """Install the launcher as DIR/<package>."""
     args = _parser().parse_args(argv)
-    pkg = package(args.package)
+    if args.package is None:
+        try:
+            pkg = identifier(repo_name())
+        except ValueError as exc:
+            raise SystemExit(f"install_cli: {exc}") from exc
+        if not main_module(pkg).is_file():
+            print(
+                f"install_cli: no CLI ({main_module(pkg)} is absent); nothing to install"
+            )
+            return 0
+    else:
+        pkg = package(args.package)
     text = render(pkg, REPO_ROOT)
     directory = args.dir.expanduser()
     target = directory / pkg

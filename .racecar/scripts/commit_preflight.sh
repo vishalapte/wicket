@@ -11,7 +11,8 @@
 # holds exactly the commit being tried, so nothing is stashed and every hook judges the commit
 # as it will land. And a clone has its own branches and tags, where a second worktree would
 # share yours: whatever the trial does stays in it. A live run brings the tried commits back
-# (fetch, then a compare-and-swap of the worktree's branch); a dry run deletes the clone.
+# (fetch, then a compare-and-swap of the worktree's branch, or a fast-forward of the branch a
+# fold lands on); a dry run deletes the clone.
 #
 # bash 3.2 compatible (no mapfile, no associative arrays).
 
@@ -58,7 +59,20 @@ pf_clone() {
       [ -e "$PF_CLONE/$rel" ] || { mkdir -p "$PF_CLONE/$(dirname "$rel")"; ln -s "$c" "$PF_CLONE/$rel"; }
     done < <(find "$src" -maxdepth 3 -name .collections -not -path "*/.git/*" -prune 2>/dev/null)
   done
+  pf_import_path
   return 0
+}
+
+pf_import_path() {
+  # Puts the clone's package home first on PYTHONPATH, so every hook and the gate import the
+  # package the clone holds. The linked venv may hold an editable install of the package, and
+  # that install names the tree it was made from: the main checkout, whose code is not the
+  # commit being tried. The home is the directory above racecar.mk's PKG (`src` for
+  # `src/<pkg>`, the root for a flat `<pkg>`); with no PKG nothing is set.
+  local pkg
+  pkg=$(make -s --no-print-directory -C "$PF_CLONE" print-PKG 2>/dev/null) || return 0
+  [ -n "$pkg" ] || return 0
+  export PYTHONPATH="$PF_CLONE/$(dirname "$pkg")${PYTHONPATH:+:$PYTHONPATH}"
 }
 
 pf_remove() {
@@ -85,20 +99,27 @@ pf_apply() {
   # $1 = root, $2 = the commit the clone started from, $3.. = one commit's paths. Brings
   # your edits to each path into the clone, the first time any commit lists it: as a patch
   # against the start, so bookkeeping the clone already holds (a CHANGELOG entry, a version
-  # bump) is kept rather than overwritten. A new file is copied. A path missing from your tree
-  # is a removal only when the start tracks it; anything else is a typo, and is refused.
+  # bump) is kept rather than overwritten. A new file is copied, and so is a path on disk
+  # that your index does not hold: one you `git rm`-ed and made again, which `git diff` would
+  # read only through the index, as a removal. A path missing from your tree is a removal only
+  # when the start tracks it; anything else is a typo, and is refused.
   # Applied per commit, never all at once, so the clone holds only the commit being tried.
-  local root="$1" base="$2" p
+  local root="$1" base="$2" p on_disk indexed
   shift 2
   for p in "$@"; do
     case "$PF_APPLIED" in *$'\n'"$p"$'\n'*) continue ;; esac
     PF_APPLIED="$PF_APPLIED$p"$'\n'
-    if git -C "$root" cat-file -e "$base:$p" 2>/dev/null; then
+    on_disk=0
+    { [ -e "$root/$p" ] || [ -L "$root/$p" ]; } && on_disk=1
+    indexed=0
+    git -C "$root" ls-files --error-unmatch -- "$p" >/dev/null 2>&1 && indexed=1
+    if git -C "$root" cat-file -e "$base:$p" 2>/dev/null && { [ "$indexed" = 1 ] || [ "$on_disk" = 0 ]; }; then
       # A path you did not edit (a CHANGELOG only the bookkeeping writes) has no diff.
       git -C "$root" diff --quiet "$base" -- "$p" && continue
       git -C "$root" diff --binary --no-renames "$base" -- "$p" | git apply --3way --whitespace=nowarn -
-    elif [ -e "$root/$p" ] || [ -L "$root/$p" ]; then
+    elif [ "$on_disk" = 1 ]; then
       mkdir -p "$PF_CLONE/$(dirname "$p")"
+      rm -f "$PF_CLONE/$p"
       cp -a "$root/$p" "$PF_CLONE/$p"
     else
       echo "preflight: refusing -- expected file missing: $p" >&2
@@ -107,6 +128,37 @@ pf_apply() {
   done
 }
 PF_APPLIED=$'\n'
+
+pf_pick() {
+  # $1 = a commit to replay. Its change goes into the clone's tree and index, uncommitted, in
+  # place of pf_apply. The changelog and the brief inventory go back to HEAD: the runbook
+  # writes the commit's entries under [Unreleased] and regenerates the inventory, so a
+  # conflict in either is expected and resolved that way. A conflict in any other path is
+  # refused, and so is a pick that fails without one.
+  local sha="$1" p others="" picked=0
+  git cherry-pick --no-commit "$sha" >/dev/null 2>&1 && picked=1
+  while IFS= read -r p; do
+    case "$p" in
+      CHANGELOG.md | docs/summary/*-INVENTORY.md) ;;
+      *) others="$others  $p"$'\n' ;;
+    esac
+  done < <(git diff --name-only --diff-filter=U)
+  if [ -n "$others" ]; then
+    printf 'preflight: refusing -- replaying %s conflicts outside the changelog:\n%s' "$sha" "$others" >&2
+    return 2
+  fi
+  if [ "$picked" = 0 ] && [ -z "$(git diff --name-only --diff-filter=U)" ]; then
+    echo "preflight: refusing -- git could not replay $sha" >&2
+    return 2
+  fi
+  while IFS= read -r p; do
+    git cat-file -e "HEAD:$p" 2>/dev/null && git checkout -q HEAD -- "$p"
+  done < <(printf '%s\n' CHANGELOG.md; git ls-files 'docs/summary/*-INVENTORY.md')
+  # The replay is committed by the runbook, with its own message, so git's cherry-pick
+  # state is dropped here.
+  git cherry-pick --quit >/dev/null 2>&1 || true
+  return 0
+}
 
 pf_commit() {
   # $1 = git commit's edit flag ("-e" or ""), $2 = message file, $3.. = the commit's paths,

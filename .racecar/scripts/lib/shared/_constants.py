@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+# The one home of the dev group. The library template's group and PACKAGING.md §6 restate it,
+# and tests/test_dev_group_has_one_list.py holds both equal to it.
 CANON_DEV_TOOLS = [
     "black",
     "isort",
@@ -13,13 +15,16 @@ CANON_DEV_TOOLS = [
     "pylint==4.0.9",
     "pylint-pytest",
     "mypy",
-    "pytest",
+    # Below 9.2 until pylint-pytest catches up: 9.2 renamed a private it reads, and the
+    # test-profile pylint run racecar.mk makes dies on every test file.
+    "pytest<9.2",
     "pytest-cov",
     "pip-audit",
     "import-linter",
     "pre-commit",
     "validate-pyproject",
     "pyyaml",
+    "types-PyYAML",  # mypy stubs for pyyaml: the delivered scripts import yaml
     "pytest-xdist",  # parallel test workers; inert until PYTEST_ARGS enables -n (PACKAGING.md §6)
 ]
 
@@ -30,7 +35,7 @@ CANON_DEV_TOOLS = [
 # choice. Asserted only when the repo is Django.
 CANON_DJANGO_TOOLS = ["djhtml", "pylint-django"]
 
-CANON_REQUIRES_PYTHON = ">=3.12"
+CANON_REQUIRES_PYTHON = ">=3.12,<3.15"
 CANON_BLACK_TARGET = ["py312"]
 CANON_ISORT_PROFILE = "black"
 # >=77 is the PEP 639 floor: below it an SPDX `[project].license` is rejected and

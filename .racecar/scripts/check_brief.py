@@ -109,7 +109,7 @@ from dataclasses import dataclass, field
 from datetime import date as date_cls
 from hashlib import sha1, sha256
 from pathlib import Path
-from typing import Any, TypeGuard
+from typing import Any, NamedTuple, TypeGuard
 
 from lib.shared import _commits, _frontmatter, _markdown
 from lib.shared._constants import RELEASE_RE
@@ -1181,7 +1181,32 @@ def _first_doc_line(path: Path) -> str:
     return "(no leading comment)"
 
 
-def _lexicon_summary(repo_root: Path, member: str) -> str:
+class _Lexicon(NamedTuple):
+    """The delivered `lib.lexicon` module and the repo's lexicon it read, read once per render."""
+
+    module: Any
+    corpora: Any
+
+
+def _asks_lexicon(inventory: object) -> bool:
+    """Whether any declared kind has a `{lexicon: ...}` column."""
+    entries = inventory if isinstance(inventory, list) else []
+    return any(
+        isinstance(column, dict) and "lexicon" in column
+        for entry in entries
+        if isinstance(entry, dict) and isinstance(entry.get("columns"), list)
+        for column in entry["columns"]
+    )
+
+
+def _read_lexicon(repo_root: Path) -> _Lexicon:
+    """Read the repo's lexicon, once for a whole render, and hand it to every row."""
+    # Imported lazily: only a kind with a lexicon column needs the lexicon's import chain.
+    module = importlib.import_module("lib.lexicon")
+    return _Lexicon(module, module.lexicon_corpora(repo_root))
+
+
+def _lexicon_summary(lex: _Lexicon, repo_root: Path, member: str) -> str:
     """The `summary:` of the lexicon node for a `python -m <module> <verb>` member.
 
     The verb-to-node mapping is asked of the delivered `lib.lexicon`.
@@ -1189,9 +1214,7 @@ def _lexicon_summary(repo_root: Path, member: str) -> str:
     parts = member.split()
     if len(parts) != 4 or parts[:2] != ["python", "-m"]:
         return f"(not a `python -m <module> <verb>` member: {member})"
-    # Imported lazily: only a kind with a lexicon column needs the lexicon's import chain.
-    lexicon = importlib.import_module("lib.lexicon")
-    corpora = lexicon.lexicon_corpora(repo_root)
+    lexicon, corpora = lex
     if not corpora.entries:
         return f"(no lexicon at `{corpora.own.relative_to(repo_root).as_posix()}`)"
     module, verb = parts[2], parts[3]
@@ -1206,16 +1229,24 @@ def _lexicon_summary(repo_root: Path, member: str) -> str:
 
 
 def _cell(
-    spec: tuple[str, str], repo_root: Path, member: str, located: tuple[str, int]
+    spec: tuple[str, str],
+    repo_root: Path,
+    member: str,
+    located: tuple[str, int],
+    lexicon: _Lexicon | None,
 ) -> str:
-    """One column's value for one member, read from the home the column names."""
+    """One column's value for one member, read from the home the column names.
+
+    `lexicon` is the lexicon the render read; it is None only when no kind asks for it.
+    """
     source, name = spec
     path = repo_root / located[0]
     if source == "key":
         return _row_value(path, located[1], name)
     if source == "docstring":
         return _first_doc_line(path)
-    return _lexicon_summary(repo_root, member)
+    assert lexicon is not None, "a lexicon column implies render_inventory read it"
+    return _lexicon_summary(lexicon, repo_root, member)
 
 
 def _kind_columns(
@@ -1238,7 +1269,11 @@ def _source_globs(sources: list[object]) -> str:
 
 
 def _render_kind(
-    entry: dict[str, Any], repo_root: Path, where: str, f: Findings
+    entry: dict[str, Any],
+    repo_root: Path,
+    where: str,
+    f: Findings,
+    lexicon: _Lexicon | None = None,
 ) -> tuple[list[str], str] | None:
     """One kind's section and its `## Counts` row; None when the kind is declared-only."""
     kind = str(entry.get("kind")).strip()
@@ -1283,7 +1318,10 @@ def _render_kind(
         src_file, src_line = yielded[member]
         cells = [
             _cell_text(member),
-            *(_cell(spec, repo_root, member, (src_file, src_line)) for spec in columns),
+            *(
+                _cell(spec, repo_root, member, (src_file, src_line), lexicon)
+                for spec in columns
+            ),
             f"`{src_file}:{src_line}`",
         ]
         lines.append("| " + " | ".join(cells) + " |")
@@ -1354,13 +1392,14 @@ def render_inventory(
     declared_only: list[str] = []
     kinds: set[str] = set()
     inventory = data.get("inventory")
+    lexicon = _read_lexicon(repo_root) if _asks_lexicon(inventory) else None
     for i, entry in enumerate(inventory if isinstance(inventory, list) else []):
         where = f"inventory[{i}]"
         if not isinstance(entry, dict) or not str(entry.get("kind") or "").strip():
             f.error(f"frontmatter: {where} must be a mapping with a non-empty `kind`")
             continue
         kinds.add(str(entry["kind"]).strip())
-        rendered = _render_kind(entry, repo_root, where, f)
+        rendered = _render_kind(entry, repo_root, where, f, lexicon)
         if rendered is None:
             declared_only.append(
                 f"| {entry['kind']} | {_cell_text(entry.get('derivation'))} |"

@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "wicket"
 version = "0.23.0"
 description = "Portable, read-only mail tooling over IMAP: catalog a mailbox into a year-sharded manifest, fetch matching .eml by counterparty domain, and report over the manifest. Gmail today, Fastmail planned."
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.15"
 authors = [{ name = "Vishal Apte", email = "vishal@enine.com" }]
 license = "MIT"
 # Talks to mail providers over IMAP via stdlib `imaplib` + app passwords — no
@@ -27,7 +27,7 @@ dev = [
     "pylint==4.0.9",              # pinned: the version racecar lints its delivered files under
     "pylint-pytest",
     "mypy",
-    "pytest",
+    "pytest<9.2",                 # held below 9.2: pylint-pytest reads a private that 9.2 renamed
     "pytest-cov",
     "pytest-xdist",
     "pip-audit",

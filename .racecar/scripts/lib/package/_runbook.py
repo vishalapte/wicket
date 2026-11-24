@@ -14,6 +14,11 @@ plan's gate runs once. Only when all of it passes are the commits fetched back a
 branch moved by compare-and-swap, and your index and tree synced for the committed paths.
 A run lands the whole series or nothing, and can be re-run. `--dry-run` stops after the gate.
 
+A commit with `pick` takes its change from an existing commit instead of the worktree, so a
+series can replay a branch. A plan with `into` runs in the checkout that holds that branch,
+the main checkout for `main`, and moves it by `git merge --ff-only` once the trial passed:
+that is how a branch is folded into main (`/racecar-commit-main`).
+
 `package.py commit --plan plan.json` renders and runs a runbook; `Plan.from_dict` reads a
 plan. Imports nothing but the standard library.
 """
@@ -75,7 +80,14 @@ class Commit:
     under `## [Unreleased]` in the section `changelog_heading` names, by default the one
     its type maps to. Skipped when the same text is already there. With `assign_bump` it
     is written immediately before `--assign` promotes `[Unreleased]`, so a later commit's
-    entry is never promoted early."""
+    entry is never promoted early.
+
+    `pick`: a commit to replay. Its change is applied in the clone by
+    `git cherry-pick --no-commit` instead of being brought in from the worktree; every
+    changelog entry it added is written under `## [Unreleased]`, under its heading; the
+    brief inventory is regenerated; and the commit keeps the picked commit's author and
+    author date. `package.py commit` fills `message` and `files` from the picked commit when
+    the plan leaves them out."""
 
     message: str
     files: tuple[str, ...]
@@ -84,6 +96,7 @@ class Commit:
     breaking: bool = False
     changelog_bullet: str | None = None
     changelog_heading: str | None = None
+    pick: str | None = None
 
     @staticmethod
     def from_dict(d: dict[str, Any]) -> "Commit":
@@ -96,6 +109,7 @@ class Commit:
             breaking=bool(d.get("breaking", False)),
             changelog_bullet=d.get("changelog_bullet"),
             changelog_heading=d.get("changelog_heading"),
+            pick=d.get("pick"),
         )
 
 
@@ -112,7 +126,13 @@ class Plan:
 
     `cwd`, when set, is baked in as `cd '<cwd>'` instead of
     `cd "$(git rev-parse --show-toplevel)"`, so the script runs in its worktree wherever
-    it is invoked from."""
+    it is invoked from.
+
+    `into`, when set, names the branch the run lands on, and the script runs only in the
+    checkout that holds it, the main checkout included. It tags that branch's tip as
+    `rc-premerge/<stamp>/<branch>` first, stops when the branch's upstream is ahead after a
+    fetch, and lands by `git merge --ff-only`, never by moving the ref under the checkout.
+    """
 
     label: str
     head_sha: str
@@ -120,6 +140,7 @@ class Plan:
     branch: str | None = None
     cwd: str | None = None
     gate: str | None = "make check-full"
+    into: str | None = None
 
     def __post_init__(self) -> None:
         """Refuse a `head_sha` that is not 40 hex characters; the HEAD guard never matches it."""
@@ -139,6 +160,7 @@ class Plan:
             branch=d.get("branch"),
             cwd=d.get("cwd"),
             gate=d.get("gate", "make check-full"),
+            into=d.get("into"),
         )
 
 
@@ -298,6 +320,55 @@ read_version() {
 """
 
 
+#: Emitted only into a runbook that replays a commit (`pick`), so every other runbook
+#: renders exactly as it did before replays existed.
+_PICK_HELPERS = """
+add_picked_entries() {
+  # $1 = changelog path, $2 = the commit being replayed. Every entry that commit added to the
+  # changelog, written into "## [Unreleased]" under the heading it sat under there, through
+  # add_unreleased. Read from the commit's own diff, so a replay needs no entry in the plan;
+  # the clone's changelog was put back to HEAD by pf_pick, so nothing lands twice.
+  local changelog="$1" sha="$2" heading file
+  while IFS=$'\\t' read -r heading file; do
+    add_unreleased "$changelog" "$heading" "$file"
+  done < <("$PY" - "$changelog" "$sha" "$TMP_DIR" <<'PYEOF'
+import pathlib, subprocess, sys
+changelog, sha, tmp = sys.argv[1], sys.argv[2], sys.argv[3]
+diff = subprocess.run(
+    ["git", "diff", "-U100000", "--no-renames", f"{sha}^", sha, "--", changelog],
+    capture_output=True, text=True, check=True,
+).stdout.splitlines()
+heading, entries, current, body = "Changed", [], None, False
+for line in diff:
+    if line.startswith("@@"):
+        body = True
+        continue
+    if not body or line.startswith("\\\\"):
+        continue
+    tag, text = line[:1], line[1:]
+    if tag == "-":
+        continue
+    if text.startswith("### "):
+        heading, current = text[4:].strip(), None
+    elif text.startswith("#"):
+        current = None
+    elif tag == "+" and text.startswith("- "):
+        current = [heading, text]
+        entries.append(current)
+    elif tag == "+" and current is not None and text.strip():
+        current[1] += "\\n" + text
+    else:
+        current = None
+for i, (head, bullet) in enumerate(entries):
+    path = pathlib.Path(tmp) / f"picked-{sha[:12]}-{i}.md"
+    path.write_text(bullet + "\\n", encoding="utf-8")
+    print(f"{head}\\t{path}")
+PYEOF
+)
+}
+"""
+
+
 #: Keep a Changelog section by conventional type; anything unlisted is a change.
 _HEADINGS = {"feat": "Added", "fix": "Fixed", "perf": "Fixed", "docs": "Documentation"}
 
@@ -332,9 +403,24 @@ def _commit_block(index: int, total: int, commit: Commit) -> str:
         f"{files_var}=(",
         files_list,
         ")",
-        # Your edits to this commit's paths, brought into the clone (commit_preflight.sh).
-        f'pf_apply "$ROOT" "$EXPECTED" "${{{files_var}[@]}}"',
     ]
+    if commit.pick is None:
+        # Your edits to this commit's paths, brought into the clone (commit_preflight.sh).
+        lines.append(f'pf_apply "$ROOT" "$EXPECTED" "${{{files_var}[@]}}"')
+    else:
+        pick_var = f"PICK_{n}"
+        lines += [
+            f"{pick_var}={_sh_str(commit.pick)}",
+            # The picked commit's change; its changelog and inventory go back to HEAD.
+            f'pf_pick "${pick_var}"',
+            f'add_picked_entries CHANGELOG.md "${pick_var}"',
+            *([] if "CHANGELOG.md" in staged else [f'{files_var}+=("CHANGELOG.md")']),
+            # Recomputed for the tree the replay produced, as a bump would.
+            "while IFS= read -r inv; do",
+            f'  regen_inventory "$inv" "${{{files_var}[@]}}"',
+            f'  {files_var}+=("$inv")',
+            "done < <(git ls-files 'docs/summary/*-INVENTORY.md')",
+        ]
     if commit.changelog_bullet is not None:
         bullet_var = f"BULLET_{n}"
         lines += [
@@ -393,7 +479,15 @@ def _commit_block(index: int, total: int, commit: Commit) -> str:
         f'stage_only "[{n}/{total}]" "${{{files_var}[@]}}"',
         # The commit, in the clone: every hook runs on it, and a hook's autofix is
         # re-staged and the commit retried, to a fixpoint (commit_preflight.sh).
-        f'pf_commit "$EDIT" "${msg_var}" "${{{files_var}[@]}}"',
+        (
+            f'pf_commit "$EDIT" "${msg_var}" "${{{files_var}[@]}}"'
+            if commit.pick is None
+            # The replayed commit keeps its author and author date; the committer is this run.
+            else f'GIT_AUTHOR_NAME="$(git log -1 --format=%an "$PICK_{n}")" '
+            f'GIT_AUTHOR_EMAIL="$(git log -1 --format=%ae "$PICK_{n}")" '
+            f'GIT_AUTHOR_DATE="$(git log -1 --format=%aI "$PICK_{n}")" '
+            f'pf_commit "$EDIT" "${msg_var}" "${{{files_var}[@]}}"'
+        ),
     ]
     return "\n".join(lines)
 
@@ -431,18 +525,31 @@ def render(plan: Plan) -> str:
             f'{plan.branch}" >&2; exit 1; }}',
         ]
     try_branch = "rc-try/" + re.sub(r"[^A-Za-z0-9._-]", "-", plan.label)
+    header += [""]
+    if plan.into is None:
+        header += [
+            "# A runbook lands on the branch of the worktree it runs in, "
+            "never in the main checkout:",
+            "# the main branch moves only by a fast-forward of that branch, afterwards.",
+            'if [ "$(git rev-parse --path-format=absolute --git-dir)" = '
+            '"$(git rev-parse --path-format=absolute --git-common-dir)" ]; then',
+            '  echo "$LABEL: refusing -- run this from a git worktree, not the main checkout" >&2',
+            "  exit 2",
+            "fi",
+        ]
     header += [
-        "",
-        "# A runbook lands on the branch of the worktree it runs in, never in the main checkout:",
-        "# the main branch moves only by a fast-forward of that branch, afterwards.",
-        'if [ "$(git rev-parse --path-format=absolute --git-dir)" = '
-        '"$(git rev-parse --path-format=absolute --git-common-dir)" ]; then',
-        '  echo "$LABEL: refusing -- run this from a git worktree, not the main checkout" >&2',
-        "  exit 2",
-        "fi",
         'ORIG="$(git symbolic-ref --short --quiet HEAD)" || '
         '{ echo "$LABEL: refusing -- HEAD is detached; check out the branch to land on" >&2;'
         " exit 1; }",
+    ]
+    if plan.into is not None:
+        header += [
+            "# A fold runs only in the checkout that holds the branch it lands on.",
+            f'[ "$ORIG" = {_sh_str(plan.into)} ] || '
+            f'{{ echo "$LABEL: refusing -- this checkout is on $ORIG, not {plan.into}" >&2;'
+            " exit 1; }",
+        ]
+    header += [
         f"TRY={_sh_str(try_branch)}",
         'if git rev-parse --verify --quiet "refs/heads/$TRY" >/dev/null; then',
         '  echo "$LABEL: refusing -- $TRY exists from an earlier run; delete it with'
@@ -458,6 +565,31 @@ def render(plan: Plan) -> str:
         '  case "$arg" in --no-edit) EDIT= ;; --dry-run) DRY=1 ;; esac',
         "done",
         "",
+    ]
+    if plan.into is not None:
+        header += [
+            "# A branch its upstream has moved past cannot be pushed after the fold without a",
+            "# rebase or a merge commit, so the fold stops before it tries anything. A remote",
+            "# that cannot be fetched is a stop too: the check could not run.",
+            "if ! git fetch -q --all --prune; then",
+            '  echo "$LABEL: refusing -- could not fetch; is origin ahead? unknown" >&2',
+            "  exit 1",
+            "fi",
+            'if git rev-parse -q --verify "$ORIG@{u}" >/dev/null; then',
+            '  if ! git merge-base --is-ancestor "$ORIG@{u}" "$EXPECTED"; then',
+            '    echo "$LABEL: refusing -- $ORIG@{u} is ahead of $ORIG; bring it in first" >&2',
+            "    exit 1",
+            "  fi",
+            "fi",
+            "# The tip before the fold, kept: `git reset --hard <tag>` undoes a landed fold.",
+            'if [ "$DRY" != 1 ]; then',
+            '  BACKUP="rc-premerge/$(date -u +%Y%m%dT%H%M%SZ)/$ORIG"',
+            '  git tag "$BACKUP" "$EXPECTED" || echo "$LABEL: $BACKUP exists; keeping it"',
+            '  echo "$LABEL: backup tag $BACKUP; undo a landed fold with git reset --hard $BACKUP"',
+            "fi",
+            "",
+        ]
+    header += [
         "# The interpreter and tool directory racecar.mk picks (arch-python/MAKEFILE.md).",
         'PY=$(make -s print-RC_PYTHON 2>/dev/null || true); [ -n "$PY" ] || PY=python3',
         "BIN=$(make -s print-RC_BIN 2>/dev/null || true)",
@@ -488,6 +620,7 @@ def render(plan: Plan) -> str:
         "# shellcheck source=/dev/null",
         'source "$RC/commit_preflight.sh"',
         _HELPERS.strip("\n"),
+        *([_PICK_HELPERS.strip("\n")] if any(c.pick for c in plan.commits) else []),
         "",
         "LANDED=0",
         "KEEP=0",
@@ -530,6 +663,33 @@ def render(plan: Plan) -> str:
         'if [ "$DRY" = 1 ]; then',
         "  exit 0",
         "fi",
+    ]
+    if plan.into is not None:
+        footer += [
+            "# Land: bring back the commits every hook and the gate just passed, and fast-forward",
+            "# $ORIG to them in this checkout. --ff-only refuses when the checkout's tree would be",
+            "# overwritten, and the HEAD test refuses when $ORIG moved during the run; either way",
+            "# nothing lands and the tried commits are KEPT on $TRY.",
+            'TIP="$(git -C "$PF_CLONE" rev-parse HEAD)"',
+            'if ! git -C "$ROOT" fetch -q "$PF_CLONE" "refs/heads/$TRY"; then',
+            '  echo "$LABEL: could not bring the tried commits back from the clone" >&2',
+            "  exit 1",
+            "fi",
+            'if [ "$(git -C "$ROOT" rev-parse HEAD)" != "$EXPECTED" ] || '
+            '! git -C "$ROOT" merge --ff-only -q "$TIP"; then',
+            "  KEEP=1",
+            '  git -C "$ROOT" branch -f "$TRY" "$TIP" || true',
+            '  echo "$LABEL: $ORIG moved during the run, or the fast-forward would overwrite your'
+            ' tree, so nothing landed. The tried commits are on $TRY." >&2',
+            "  exit 1",
+            "fi",
+            "LANDED=1",
+            f'echo "$LABEL: all {n} commit(s) folded into $ORIG.'
+            ' This script does NOT push -- that stays your call."',
+            f'git -C "$ROOT" log -{n} --oneline || true',
+        ]
+        return "\n".join(header + body + footer) + "\n"
+    footer += [
         "# Land: bring back the commits every hook and the gate just passed -- fetched from the",
         "# clone, never made again -- and move $ORIG to them only if it is still at $EXPECTED.",
         "# `update-ref` with an old value is a compare-and-swap, so a commit someone else made",

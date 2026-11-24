@@ -13,6 +13,10 @@ owner's permission prompt (OWNERSHIP.md). `--dry-run` runs the whole trial and l
 The repo facts a runbook guards on (HEAD, the branch, the root) are read here; a plan that
 names them is refused, so a stale copy cannot get in.
 
+A plan commit with `pick: <sha>` replays that commit; its `message` and `files` default to
+the picked commit's. A plan with `into: <branch>` is a fold: it is built only in the
+checkout that has `<branch>` checked out, the main checkout for `main`.
+
 Exit: the runbook's own code; 2 for a plan or staged set the runbook cannot be built from.
 
 Complexity: O(1) plus the runbook's run
@@ -67,6 +71,26 @@ def _staged(root: Path, message: str) -> dict[str, Any]:
     return {"commits": [{"message": message, "files": files}]}
 
 
+def _picked(root: Path, commit: dict[str, Any]) -> dict[str, Any]:
+    """`commit` with `pick` resolved to a full sha, and its message and files filled from it.
+
+    A plan that states `message` or `files` keeps them; a pick git cannot resolve is refused.
+    """
+    if "pick" not in commit:
+        return commit
+    try:
+        sha = _git(
+            root, "rev-parse", "--verify", "--quiet", f"{commit['pick']}^{{commit}}"
+        )
+    except PackageError:
+        sha = []
+    if not sha:
+        raise PackageError(f"commit: pick {commit['pick']!r} is not a commit")
+    message = "\n".join(_git(root, "log", "-1", "--format=%B", sha[0])).strip() + "\n"
+    files = _git(root, "diff", "--name-only", "--no-renames", f"{sha[0]}^", sha[0])
+    return {"message": message, "files": files, **commit, "pick": sha[0]}
+
+
 def runbook(root: Path, plan: dict[str, Any]) -> dict[str, object]:
     """Render `plan`'s runbook against the repo at `root`: `{label, branch, head_sha,
     commits, runbook}`. Reads HEAD and the branch itself; never runs anything."""
@@ -78,6 +102,12 @@ def runbook(root: Path, plan: dict[str, Any]) -> dict[str, object]:
     branch = _git(root, "symbolic-ref", "--short", "-q", "HEAD")
     if not branch:
         raise PackageError("commit: HEAD is detached; check out the branch to land on")
+    if plan.get("into") is not None and plan["into"] != branch[0]:
+        raise PackageError(
+            f"commit: the plan folds into {plan['into']}, but this checkout is on "
+            f"{branch[0]}; run it in the checkout that holds {plan['into']}"
+        )
+    plan = {**plan, "commits": [_picked(root, c) for c in plan.get("commits", [])]}
     facts = {
         "head_sha": _git(root, "rev-parse", "HEAD")[0],
         "branch": branch[0],

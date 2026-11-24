@@ -425,6 +425,30 @@ def package_source(rel: str) -> Path:
     return _PACKAGE_SOURCES.get(rel, TEMPLATE / "package" / rel)
 
 
+#: The package files copied in verbatim and never edited (arch-python/CLI.md §1), and the
+#: file each is a copy of.
+VERBATIM: dict[str, Path] = {
+    "lib/cli.py": TEMPLATE / "package" / "lib" / "cli.py",
+    **_PACKAGE_SOURCES,
+}
+
+
+def stale_copies(pkg: Path) -> list[tuple[Path, Path]]:
+    """Each verbatim copy in `pkg` whose code is not its source's, as `(copy, source)`.
+
+    Compared as syntax trees: `create` formats what it writes with the repo's own isort and
+    black, and that is no difference. An absent or unparseable copy is a `Break`, not this.
+    """
+    out = []
+    for rel, source in VERBATIM.items():
+        copy, original = _tree(pkg / rel), _tree(source)
+        if copy is None or original is None:
+            continue
+        if ast.dump(copy) != ast.dump(original):
+            out.append((pkg / rel, source))
+    return out
+
+
 def copy_error_package(pkg: Path) -> list[Path]:
     """Write each `lib/error/` module `pkg` lacks, byte for byte; never overwrite one.
 
@@ -635,8 +659,27 @@ def _output_breaks(n: Noun) -> list[Break]:
     return breaks
 
 
+def _is_verb_leaf(main: ast.Module | None) -> bool:
+    """A verb leaf (arch-python/CLI.md §8): one action, run by flags, with no verbs beneath
+    it. Its `__main__.py` lists no children, defines no `subcommands()`, and has a
+    `parser()` that adds no verb and a `main()`. It is not the noun-with-verbs form this
+    module builds, and `check_cli_commands.py` grades it, as Pattern 3."""
+    if main is None or _funcs(main, "subcommands") is not None:
+        return False
+    parser, commands = _funcs(main, "parser"), _literal(main, "commands")
+    return (
+        parser is not None
+        and _funcs(main, "main") is not None
+        and isinstance(commands, ast.List)
+        and not commands.elts
+        and not _parser_verbs(parser)
+        and not _calls(parser, "add_subparsers")
+    )
+
+
 def noun_state(n: Noun) -> tuple[str, list[Break]]:
-    """`("fresh", [])`, `("conforms", [])` or `("breaks", [each break])` for one noun.
+    """`("fresh", [])`, `("conforms", [])`, `("leaf", [])` or `("breaks", [each break])`
+    for one noun.
 
     Conforming is the canonical form read off the code, with nothing written into it to be
     recognised by: every file present, `VERBS` a literal, `subcommands()` a literal list,
@@ -644,6 +687,9 @@ def noun_state(n: Noun) -> tuple[str, list[Break]]:
     `set_defaults(func=_cmd_<verb>)`, `main(argv)`, one `_cmd_<verb>` and one
     `print_<verb>` per verb, the test's `SAMPLES` a literal, all four verb lists equal,
     and no module of the noun outside `lib/renderer/` writing output itself.
+
+    A verb leaf is the other shape CLI.md allows a noun's node, and it is not graded
+    against this one: it is `leaf`, never `breaks`.
     """
     wanted = [
         (n.main if rel == "__main__.py" else n.dir / rel, names)
@@ -655,6 +701,8 @@ def noun_state(n: Noun) -> tuple[str, list[Break]]:
         path.exists() for path, _ in wanted[:3] if path != n.main or not n.is_root
     ):
         return "fresh", []
+    if not n.is_root and _is_verb_leaf(_tree(n.main)):
+        return "leaf", []
     breaks = [b for path, names in wanted for b in _file_breaks(path, names)]
     breaks += _file_breaks(n.test, (), absent="test-absent")
     breaks += _output_breaks(n)

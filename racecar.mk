@@ -217,6 +217,13 @@ TEST_LEG ?= test
 # `make sync racecar-sync racecar-upgrade RACECAR_ROOT=/path/to/racecar` if racecar is not installed as a skill.
 RACECAR_ROOT ?= $(shell readlink "$(HOME)/.claude/skills/racecar" 2>/dev/null)
 
+# The Python that runs racecar's own code from RACECAR_ROOT/src: racecar's venv, picked as
+# RC_VENV is (the first of .venv, venv, ../venv), when its Python runs, else RC_PYTHON.
+# racecar's code needs what racecar's venv holds, PyYAML among it; under a repo with no venv
+# RC_PYTHON is the bare python3, and `racecar-sync` crashed there partway through. The venv's
+# own `bin/python` is used, never the file it links to, which would run outside the venv.
+_RC_RACECAR_PYTHON = $(or $(firstword $(foreach v,.venv venv ../venv,$(if $(realpath $(RACECAR_ROOT)/$(v)/bin/python),$(RACECAR_ROOT)/$(v)/bin/python))),$(RC_PYTHON))
+
 # Where the delivered check scripts live. `scripts/` in every adopter, because that is where
 # `make racecar-sync` vendors them -- so this default makes the recipes below identical to what they
 # have always been.
@@ -280,28 +287,34 @@ print-%:
 # `make venv` makes the venv's pip run, since pip is what every install needs. A working
 # venv is left alone. Where Python runs and only pip is missing (a `uv venv`, a run
 # interrupted before pip was installed), ensurepip adds pip and keeps what is installed.
-# Where Python does not run (an empty directory, a removed Python), the venv is rebuilt;
-# --clear only where pyvenv.cfg says the directory is already a venv.
 #
-# RC_PYTHON_VERSION pins the minor version the venv runs (`3.14`). Unset, the recipe is the
-# one above. Set, the interpreter is asked its version FIRST, before pip and ensurepip, since
-# a venv whose links followed a moved `python3` still runs and ensurepip would keep it; a
-# venv on another minor version, or whose Python does not run, is rebuilt by
-# python$(RC_PYTHON_VERSION). That builder is looked up on PATH without the venv's own bin,
-# which holds a `python$(RC_PYTHON_VERSION)` link that may run the version being replaced.
-RC_PYTHON_VERSION ?=
+# The venv's Python must satisfy the library's `requires-python` (racecar's canon is
+# CANON_REQUIRES_PYTHON in scripts/lib/shared/_constants.py) and still be the minor version
+# `pyvenv.cfg` recorded when the venv was built. A venv
+# built through a link that moves, such as a version manager's `latest`, still runs after the
+# link moves, now as another minor version that reads another site-packages: every package is
+# gone and pip still runs, so the version is asked FIRST. A venv that fails either test, or
+# whose Python does not run, is rebuilt (--clear only where pyvenv.cfg says the directory is
+# already a venv) with `python3` when it satisfies the range, else the newest `python3.N` that
+# does. Builders are looked up on PATH without the venv's own bin, whose links may run the
+# version being replaced. Only `>=` and `<` on 3.N are read.
+_RC_REQUIRES_PYTHON = $(shell sed -n "/^\[project\]/,/^\[/{s/^requires-python *= *[\"']\([^\"']*\)[\"'].*/\1/p;}" $(LIB_PYPROJECT) 2>/dev/null | head -n 1)
+_RC_PY_MIN = $(shell printf '%s' '$(_RC_REQUIRES_PYTHON)' | sed -n 's/.*>= *3\.\([0-9][0-9]*\).*/\1/p')
+_RC_PY_MAX = $(shell printf '%s' '$(_RC_REQUIRES_PYTHON)' | sed -n 's/.*< *3\.\([0-9][0-9]*\).*/\1/p')
 venv: ## Create the venv (RC_VENV, default .venv) if its pip does not run
-ifeq ($(RC_PYTHON_VERSION),)
-	@$(RC_PIP) --version >/dev/null 2>&1 \
-	  || $(RC_VENV)/bin/python -m ensurepip >/dev/null 2>&1 \
-	  || { echo "venv: building $(RC_VENV)"; python3 -m venv $(if $(wildcard $(RC_VENV)/pyvenv.cfg),--clear) $(RC_VENV); }
-else
-	@$(RC_VENV)/bin/python -c 'import sys; sys.exit("%d.%d" % sys.version_info[:2] != "$(RC_PYTHON_VERSION)")' 2>/dev/null \
-	  && { $(RC_PIP) --version >/dev/null 2>&1 || $(RC_VENV)/bin/python -m ensurepip >/dev/null 2>&1; } \
-	  || { echo "venv: building $(RC_VENV) with python$(RC_PYTHON_VERSION)"; \
-	       p=; IFS=:; for d in $$PATH; do [ "$$d" -ef "$(RC_VENV)/bin" ] || p="$${p:+$$p:}$$d"; done; unset IFS; \
-	       env PATH="$$p" python$(RC_PYTHON_VERSION) -m venv $(if $(wildcard $(RC_VENV)/pyvenv.cfg),--clear) $(RC_VENV); }
-endif
+	@lo='$(_RC_PY_MIN)'; hi='$(_RC_PY_MAX)'; \
+	p=; IFS=:; for d in $$PATH; do [ "$$d" -ef "$(RC_VENV)/bin" ] || p="$${p:+$$p:}$$d"; done; unset IFS; \
+	minor() { env PATH="$$p" "$$1" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null; }; \
+	fits() { m=$${1#3.}; [ -n "$$1" ] && [ "$$1" != "$$m" ] && { [ -z "$$lo" ] || [ "$$m" -ge "$$lo" ]; } && { [ -z "$$hi" ] || [ "$$m" -lt "$$hi" ]; }; }; \
+	have=$$(minor $(RC_VENV)/bin/python); \
+	built=$$(sed -n 's/^version\(_info\)\{0,1\} *= *\([0-9]*\.[0-9]*\).*/\2/p' $(RC_VENV)/pyvenv.cfg 2>/dev/null | head -n 1); \
+	if fits "$$have" && { [ -z "$$built" ] || [ "$$have" = "$$built" ]; } \
+	  && { $(RC_PIP) --version >/dev/null 2>&1 || $(RC_VENV)/bin/python -m ensurepip >/dev/null 2>&1; }; then exit 0; fi; \
+	py=; for c in python3 $$(n=$$(($${hi:-21} - 1)); while [ "$$n" -ge "$${lo:-8}" ]; do echo python3.$$n; n=$$((n - 1)); done); do \
+	  v=$$(minor "$$c") && fits "$$v" && { py=$$c; break; }; done; \
+	[ -n "$$py" ] || { echo "venv: no Python on PATH satisfies requires-python '$(_RC_REQUIRES_PYTHON)'; install one" >&2; exit 1; }; \
+	echo "venv: building $(RC_VENV) with $$py ($$v)"; \
+	env PATH="$$p" "$$py" -m venv $(if $(wildcard $(RC_VENV)/pyvenv.cfg),--clear) $(RC_VENV)
 
 install: venv system-deps ## Bootstrap: editable library install + system deps
 	$(RC_PIP) install -q --upgrade 'pip>=25.1'
@@ -1034,7 +1047,7 @@ endif
 # `make racecar-upgrade`.
 check-overrides: ## Assert the repo has not overridden racecar (pyproject + racecar.mk)
 	@if [ -n "$(RACECAR_ROOT)" ]; then \
-	  PYTHONPATH="$(RACECAR_ROOT)/src" $(RC_PYTHON) -m racecar.root.lib.upgrade._overrides --root .; \
+	  PYTHONPATH="$(RACECAR_ROOT)/src" $(_RC_RACECAR_PYTHON) -m racecar.root.lib.upgrade._overrides --root .; \
 	else \
 	  echo "check-overrides: skipping (RACECAR_ROOT unset; install racecar as a skill or pass RACECAR_ROOT=/path/to/racecar)"; \
 	fi
@@ -1169,7 +1182,7 @@ racecar-sync: ## Pull racecar's canon into this repo (racecar.mk + the check scr
 	@if $(RC_PYTHON) -c "import racecar" >/dev/null 2>&1; then \
 	  $(RC_PYTHON) -m racecar sync --dest .; \
 	elif [ -n "$(RACECAR_ROOT)" ]; then \
-	  PYTHONPATH="$(RACECAR_ROOT)/src" $(RC_PYTHON) -m racecar sync --dest .; \
+	  PYTHONPATH="$(RACECAR_ROOT)/src" $(_RC_RACECAR_PYTHON) -m racecar sync --dest .; \
 	else \
 	  echo "racecar not importable and RACECAR_ROOT unset -- pip install racecar, or pass RACECAR_ROOT=/path/to/racecar"; exit 1; \
 	fi
@@ -1188,7 +1201,7 @@ racecar-upgrade: ## Report this repo's mechanical divergence from current raceca
 	@if $(RC_PYTHON) -c "import racecar" >/dev/null 2>&1; then \
 	  $(RC_PYTHON) -m racecar --root . upgrade; \
 	elif [ -n "$(RACECAR_ROOT)" ]; then \
-	  PYTHONPATH="$(RACECAR_ROOT)/src" $(RC_PYTHON) -m racecar --root . upgrade; \
+	  PYTHONPATH="$(RACECAR_ROOT)/src" $(_RC_RACECAR_PYTHON) -m racecar --root . upgrade; \
 	else \
 	  echo "racecar not importable and RACECAR_ROOT unset -- pip install racecar, or pass RACECAR_ROOT=/path/to/racecar"; exit 1; \
 	fi

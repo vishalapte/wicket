@@ -8,7 +8,7 @@
 #     <pkg> <noun> [<noun> ...]     a noun's listing
 #     <pkg> <noun> <verb> [args]    a noun's verb; --help at any level
 #
-# The two lines below are the only ones `--install` fills in. Everything else is read at run
+# The two lines below are the only ones `install_cli.py` fills in. Everything else is read at run
 # time from the repo itself: a leading word is a noun when `<pkg>/<noun>/__main__.py` exists,
 # which is how `python -m` finds a module, and the verbs are that module's own argparse.
 #

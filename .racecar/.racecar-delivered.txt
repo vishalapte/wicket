@@ -17,6 +17,7 @@
 .racecar/docs/lexicon/topology/README.md
 .racecar/docs/lexicon/topology/noun.md
 .racecar/docs/lexicon/topology/verb.md
+.racecar/install
 .racecar/scripts/bump_version.py
 .racecar/scripts/check_brief.py
 .racecar/scripts/check_changelog.py
@@ -49,6 +50,7 @@
 .racecar/scripts/identifiers.py
 .racecar/scripts/install_cli.py
 .racecar/scripts/install_cron.sh
+.racecar/scripts/install_settings.py
 .racecar/scripts/lexicon.py
 .racecar/scripts/lib/__init__.py
 .racecar/scripts/lib/graph/__init__.py

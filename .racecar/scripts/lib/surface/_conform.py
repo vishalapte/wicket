@@ -51,6 +51,7 @@ from ._form import (
     package_of,
     package_source,
     package_state,
+    stale_copies,
 )
 from ._invocations import KEY, absent
 
@@ -127,9 +128,11 @@ ITEM_KINDS = frozenset(
         "build-verb",
         "build-verb-waits",
         "verb-undeclared",
+        "leaf-verbs",
         "kind-undeclared",
         "invocation-absent",
         "transcript-differs",
+        "copy-differs",
         "row-add",
         "row-waits",
         "row-not-literal",
@@ -274,6 +277,31 @@ def _package_items(root: Path, package: str) -> list[Item]:
     return items
 
 
+def _shown(root: Path, path: Path) -> Path:
+    """`path` as the repo's own tree names it (`.racecar/...`), else as it is."""
+    try:
+        return path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return path
+
+
+def _copy_items(root: Path, package: str) -> list[Item]:
+    """A file copied into the package verbatim (`lib/cli.py`, `lib/error/`) that is not
+    its source: an older copy, or one edited in place. `upgrade` writes only an absent
+    file, so nothing else ever moves a copy. Judgment, never a mechanical change: nouns
+    built against an older copy can depend on what it had."""
+    items = []
+    for copy, source in stale_copies(package_root(root) / package):
+        shown = _shown(root, source)
+        finding = f"{copy}: is not {shown}, the file it is a verbatim copy of"
+        text = (
+            f"replace {copy} with {shown}, then fix what used the old copy; a change "
+            "wanted in it is a change to racecar"
+        )
+        items.append(Item("copy-differs", finding, text, None))
+    return items
+
+
 def _blocked(root: Path, package: str, name: str, package_ok: bool) -> str | None:
     """Why `create` would refuse to write into `name` now, or None when it would write.
 
@@ -286,8 +314,11 @@ def _blocked(root: Path, package: str, name: str, package_ok: bool) -> str | Non
     parts = name.split(".")
     for depth in range(1, len(parts)):
         above = ".".join(parts[:depth])
-        if noun_state(noun_of(root, package, above))[0] == "breaks":
+        state = noun_state(noun_of(root, package, above))[0]
+        if state == "breaks":
             return f"{above}, above it, does not conform"
+        if state == "leaf":
+            return f"{above}, above it, is a verb leaf and takes nothing beneath it"
     return None
 
 
@@ -349,6 +380,21 @@ def _broken_noun_items(
     return items
 
 
+def _leaf_items(name: str, meta: dict[str, Any]) -> list[Item]:
+    """A verb leaf runs one action (CLI.md §8); `check_cli_commands` grades the rest of it."""
+    if len(meta["verbs"]) <= 1:
+        return []
+    finding = (
+        f"noun {name}: a verb leaf, which runs one action, but the lexicon "
+        f"declares {len(meta['verbs'])} verbs"
+    )
+    text = (
+        f"make {name} a noun with verbs by hand, or declare one verb "
+        "(arch-python/CLI.md §8: one action is a verb leaf, more is a noun with verbs)"
+    )
+    return [Item("leaf-verbs", finding, text, None)]
+
+
 def _noun_items(
     root: Path,
     package: str,
@@ -372,6 +418,8 @@ def _noun_items(
             return [Item("kind-undeclared", finding, _kind_text(name, owed), None)]
         text = f"build noun {name} with verbs {', '.join(sorted(meta['verbs']))}"
         return [Item("build-noun", finding, text, _create(root, name))]
+    if state == "leaf":
+        return _leaf_items(name, meta)
     if state == "breaks":
         return _broken_noun_items(root, package, n, breaks, wanted)
     items: list[Item] = []
@@ -474,7 +522,9 @@ def plan(
     state = package_state(root, package)[0]
     # A fresh package is not a difference by itself: building its first noun renders it, and
     # a package whose lexicon declares no noun with verbs owes no cli at all.
-    items = [] if state == "fresh" else _package_items(root, package)
+    items: list[Item] = []
+    if state != "fresh":
+        items = _package_items(root, package) + _copy_items(root, package)
     package_ok = state != "breaks"
     for name, meta in nouns.items():
         if noun is not None and name != noun:

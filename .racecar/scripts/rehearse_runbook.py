@@ -73,7 +73,19 @@ NAME = "rehearse_runbook"
 _GIT_WRITES = re.compile(
     r"\bgit\s+(?:-\S+\s+)*"
     r"(commit|push|merge|rebase|cherry-pick|revert|am|tag|update-ref|"
-    r"filter-branch|fetch|pull|gc|prune|clean)\b"
+    r"filter-branch|fetch|pull|gc|prune|clean|switch|checkout|restore)\b"
+)
+# The verbs that write only in some forms: `git branch <name>` creates and `-d` deletes,
+# while `git branch --show-current` reads; `git worktree list` and `git stash list` read.
+_GIT_FORM_WRITES = re.compile(
+    r"\bgit\s+(?:-\S+\s+)*("
+    r"branch(?![^;&|)\n]*\s(?:-l|--list|-a|--all|-r|--remotes|--show-current|--contains|"
+    r"--no-contains|--merged|--no-merged|--points-at|--format)\b)"
+    r"\s+(?:-[A-Za-z]*[dDmMcCf]\b|--(?:delete|move|copy|force|set-upstream-to|"
+    r"unset-upstream)\b|[^-\s;&|)])"
+    r"|worktree\s+(?:add|remove|move|prune|repair|lock|unlock)\b"
+    r"|stash(?:\s+(?:push|pop|apply|drop|clear|save|store|create)\b|\s*(?:$|[;&|)]))"
+    r")"
 )
 _GH_WRITES = re.compile(
     r"\bgh\s+(?:-\S+\s+)*\S+\s+(create|merge|close|edit|delete|comment|reopen|ready)\b"
@@ -156,9 +168,43 @@ _targets_guarded() {
     [ "$top" = "$RC_REHEARSE_GUARDED" ]
 }
 
+# The words after the verb, for the verbs that write only in some forms.
+rest=()
+seen=0
+for arg in "$@"; do
+    if [ "$seen" = 1 ]; then rest+=("$arg"); elif [ "$arg" = "$verb" ]; then seen=1; fi
+done
+sub="${rest[0]:-}"
+
 case "$verb" in
-    commit|push|merge|rebase|cherry-pick|revert|am|tag|update-ref|filter-branch|fetch|pull|gc|prune|clean)
+    commit|push|merge|rebase|cherry-pick|revert|am|tag|update-ref|filter-branch|fetch|pull|gc|prune|clean|switch|checkout|restore)
         _targets_guarded && _withhold "git $verb" ;;
+    branch)
+        # A listing flag makes every other word a pattern or a commit to read.
+        reads=0
+        for arg in "${rest[@]}"; do
+            case "$arg" in
+                -l|--list|-a|--all|-r|--remotes|--show-current|--contains|--no-contains|--merged|--no-merged|--points-at|--format*) reads=1 ;;
+            esac
+        done
+        [ "$reads" = 1 ] || for arg in "${rest[@]}"; do
+            case "$arg" in
+                --delete|--move|--copy|--force|--set-upstream-to*|--unset-upstream)
+                    _targets_guarded && _withhold "git branch $arg" ;;
+                --*) ;;
+                -*[dDmMcCf]*) _targets_guarded && _withhold "git branch $arg" ;;
+                -*) ;;
+                *) _targets_guarded && _withhold "git branch $arg" ;;
+            esac
+        done ;;
+    worktree)
+        case "$sub" in
+            add|remove|move|prune|repair|lock|unlock) _targets_guarded && _withhold "git worktree $sub" ;;
+        esac ;;
+    stash)
+        case "$sub" in
+            ""|push|pop|apply|drop|clear|save|store|create) _targets_guarded && _withhold "git stash $sub" ;;
+        esac ;;
     reset)
         for arg in "$@"; do
             if [ "$arg" = "--hard" ]; then
@@ -228,6 +274,12 @@ def writes_history(code: str) -> str | None:
     found = _GIT_WRITES.search(text)
     if found:
         return f"git {found.group(1)}"
+    found = _GIT_FORM_WRITES.search(text)
+    if found:
+        verb, *form = found.group(1).split()
+        # `git branch <name>` matched one character of the name; name the verb alone.
+        named = form and not (verb == "branch" and not form[0].startswith("-"))
+        return f"git {verb} {form[0]}" if named else f"git {verb}"
     found = _GH_WRITES.search(text)
     if found:
         return f"gh {found.group(1)}"
@@ -379,6 +431,20 @@ def _run(
     )
 
 
+def _state(where: Path) -> tuple[str | None, ...]:
+    """HEAD, the working tree, the checked-out branch and every branch tip.
+
+    The branch and the branch tips, because `git switch -c` moves neither HEAD's sha nor
+    the working tree.
+    """
+    return (
+        _git(where, "rev-parse", "HEAD"),
+        _git(where, "status", "--porcelain"),
+        _git(where, "symbolic-ref", "-q", "HEAD"),
+        _git(where, "for-each-ref", "--format=%(refname) %(objectname)", "refs/heads"),
+    )
+
+
 def rehearse(text: str, cwd: Path, timeout: int = 1800) -> Outcome:
     """Run the runbook's non-writing steps in `cwd` and report the first that fails."""
     script, steps, offset = render(text)
@@ -388,7 +454,7 @@ def rehearse(text: str, cwd: Path, timeout: int = 1800) -> Outcome:
             False, 2, None, "", steps, [], [f"{cwd} is not a git repository"], "", ""
         )
     where = Path(root)
-    before = (_git(where, "rev-parse", "HEAD"), _git(where, "status", "--porcelain"))
+    before = _state(where)
     index = _git(where, "write-tree")
 
     with tempfile.TemporaryDirectory(prefix="rc-rehearse-") as area:
@@ -396,12 +462,16 @@ def rehearse(text: str, cwd: Path, timeout: int = 1800) -> Outcome:
 
     if index:
         _git(where, "read-tree", index)
-    after = (_git(where, "rev-parse", "HEAD"), _git(where, "status", "--porcelain"))
+    after = _state(where)
     moved = []
     if before[0] != after[0]:
         moved.append(f"HEAD moved from {before[0]} to {after[0]}")
     if before[1] != after[1]:
         moved.append("the working tree is not what it was before the rehearsal")
+    if before[2] != after[2]:
+        moved.append(f"the checked-out branch changed from {before[2]} to {after[2]}")
+    if before[3] != after[3]:
+        moved.append("the repository's branches are not what they were before")
 
     line, code_at = (None, "") if code == 0 else _where_it_failed(raw_trace, err)
     if line is not None:
