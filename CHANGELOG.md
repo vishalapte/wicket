@@ -12,6 +12,9 @@ All notable changes to this project are documented here, following
 
 ## [Unreleased]
 
+### Fixed
+- **Domain folding and routing look up a domain's `*.parent` aliases by key.** `report --bucket travel` on the archive went from 12.9 s to 3.5 s with identical output. When two wildcards both match a domain (`*.delta.com`, `*.t.delta.com`), the most specific wins; it used to be whichever came first in the file. Neither map holds such a pair today.
+
 ### Changed
 - **racecar tooling synced to v0.209.0.** `./install` is now racecar's shared installer, with the same settings rule; `make venv` picks its Python from `requires-python = ">=3.12,<3.15"`, and `RC_PYTHON_VERSION` is gone. The dev group holds pytest below 9.2, the version racecar's lint profile still runs under.
 

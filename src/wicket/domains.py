@@ -95,31 +95,39 @@ def route_of(
 
     The domain is folded to its primary first (``t.delta.com`` -> ``delta.com``),
     so the routes file lists only primaries and never has to repeat every
-    marketing subdomain that the fold map already knows about. Exact match, then
-    ``*.parent`` wildcard. Unlike `canonical_domain`, an unmatched domain returns
-    None rather than itself: nothing claims it.
+    marketing subdomain that the fold map already knows about. Matched by `_lookup`.
+    Unlike `canonical_domain`, an unmatched domain returns None rather than itself:
+    nothing claims it.
     """
     _, _, domain = address.strip().lower().partition("@")
     domain = canonical_domain(domain or address.strip().lower(), aliases or {})
-    if domain in routes:
-        return routes[domain]
-    for pattern, destination in routes.items():
-        if pattern.startswith("*.") and domain.endswith(pattern[1:]):
-            return destination
-    return None
+    return _lookup(domain, routes)
 
 
 def canonical_domain(domain: str, aliases: dict[str, str]) -> str:
-    """Map a domain to its primary: exact alias first, then ``*.parent`` wildcard.
+    """Map a domain to its primary, matched by `_lookup`.
 
     A domain with no exact or wildcard match returns unchanged.
     """
-    if domain in aliases:
-        return aliases[domain]
-    for pattern, primary in aliases.items():
-        if pattern.startswith("*.") and domain.endswith(pattern[1:]):
-            return primary
-    return domain
+    primary = _lookup(domain, aliases)
+    return domain if primary is None else primary
+
+
+def _lookup(domain: str, mapping: dict[str, str]) -> str | None:
+    """The value for `domain`'s exact key, else for its most specific ``*.parent`` key.
+
+    For ``a.b.c.com`` the keys tried are ``a.b.c.com``, ``*.b.c.com``, ``*.c.com``
+    and ``*.com``, in that order: one lookup per dot, however large the map. A
+    ``*.parent`` key matches every domain below ``parent`` and never ``parent`` itself.
+    """
+    if domain in mapping:
+        return mapping[domain]
+    rest = domain
+    while "." in rest:
+        rest = rest.split(".", 1)[1]
+        if f"*.{rest}" in mapping:
+            return mapping[f"*.{rest}"]
+    return None
 
 
 def expand_domain(domain: str, aliases: dict[str, str]) -> list[str]:
